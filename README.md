@@ -40,13 +40,30 @@ vllama models download "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M"
 
 **Configure:** `vllama models config <name> ctx_size 8192`
 
-```bash
-# Install via uv tool
-uv tool install vllama
+## Systemd Service (Optional)
 
-# Or install from source
-make install
+Run vllama as a background user service:
+
+```bash
+# Install and start service
+make service-install
+
+# Manage service
+make service-start
+make service-stop
+make service-status
+make service-logs
+
+# Remove service
+make service-uninstall
 ```
+
+To enable at boot without login:
+```bash
+loginctl enable-linger $USER
+```
+
+## Installation
 
 ## Quick Start
 
@@ -71,7 +88,7 @@ vllama chat
 Start the vllama proxy server:
 
 ```bash
-uv run vllama serve
+vllama serve
 ```
 
 Options:

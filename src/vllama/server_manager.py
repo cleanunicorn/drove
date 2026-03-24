@@ -176,11 +176,10 @@ class ServerManager:
         self._idle_task = asyncio.create_task(self._idle_watcher())
 
     async def _idle_watcher(self) -> None:
-        timeout = self._config.idle_timeout_seconds
         while True:
             await asyncio.sleep(30)  # check every 30 seconds
             idle = time.monotonic() - self._last_request_time
-            if idle >= timeout:
+            if idle >= self._config.idle_timeout_seconds:
                 logger.info(
                     "Idle timeout reached (%.0fs), stopping llama-server", idle
                 )

@@ -22,6 +22,28 @@ def _models_dir(ctx: typer.Context) -> Path:
     return ctx.obj["config"].models_dir
 
 
+def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
+    """Shell completion callback: return model names matching the incomplete string."""
+    from vllama.config import DEFAULT_MODELS_DIR, load_config
+
+    try:
+        models_dir = ctx.obj["config"].models_dir if ctx.obj else load_config().models_dir
+    except Exception:
+        models_dir = DEFAULT_MODELS_DIR
+
+    if not models_dir.exists():
+        return []
+
+    names: list[str] = []
+    for p in sorted(models_dir.iterdir()):
+        if p.suffix.lower() == ".gguf" and p.is_file():
+            names.append(p.stem)
+        elif p.is_dir() and not p.name.startswith("."):
+            names.append(p.name)
+
+    return [n for n in names if n.lower().startswith(incomplete.lower())]
+
+
 _MODEL_EXTS = {".gguf", ".safetensors", ".bin", ".pt"}
 
 
@@ -109,7 +131,7 @@ def list_models(ctx: typer.Context) -> None:
 @models_app.command("info")
 def model_info(
     ctx: typer.Context,
-    name: Annotated[str, typer.Argument(help="Model name.")],
+    name: Annotated[str, typer.Argument(help="Model name.", autocompletion=_complete_model_name)],
 ) -> None:
     """Show info and configuration for a model."""
     models_dir = _models_dir(ctx)
@@ -144,7 +166,7 @@ def model_info(
 @models_app.command("delete")
 def delete_model(
     ctx: typer.Context,
-    name: Annotated[str, typer.Argument(help="Model name.")],
+    name: Annotated[str, typer.Argument(help="Model name.", autocompletion=_complete_model_name)],
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
 ) -> None:
     """Delete a model and its config."""
@@ -280,7 +302,7 @@ def download_model(
 @models_app.command("config")
 def model_config_cmd(
     ctx: typer.Context,
-    name: Annotated[str, typer.Argument(help="Model name.")],
+    name: Annotated[str, typer.Argument(help="Model name.", autocompletion=_complete_model_name)],
     key: Annotated[Optional[str], typer.Argument(help="Config key to get/set.")] = None,
     value: Annotated[Optional[str], typer.Argument(help="Value to set.")] = None,
     unset: Annotated[

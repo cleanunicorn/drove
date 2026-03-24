@@ -33,8 +33,11 @@ vllama models download "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M"
 ```
 
 **List:** `vllama models list`
+
 **Info:** `vllama models info <name>`
+
 **Delete:** `vllama models delete <name>`
+
 **Configure:** `vllama models config <name> ctx_size 8192`
 
 ```bash

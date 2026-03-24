@@ -4,6 +4,15 @@ llama.cpp server manager and proxy.
 
 Start `llama-server` on demand, proxy OpenAI-compatible API requests, and shut it down after inactivity. Similar to `ollama` but wraps `llama-server` directly.
 
+## Prerequisites
+
+[`llama.cpp`](https://github.com/ggml-org/llama.cpp/) must be installed and `llama-server` must be available in your PATH.
+
+Verify installation:
+```bash
+llama-server --version
+```
+
 ## Features
 
 - **Lazy model loading**: Models start on first request and shut down after inactivity

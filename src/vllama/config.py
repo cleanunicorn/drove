@@ -91,9 +91,7 @@ class Config(BaseSettings):
             "llama_server_port": self.llama_server_port,
             "tui_theme": self.tui_theme,
             "llama_server": {
-                k: v
-                for k, v in self.llama_server.model_dump().items()
-                if v is not None
+                k: v for k, v in self.llama_server.model_dump().items() if v is not None
             },
         }
         path.write_bytes(tomli_w.dumps(data).encode())

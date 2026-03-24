@@ -114,6 +114,7 @@ SessionPicker {
 
 # ── Message widget ──────────────────────────────────────────────────────────────
 
+
 class Message(Static):
     def __init__(self, role: str, content: str = "") -> None:
         super().__init__()
@@ -140,6 +141,7 @@ class Message(Static):
 
 
 # ── Session picker modal ────────────────────────────────────────────────────────
+
 
 class SessionPicker(ModalScreen[Session | None]):
     BINDINGS = [
@@ -181,6 +183,7 @@ class SessionPicker(ModalScreen[Session | None]):
 
 
 # ── Main app ────────────────────────────────────────────────────────────────────
+
 
 class ChatApp(App[None]):
     CSS = CSS
@@ -250,12 +253,12 @@ class ChatApp(App[None]):
     # ── Slash commands ──────────────────────────────────────────────────────────
 
     _COMMANDS = {
-        "/help":     "Show this help",
+        "/help": "Show this help",
         "/sessions": "Browse and resume saved sessions",
-        "/new":      "Start a new session",
-        "/clear":    "Clear current chat (starts new session)",
-        "/theme":    "/theme [name] — list or set theme",
-        "/save":     "Save session now (auto-saves after each reply)",
+        "/new": "Start a new session",
+        "/clear": "Clear current chat (starts new session)",
+        "/theme": "/theme [name] — list or set theme",
+        "/save": "Save session now (auto-saves after each reply)",
     }
 
     async def _dispatch_command(self, text: str) -> None:
@@ -320,6 +323,7 @@ class ChatApp(App[None]):
             return
         try:
             from vllama.config import load_config
+
             cfg = load_config(self._config_path)
             cfg = cfg.model_copy(update={"tui_theme": theme})
             cfg.save(self._config_path)  # creates the file if it doesn't exist
@@ -391,10 +395,14 @@ class ChatApp(App[None]):
     async def _stream_chat(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         payload = {"model": self._model, "messages": messages, "stream": True}
         async with httpx.AsyncClient(timeout=300.0) as client:
-            async with client.stream("POST", f"{self._base_url}/v1/chat/completions", json=payload) as resp:
+            async with client.stream(
+                "POST", f"{self._base_url}/v1/chat/completions", json=payload
+            ) as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
-                    raise RuntimeError(f"Server error {resp.status_code}: {body.decode(errors='replace')}")
+                    raise RuntimeError(
+                        f"Server error {resp.status_code}: {body.decode(errors='replace')}"
+                    )
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -406,7 +414,7 @@ class ChatApp(App[None]):
                         delta = obj["choices"][0]["delta"].get("content", "")
                         if delta:
                             yield delta
-                    except (KeyError, json.JSONDecodeError):
+                    except KeyError, json.JSONDecodeError:
                         continue
 
     # ── Helpers ─────────────────────────────────────────────────────────────────

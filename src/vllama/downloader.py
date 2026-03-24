@@ -83,7 +83,7 @@ class DownloadPlan:
         sharded: bool,
     ) -> None:
         self.repo_id = repo_id
-        self.files = files          # preserves insertion order
+        self.files = files  # preserves insertion order
         self.local_name = local_name
         self.sharded = sharded
 
@@ -168,8 +168,7 @@ def resolve_download(
         if not matched:
             available = _summarise_quants(list(files.keys()))
             raise ValueError(
-                f"No files matching quantization '{quant}' in '{repo_id}'.\n"
-                f"Available: {available}"
+                f"No files matching quantization '{quant}' in '{repo_id}'.\nAvailable: {available}"
             )
         files = matched
 

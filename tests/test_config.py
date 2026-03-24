@@ -20,9 +20,7 @@ def test_defaults(tmp_path: Path) -> None:
 
 def test_toml_overrides_defaults(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
-    cfg_file.write_bytes(
-        tomli_w.dumps({"listen_port": 9090, "idle_timeout_seconds": 600}).encode()
-    )
+    cfg_file.write_bytes(tomli_w.dumps({"listen_port": 9090, "idle_timeout_seconds": 600}).encode())
     cfg = load_config(cfg_file)
     assert cfg.listen_port == 9090
     assert cfg.idle_timeout_seconds == 600

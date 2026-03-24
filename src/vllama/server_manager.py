@@ -140,14 +140,15 @@ class ServerManager:
             threads=self._config.llama_server.threads,
         )
         # Model-specific overrides take precedence
-        merged = global_cfg.model_copy(
-            update={k: v for k, v in model_cfg.to_dict().items()}
-        )
+        merged = global_cfg.model_copy(update={k: v for k, v in model_cfg.to_dict().items()})
 
         args = [
-            "--model", str(model_path),
-            "--host", self._config.llama_server_host,
-            "--port", str(self._config.llama_server_port),
+            "--model",
+            str(model_path),
+            "--host",
+            self._config.llama_server_host,
+            "--port",
+            str(self._config.llama_server_port),
         ]
         args.extend(merged.to_llama_args())
         return args
@@ -180,9 +181,7 @@ class ServerManager:
             await asyncio.sleep(30)  # check every 30 seconds
             idle = time.monotonic() - self._last_request_time
             if idle >= self._config.idle_timeout_seconds:
-                logger.info(
-                    "Idle timeout reached (%.0fs), stopping llama-server", idle
-                )
+                logger.info("Idle timeout reached (%.0fs), stopping llama-server", idle)
                 async with self._lock:
                     await self._stop()
                 return

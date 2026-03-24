@@ -97,9 +97,7 @@ def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
             files = [f for f in p.rglob("*") if f.is_file()]
             total = sum(f.stat().st_size for f in files)
             # Primary file = first shard or first file
-            primary = sorted(
-                f for f in files if f.suffix.lower() == ".gguf"
-            )
+            primary = sorted(f for f in files if f.suffix.lower() == ".gguf")
             if not primary:
                 primary = sorted(files)
             if primary:
@@ -240,9 +238,7 @@ def download_model(
         Optional[str],
         typer.Option("--name", "-n", help="Override local model name."),
     ] = None,
-    yes: Annotated[
-        bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")
-    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Download a model from HuggingFace Hub.
 
@@ -274,9 +270,7 @@ def download_model(
         raise typer.Exit(1)
 
     if plan.already_exists(models_dir):
-        typer.echo(
-            f"Model '{plan.local_name}' already exists at {plan.destination(models_dir)}."
-        )
+        typer.echo(f"Model '{plan.local_name}' already exists at {plan.destination(models_dir)}.")
         raise typer.Exit(1)
 
     _print_download_plan(plan, models_dir)
@@ -293,9 +287,7 @@ def download_model(
         typer.echo(f"Download failed: {e}", err=True)
         raise typer.Exit(1)
 
-    size_mb = sum(
-        f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()
-    ) / 1_048_576
+    size_mb = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()) / 1_048_576
     typer.echo(f"\nSaved as '{plan.local_name}'  ({size_mb:.1f} MB)")
 
 

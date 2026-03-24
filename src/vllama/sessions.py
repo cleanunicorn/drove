@@ -54,7 +54,9 @@ def new_session(model: str, system_prompt: str | None = None) -> Session:
     messages: list[dict[str, str]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    return Session(model=model, session_id=session_id, messages=messages, system_prompt=system_prompt)
+    return Session(
+        model=model, session_id=session_id, messages=messages, system_prompt=system_prompt
+    )
 
 
 def _session_dir(sessions_dir: Path, model: str) -> Path:
@@ -91,10 +93,7 @@ def list_sessions(sessions_dir: Path, model: str) -> list[Session]:
     d = _session_dir(sessions_dir, model)
     if not d.exists():
         return []
-    return [
-        load_session(p)
-        for p in sorted(d.glob("*.json"), reverse=True)
-    ]
+    return [load_session(p) for p in sorted(d.glob("*.json"), reverse=True)]
 
 
 def latest_session(sessions_dir: Path, model: str) -> Session | None:

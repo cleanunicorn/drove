@@ -48,10 +48,12 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         tasks: list[asyncio.Task[None]] = []
 
         if config_path is not None:
-            tasks.append(asyncio.create_task(
-                _config_watcher(_app, config_path),
-                name="config-watcher",
-            ))
+            tasks.append(
+                asyncio.create_task(
+                    _config_watcher(_app, config_path),
+                    name="config-watcher",
+                )
+            )
             _setup_sighup(_app, config_path)
 
         try:
@@ -97,11 +99,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
 
         manager.record_request()
 
-        headers = {
-            k: v
-            for k, v in request.headers.items()
-            if k.lower() not in _HOP_BY_HOP
-        }
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
         body = await request.body()
 
         try:
@@ -116,11 +114,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         except httpx.TransportError as e:
             raise HTTPException(status_code=502, detail=f"Upstream error: {e}") from e
 
-        response_headers = {
-            k: v
-            for k, v in resp.headers.items()
-            if k.lower() not in _HOP_BY_HOP
-        }
+        response_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP}
 
         return StreamingResponse(
             content=resp.aiter_raw(),
@@ -171,9 +165,7 @@ def _reload_config(app: FastAPI, config_path: Path) -> None:
         return
 
     # Build updated config preserving non-reloadable fields from the old config
-    merged = new_config.model_copy(update={
-        f: old_dump[f] for f in _RESTART_REQUIRED
-    })
+    merged = new_config.model_copy(update={f: old_dump[f] for f in _RESTART_REQUIRED})
 
     app.state.config = merged
     app.state.manager._config = merged
@@ -194,7 +186,7 @@ def _setup_sighup(app: FastAPI, config_path: Path) -> None:
 
     try:
         loop.add_signal_handler(signal.SIGHUP, _handler)
-    except (OSError, NotImplementedError):
+    except OSError, NotImplementedError:
         pass  # Windows or environments without SIGHUP
 
 

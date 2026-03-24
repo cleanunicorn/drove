@@ -29,15 +29,15 @@ _COMPLETION_FILES: dict[str, str] = {
 # Lines that need to be present in shell config files to activate completions
 _ACTIVATION: dict[str, list[str]] = {
     "zsh": [
-        'fpath=(~/.zfunc $fpath)',
-        'autoload -Uz compinit && compinit',
+        "fpath=(~/.zfunc $fpath)",
+        "autoload -Uz compinit && compinit",
     ],
     "bash": [
-        'source ~/.bash_completions/vllama',
+        "source ~/.bash_completions/vllama",
     ],
-    "fish": [],          # fish auto-loads from ~/.config/fish/completions/
+    "fish": [],  # fish auto-loads from ~/.config/fish/completions/
     "powershell": [
-        '. ~/.config/powershell/vllama.ps1',
+        ". ~/.config/powershell/vllama.ps1",
     ],
 }
 
@@ -117,8 +117,7 @@ def install(
         detected = _detect_shell()
         if not detected:
             typer.echo(
-                "Could not detect current shell. "
-                f"Please specify one of: {', '.join(_SHELLS)}",
+                f"Could not detect current shell. Please specify one of: {', '.join(_SHELLS)}",
                 err=True,
             )
             raise typer.Exit(1)
@@ -127,9 +126,7 @@ def install(
 
     shell = shell.lower()
     if shell not in _SHELLS:
-        typer.echo(
-            f"Unknown shell '{shell}'. Choose from: {', '.join(_SHELLS)}", err=True
-        )
+        typer.echo(f"Unknown shell '{shell}'. Choose from: {', '.join(_SHELLS)}", err=True)
         raise typer.Exit(1)
 
     try:

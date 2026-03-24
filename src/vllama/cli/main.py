@@ -10,7 +10,7 @@ import typer
 import uvicorn
 
 from vllama.cli.completions import completions_app
-from vllama.cli.models import _complete_model_name, models_app
+from vllama.cli.models import _complete_model_name, _iter_models, models_app
 from vllama.config import DEFAULT_CONFIG_PATH, load_config
 
 app = typer.Typer(
@@ -94,7 +94,9 @@ def config(
     conf = ctx.obj["config"]
 
     if key is None:
-        typer.echo(f"Config file: {cfg_path} ({'exists' if cfg_path.exists() else 'not found, using defaults'})")
+        typer.echo(
+            f"Config file: {cfg_path} ({'exists' if cfg_path.exists() else 'not found, using defaults'})"
+        )
         typer.echo("")
         flat = conf.model_dump()
         for field, val in flat.items():
@@ -122,7 +124,10 @@ def config(
         raise typer.Exit(1)
 
     if not cfg_path.exists():
-        typer.echo(f"Config file not found at {cfg_path}. Run 'vllama init' first or use --config.", err=True)
+        typer.echo(
+            f"Config file not found at {cfg_path}. Run 'vllama init' first or use --config.",
+            err=True,
+        )
         raise typer.Exit(1)
 
     updated.save(cfg_path)
@@ -196,11 +201,16 @@ def _coerce(annotation: object, raw: str) -> object:
 @app.command()
 def chat(
     ctx: typer.Context,
-    model: Annotated[str, typer.Argument(help="Model name to chat with.", autocompletion=_complete_model_name)],
+    model: Annotated[
+        Optional[str],
+        typer.Argument(help="Model name to chat with.", autocompletion=_complete_model_name),
+    ] = None,
     host: Annotated[Optional[str], typer.Option(help="vllama host (overrides config).")] = None,
     port: Annotated[Optional[int], typer.Option(help="vllama port (overrides config).")] = None,
     system: Annotated[Optional[str], typer.Option("--system", "-s", help="System prompt.")] = None,
-    resume: Annotated[bool, typer.Option("--resume", "-r", help="Resume the latest saved session.")] = False,
+    resume: Annotated[
+        bool, typer.Option("--resume", "-r", help="Resume the latest saved session.")
+    ] = False,
 ) -> None:
     """Open an interactive TUI chat session with the running vllama server.
 
@@ -212,6 +222,12 @@ def chat(
     config = ctx.obj["config"]
     base_url = f"http://{host or config.listen_host}:{port or config.listen_port}"
     base_url = base_url.replace("//0.0.0.0:", "//127.0.0.1:")
+
+    if model is None:
+        model = _select_model(config.models_dir)
+        if model is None:
+            typer.echo("No models found. Use 'vllama models download' to download a model.")
+            raise typer.Exit(1)
 
     resume_session = None
     if resume:
@@ -232,10 +248,39 @@ def chat(
     tui.run()
 
 
+def _select_model(models_dir: Path) -> str | None:
+    """Prompt user to select a model from available models."""
+    models = _iter_models(models_dir)
+
+    if not models:
+        return None
+
+    if len(models) == 1:
+        return models[0][0]
+
+    typer.echo("Available models:")
+    typer.echo("")
+    for i, (name, path, size) in enumerate(models, 1):
+        size_mb = size / 1_048_576
+        typer.echo(f"  {i}. {name:<40} ({size_mb:.1f} MB)")
+    typer.echo("")
+
+    while True:
+        try:
+            choice = int(typer.prompt("Select a model", default="1"))
+            if 1 <= choice <= len(models):
+                return models[choice - 1][0]
+            typer.echo(f"Please enter a number between 1 and {len(models)}")
+        except ValueError, TypeError:
+            typer.echo("Please enter a valid number")
+
+
 @app.command("init")
 def init_config(
     ctx: typer.Context,
-    force: Annotated[bool, typer.Option("--force", "-f", help="Overwrite existing config.")] = False,
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Overwrite existing config.")
+    ] = False,
 ) -> None:
     """Create the config file at its default location with all default values.
 

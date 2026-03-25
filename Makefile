@@ -29,8 +29,8 @@ typecheck:
 
 service-install: install
 	mkdir -p $(SERVICE_DIR)
-	@printf '[Unit]\nDescription=vllama llama.cpp server manager and proxy\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s serve\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n' \
-		"$(VLLAMA_BIN)" > $(SERVICE_FILE)
+	@printf '[Unit]\nDescription=vllama llama.cpp server manager and proxy\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s serve\nEnvironment=PATH=%s\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n' \
+		"$(VLLAMA_BIN)" "$(PATH)" > $(SERVICE_FILE)
 	systemctl --user daemon-reload
 	systemctl --user enable vllama.service
 	-pkill -f "vllama serve" 2>/dev/null || true

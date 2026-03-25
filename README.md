@@ -1,6 +1,6 @@
 # vllama
 
-llama.cpp server manager and proxy.
+llama.cpp server manager, proxy and model downloader.
 
 Start `llama-server` on demand, proxy OpenAI-compatible API requests, and shut it down after inactivity. Similar to `ollama` but wraps `llama-server` directly.
 

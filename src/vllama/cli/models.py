@@ -287,7 +287,49 @@ def download_model(
         typer.echo(f"Download failed: {e}", err=True)
         raise typer.Exit(1)
 
-    size_mb = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()) / 1_048_576
+    # Convert non-GGUF models (safetensors / bin) to GGUF automatically
+    from vllama.converter import convert_to_gguf, find_convert_script, needs_conversion, remove_source_files
+
+    source_dir = models_dir / plan.local_name
+    if source_dir.is_dir() and needs_conversion(source_dir):
+        config = ctx.obj["config"]
+        script_path = (
+            Path(config.convert_script)
+            if config.convert_script
+            else find_convert_script(config.llama_server_bin)
+        )
+        if script_path is None:
+            typer.echo(
+                "\nWarning: non-GGUF model downloaded but convert_hf_to_gguf.py was not found.\n"
+                "Set 'convert_script' in your config or copy it from the llama.cpp repo.\n"
+                "llama-server cannot load this model until it is converted to GGUF.",
+                err=True,
+            )
+        else:
+            output_gguf = models_dir / f"{plan.local_name}.gguf"
+            typer.echo(f"\nConverting to GGUF ({config.convert_output_type}) → {output_gguf} ...")
+            try:
+                convert_to_gguf(source_dir, output_gguf, script_path, config.convert_output_type)
+            except RuntimeError as e:
+                typer.echo(f"Conversion failed: {e}", err=True)
+                raise typer.Exit(1)
+
+            typer.echo("Removing source files ...")
+            deleted = remove_source_files(source_dir)
+            for d in deleted:
+                typer.echo(f"  Removed {d.name}")
+            try:
+                source_dir.rmdir()
+            except OSError:
+                pass  # non-empty (e.g. tokenizer files remain); leave it
+
+            primary = output_gguf
+
+    size_mb = (
+        primary.stat().st_size
+        if primary.is_file()
+        else sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file())
+    ) / 1_048_576
     typer.echo(f"\nSaved as '{plan.local_name}'  ({size_mb:.1f} MB)")
 
 

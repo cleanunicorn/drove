@@ -58,6 +58,8 @@ class Config(BaseSettings):
     llama_server_host: str = "127.0.0.1"
     llama_server_port: int = 8081
     tui_theme: str = "textual-dark"
+    convert_script: str | None = None  # path to convert_hf_to_gguf.py; auto-detected if None
+    convert_output_type: str = "f16"  # f32, f16, bf16, q8_0
 
     llama_server: LlamaServerDefaults = LlamaServerDefaults()
 
@@ -90,6 +92,8 @@ class Config(BaseSettings):
             "llama_server_host": self.llama_server_host,
             "llama_server_port": self.llama_server_port,
             "tui_theme": self.tui_theme,
+            "convert_output_type": self.convert_output_type,
+            **({} if self.convert_script is None else {"convert_script": self.convert_script}),
             "llama_server": {
                 k: v for k, v in self.llama_server.model_dump().items() if v is not None
             },

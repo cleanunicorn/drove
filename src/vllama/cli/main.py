@@ -271,7 +271,7 @@ def _select_model(models_dir: Path) -> str | None:
             if 1 <= choice <= len(models):
                 return models[choice - 1][0]
             typer.echo(f"Please enter a number between 1 and {len(models)}")
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             typer.echo("Please enter a valid number")
 
 

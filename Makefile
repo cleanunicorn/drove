@@ -51,6 +51,9 @@ service-start:
 service-stop:
 	systemctl --user stop vllama.service
 
+service-restart:
+	systemctl --user restart vllama.service	
+
 service-status:
 	systemctl --user status vllama.service
 

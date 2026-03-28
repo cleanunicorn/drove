@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import signal
+import socket
 import time
 from pathlib import Path
 
@@ -33,6 +35,8 @@ class ServerManager:
         self._last_request_time: float = time.monotonic()
         self._lock = asyncio.Lock()
         self._idle_task: asyncio.Task[None] | None = None
+        self._model_loaded_at: float | None = None  # wall-clock time
+        self._server_port: int | None = None  # dynamically assigned
 
     @property
     def is_running(self) -> bool:
@@ -43,8 +47,17 @@ class ServerManager:
         return self._current_model
 
     @property
+    def model_loaded_at(self) -> float | None:
+        return self._model_loaded_at
+
+    @property
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self._last_request_time
+
+    @property
     def base_url(self) -> str:
-        return f"http://{self._config.llama_server_host}:{self._config.llama_server_port}"
+        port = self._server_port or 0
+        return f"http://{self._config.llama_server_host}:{port}"
 
     def record_request(self) -> None:
         """Call on each proxied request to reset the idle timer."""
@@ -69,15 +82,24 @@ class ServerManager:
             await self._stop()
 
     async def _start(self, model_name: str) -> None:
+        binary = self._config.llama_server_bin
+        if not shutil.which(binary):
+            raise FileNotFoundError(
+                f"llama-server binary '{binary}' not found on PATH. "
+                "Install llama.cpp or set 'llama_server_bin' in config."
+            )
+
         model_path = self._resolve_model(model_name)
         model_cfg = load_model_config(model_path)
+
+        self._server_port = _find_free_port()
 
         # Merge global defaults then model-specific overrides
         args = self._build_args(model_path, model_cfg)
 
-        logger.info("Starting llama-server: %s %s", self._config.llama_server_bin, " ".join(args))
+        logger.info("Starting llama-server: %s %s", binary, " ".join(args))
         self._process = await asyncio.create_subprocess_exec(
-            self._config.llama_server_bin,
+            binary,
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -85,7 +107,12 @@ class ServerManager:
         self._current_model = model_name
         self._last_request_time = time.monotonic()
 
-        await self._wait_for_health()
+        try:
+            await self._wait_for_health()
+        except (RuntimeError, TimeoutError) as e:
+            logger.error("llama-server failed to start: %s", e)
+            raise
+        self._model_loaded_at = time.time()
         self._start_idle_watcher()
         logger.info("llama-server ready (model=%s)", model_name)
 
@@ -100,6 +127,8 @@ class ServerManager:
         proc = self._process
         self._process = None
         self._current_model = None
+        self._model_loaded_at = None
+        self._server_port = None
 
         if proc.returncode is not None:
             return  # already dead
@@ -121,7 +150,11 @@ class ServerManager:
         async with httpx.AsyncClient() as client:
             while time.monotonic() < deadline:
                 if not self.is_running:
-                    raise RuntimeError("llama-server exited unexpectedly during startup")
+                    stderr = await self._read_stderr()
+                    msg = "llama-server exited unexpectedly during startup"
+                    if stderr:
+                        msg += f"\nstderr: {stderr}"
+                    raise RuntimeError(msg)
                 try:
                     resp = await client.get(f"{self.base_url}/health", timeout=2.0)
                     if resp.status_code == 200:
@@ -130,6 +163,16 @@ class ServerManager:
                     pass
                 await asyncio.sleep(HEALTH_CHECK_INTERVAL)
         raise TimeoutError(f"llama-server did not become healthy within {HEALTH_CHECK_TIMEOUT}s")
+
+    async def _read_stderr(self) -> str:
+        proc = self._process
+        if proc is None or proc.stderr is None:
+            return ""
+        try:
+            data = await asyncio.wait_for(proc.stderr.read(4096), timeout=1.0)
+            return data.decode(errors="replace").strip()
+        except (TimeoutError, Exception):
+            return ""
 
     def _build_args(self, model_path: Path, model_cfg: "ModelConfig") -> list[str]:  # type: ignore[name-defined]
         from vllama.model_config import ModelConfig  # local import to avoid circular
@@ -148,7 +191,7 @@ class ServerManager:
             "--host",
             self._config.llama_server_host,
             "--port",
-            str(self._config.llama_server_port),
+            str(self._server_port),
         ]
         args.extend(merged.to_llama_args())
         return args
@@ -185,3 +228,10 @@ class ServerManager:
                 async with self._lock:
                     await self._stop()
                 return
+
+
+def _find_free_port() -> int:
+    """Bind to port 0 to let the OS assign an available port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]

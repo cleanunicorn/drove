@@ -56,7 +56,6 @@ class Config(BaseSettings):
     llama_server_bin: str = "llama-server"
     idle_timeout_seconds: int = 1800  # 30 minutes
     llama_server_host: str = "127.0.0.1"
-    llama_server_port: int = 8081
     tui_theme: str = "textual-dark"
 
     llama_server: LlamaServerDefaults = LlamaServerDefaults()
@@ -88,7 +87,6 @@ class Config(BaseSettings):
             "llama_server_bin": self.llama_server_bin,
             "idle_timeout_seconds": self.idle_timeout_seconds,
             "llama_server_host": self.llama_server_host,
-            "llama_server_port": self.llama_server_port,
             "tui_theme": self.tui_theme,
             "llama_server": {
                 k: v for k, v in self.llama_server.model_dump().items() if v is not None

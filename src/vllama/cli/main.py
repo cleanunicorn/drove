@@ -75,6 +75,76 @@ def serve(
 
 
 @app.command()
+def status(
+    ctx: typer.Context,
+    host: Annotated[Optional[str], typer.Option(help="vllama host (overrides config).")] = None,
+    port: Annotated[Optional[int], typer.Option(help="vllama port (overrides config).")] = None,
+) -> None:
+    """Show the status of the running vllama server."""
+    import httpx
+
+    config = ctx.obj["config"]
+    base = f"http://{host or config.listen_host}:{port or config.listen_port}"
+    base = base.replace("//0.0.0.0:", "//127.0.0.1:")
+
+    try:
+        resp = httpx.get(f"{base}/status", timeout=5.0)
+        resp.raise_for_status()
+    except httpx.ConnectError:
+        typer.echo("Server is not running.")
+        raise typer.Exit(1)
+    except httpx.HTTPError as e:
+        typer.echo(f"Failed to connect: {e}", err=True)
+        raise typer.Exit(1)
+
+    data = resp.json()
+
+    # Server
+    server = data["server"]
+    typer.echo(f"Server:    running ({_fmt_duration(server['uptime_seconds'])} uptime)")
+    typer.echo(f"Listen:    {server['listen']}")
+
+    # Model
+    model = data["model"]
+    if model.get("loaded") and model.get("name"):
+        typer.echo(f"Model:     {model['name']}")
+        if model.get("loaded_seconds") is not None:
+            typer.echo(f"  Loaded:  {_fmt_duration(model['loaded_seconds'])} ago")
+        idle = model.get("idle_seconds", 0)
+        timeout = model.get("idle_timeout_seconds", 0)
+        typer.echo(f"  Idle:    {_fmt_duration(idle)} / {_fmt_duration(timeout)}")
+    else:
+        typer.echo("Model:     (none loaded)")
+
+    # Requests
+    req = data["requests"]
+    typer.echo(
+        f"Requests:  {req['total']} total, {req['active']} active, {req['errors']} errors"
+    )
+
+    # Tokens
+    tok = data["tokens"]
+    if tok["total"] > 0:
+        typer.echo(
+            f"Tokens:    {tok['prompt']} in / {tok['completion']} out ({tok['total']} total)"
+        )
+    else:
+        typer.echo("Tokens:    (none)")
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds into a human-readable duration string."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60}s"
+    h = s // 3600
+    m = (s % 3600) // 60
+    return f"{h}h {m}m"
+
+
+@app.command()
 def config(
     ctx: typer.Context,
     key: Annotated[Optional[str], typer.Argument(help="Config key to get or set.")] = None,

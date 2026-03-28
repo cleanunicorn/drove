@@ -7,7 +7,15 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+
+
+class DownloadInfo(BaseModel):
+    """Metadata about how a model was downloaded."""
+
+    repo_id: str
+    files: list[str]
+    quant: str | None = None
 
 
 class ModelConfig(BaseModel):
@@ -16,6 +24,8 @@ class ModelConfig(BaseModel):
     Keys map to llama-server CLI flags (snake_case → --kebab-case).
     See: https://github.com/ggml-org/llama.cpp/tree/master/tools/server
     """
+
+    model_config = ConfigDict(extra="ignore")
 
     # Context and memory
     ctx_size: int | None = None
@@ -80,9 +90,20 @@ def load_model_config(model_path: Path) -> ModelConfig:
 
 
 def save_model_config(model_path: Path, config: ModelConfig) -> None:
-    """Write per-model config to sidecar TOML file."""
+    """Write per-model config to sidecar TOML file, preserving [download] section."""
     cfg_path = config_path_for_model(model_path)
-    cfg_path.write_bytes(tomli_w.dumps(config.to_dict()).encode())
+
+    # Preserve existing [download] section if present
+    existing: dict[str, Any] = {}
+    if cfg_path.exists():
+        with cfg_path.open("rb") as f:
+            existing = tomllib.load(f)
+
+    data = config.to_dict()
+    if "download" in existing:
+        data["download"] = existing["download"]
+
+    cfg_path.write_bytes(tomli_w.dumps(data).encode())
 
 
 def set_model_config_key(model_path: Path, key: str, value: str) -> ModelConfig:
@@ -115,3 +136,29 @@ def set_model_config_key(model_path: Path, key: str, value: str) -> ModelConfig:
     updated = config.model_copy(update={key: coerced})
     save_model_config(model_path, updated)
     return updated
+
+
+def load_download_info(model_path: Path) -> DownloadInfo | None:
+    """Load download metadata from sidecar TOML, or None if absent."""
+    cfg_path = config_path_for_model(model_path)
+    if not cfg_path.exists():
+        return None
+    with cfg_path.open("rb") as f:
+        data = tomllib.load(f)
+    dl = data.get("download")
+    if not dl:
+        return None
+    return DownloadInfo(**dl)
+
+
+def save_download_info(model_path: Path, info: DownloadInfo) -> None:
+    """Write download metadata to the [download] section of the sidecar TOML."""
+    cfg_path = config_path_for_model(model_path)
+
+    existing: dict[str, Any] = {}
+    if cfg_path.exists():
+        with cfg_path.open("rb") as f:
+            existing = tomllib.load(f)
+
+    existing["download"] = info.model_dump(exclude_none=True)
+    cfg_path.write_bytes(tomli_w.dumps(existing).encode())

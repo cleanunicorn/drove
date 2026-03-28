@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from vllama.config import Config, load_config
 from vllama.server_manager import ServerManager
+from vllama.stats import ProxyStats
 
 logger = logging.getLogger(__name__)
 
@@ -64,65 +67,118 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
             await manager.stop()
             await client.aclose()
 
+    stats = ProxyStats()
+
     app = FastAPI(title="vllama", lifespan=lifespan)
     app.state.manager = manager
     app.state.config = config
+    app.state.stats = stats
 
-    client = httpx.AsyncClient(base_url=manager.base_url, timeout=300.0)
+    client = httpx.AsyncClient(timeout=300.0)
     app.state.client = client  # kept here so lifespan can close it
+
+    @app.get("/health")
+    async def health() -> JSONResponse:
+        return JSONResponse(
+            {
+                "status": "ok",
+                "model": manager.current_model,
+                "server_running": manager.is_running,
+            }
+        )
+
+    @app.get("/status")
+    async def status() -> JSONResponse:
+        now = time.time()
+
+        model_data: dict[str, object] = {"loaded": manager.is_running}
+        if manager.is_running and manager.current_model:
+            model_data["name"] = manager.current_model
+            if manager.model_loaded_at:
+                model_data["loaded_seconds"] = round(now - manager.model_loaded_at, 1)
+            model_data["idle_seconds"] = round(manager.idle_seconds, 1)
+            model_data["idle_timeout_seconds"] = config.idle_timeout_seconds
+
+        return JSONResponse(
+            {
+                "server": {
+                    "uptime_seconds": round(now - stats.started_at, 1),
+                    "listen": f"{config.listen_host}:{config.listen_port}",
+                },
+                "model": model_data,
+                "requests": {
+                    "total": stats.request_count,
+                    "active": stats.active_requests,
+                    "errors": stats.error_count,
+                },
+                "tokens": {
+                    "prompt": stats.tokens_prompt,
+                    "completion": stats.tokens_completion,
+                    "total": stats.tokens_prompt + stats.tokens_completion,
+                },
+            }
+        )
 
     @app.api_route(
         "/{path:path}",
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
     )
     async def proxy(request: Request, path: str) -> StreamingResponse:
-        model_name = await _extract_model(request)
-
-        if model_name is None:
-            if not manager.is_running:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "No model is loaded. Specify a 'model' field in your request "
-                        "or load a model first."
-                    ),
-                )
-        else:
-            try:
-                await manager.ensure_running(model_name)
-            except FileNotFoundError as e:
-                raise HTTPException(status_code=404, detail=str(e)) from e
-            except TimeoutError as e:
-                raise HTTPException(status_code=503, detail=str(e)) from e
-            except RuntimeError as e:
-                raise HTTPException(status_code=503, detail=str(e)) from e
-
-        manager.record_request()
-
-        headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
-        body = await request.body()
-
+        stats.request_started()
         try:
-            upstream = client.build_request(
-                method=request.method,
-                url=f"/{path}",
-                params=request.query_params,
-                headers=headers,
-                content=body,
+            model_name = await _extract_model(request)
+
+            if model_name is None:
+                if not manager.is_running:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "No model is loaded. Specify a 'model' field in your request "
+                            "or load a model first."
+                        ),
+                    )
+            else:
+                try:
+                    await manager.ensure_running(model_name)
+                except FileNotFoundError as e:
+                    raise HTTPException(status_code=404, detail=str(e)) from e
+                except TimeoutError as e:
+                    raise HTTPException(status_code=503, detail=str(e)) from e
+                except RuntimeError as e:
+                    raise HTTPException(status_code=503, detail=str(e)) from e
+
+            manager.record_request()
+
+            headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
+            body = await request.body()
+
+            try:
+                upstream = client.build_request(
+                    method=request.method,
+                    url=f"{manager.base_url}/{path}",
+                    params=request.query_params,
+                    headers=headers,
+                    content=body,
+                )
+                resp = await client.send(upstream, stream=True)
+            except httpx.TransportError as e:
+                raise HTTPException(status_code=502, detail=f"Upstream error: {e}") from e
+
+            response_headers = {
+                k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP
+            }
+
+            return StreamingResponse(
+                content=_counting_stream(resp.aiter_raw(), stats),
+                status_code=resp.status_code,
+                headers=response_headers,
+                media_type=resp.headers.get("content-type"),
+                background=None,
             )
-            resp = await client.send(upstream, stream=True)
-        except httpx.TransportError as e:
-            raise HTTPException(status_code=502, detail=f"Upstream error: {e}") from e
-
-        response_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP}
-
-        return StreamingResponse(
-            content=resp.aiter_raw(),
-            status_code=resp.status_code,
-            headers=response_headers,
-            media_type=resp.headers.get("content-type"),
-            background=None,
-        )
+        except Exception:
+            stats.request_finished()
+            stats.request_error()
+            raise
 
     return app
 
@@ -207,3 +263,51 @@ async def _extract_model(request: Request) -> str | None:
         return body.get("model") if isinstance(body, dict) else None
     except Exception:
         return None
+
+
+async def _counting_stream(
+    raw_iter: AsyncIterator[bytes], stats: ProxyStats
+) -> AsyncIterator[bytes]:
+    """Wrap a response stream, collecting bytes to extract token usage afterwards."""
+    try:
+        chunks: list[bytes] = []
+        async for chunk in raw_iter:
+            chunks.append(chunk)
+            yield chunk
+        _record_usage(b"".join(chunks), stats)
+    except Exception:
+        stats.request_error()
+        raise
+    finally:
+        stats.request_finished()
+
+
+def _record_usage(body: bytes, stats: ProxyStats) -> None:
+    """Best-effort extraction of token usage from a response body."""
+    text = body.decode("utf-8", errors="replace")
+
+    # Non-streaming: plain JSON with a top-level "usage" field
+    try:
+        data = json.loads(text)
+        usage = data.get("usage") if isinstance(data, dict) else None
+        if usage:
+            stats.add_tokens(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+            return
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Streaming SSE: scan backwards for the last data: line containing usage
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        try:
+            data = json.loads(line[6:])
+            usage = data.get("usage") if isinstance(data, dict) else None
+            if usage:
+                stats.add_tokens(
+                    usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+                )
+                return
+        except (json.JSONDecodeError, ValueError):
+            continue

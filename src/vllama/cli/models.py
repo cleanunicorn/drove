@@ -8,9 +8,12 @@ from typing import Annotated, Optional
 import typer
 
 from vllama.model_config import (
+    DownloadInfo,
     ModelConfig,
     config_path_for_model,
+    load_download_info,
     load_model_config,
+    save_download_info,
     save_model_config,
     set_model_config_key,
 )
@@ -107,7 +110,12 @@ def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
 
 
 @models_app.command("list")
-def list_models(ctx: typer.Context) -> None:
+def list_models(
+    ctx: typer.Context,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-V", help="Show download origin info.")
+    ] = False,
+) -> None:
     """List all downloaded models."""
     models_dir = _models_dir(ctx)
     models = _iter_models(models_dir)
@@ -124,6 +132,14 @@ def list_models(ctx: typer.Context) -> None:
         cfg_marker = " [cfg]" if has_cfg else ""
         location = primary.parent if primary.parent != models_dir else primary
         typer.echo(f"{name:<45} {size_mb:>9.1f}M  {location}{cfg_marker}")
+
+        if verbose:
+            dl = load_download_info(primary)
+            if dl:
+                org, repo = dl.repo_id.split("/", 1)
+                typer.echo(f"  {'origin:':<10} {org}/{repo}")
+                for fname in dl.files:
+                    typer.echo(f"  {'file:':<10} {fname}")
 
 
 @models_app.command("info")
@@ -147,6 +163,13 @@ def model_info(
     typer.echo(f"Files:   {len(all_files)}")
     typer.echo(f"Size:    {total_bytes / 1_048_576:.1f} MB")
     typer.echo(f"Primary: {primary}")
+
+    dl = load_download_info(primary)
+    if dl:
+        org, repo = dl.repo_id.split("/", 1)
+        typer.echo(f"Origin:  {org}/{repo}")
+        for fname in dl.files:
+            typer.echo(f"         {fname}")
 
     cfg = load_model_config(primary)
     cfg_path = config_path_for_model(primary)
@@ -286,6 +309,19 @@ def download_model(
     except Exception as e:
         typer.echo(f"Download failed: {e}", err=True)
         raise typer.Exit(1)
+
+    # Save download metadata to sidecar TOML
+    from vllama.downloader import parse_model_ref
+
+    _, quant = parse_model_ref(model_ref)
+    save_download_info(
+        primary,
+        DownloadInfo(
+            repo_id=plan.repo_id,
+            files=sorted(plan.file_names),
+            quant=quant,
+        ),
+    )
 
     size_mb = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()) / 1_048_576
     typer.echo(f"\nSaved as '{plan.local_name}'  ({size_mb:.1f} MB)")

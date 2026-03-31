@@ -671,7 +671,9 @@ class ChatApp(App[None]):
 
                     # Show as collapsible section
                     await assistant_bubble.append_tool_call(
-                        tc["name"], tc["arguments"], result,
+                        tc["name"],
+                        tc["arguments"],
+                        result,
                     )
                     self._scroll_to_bottom()
 

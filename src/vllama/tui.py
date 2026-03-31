@@ -43,6 +43,7 @@ ChatApp {
     height: 1fr;
     padding: 1 2;
     overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .message {
@@ -63,6 +64,7 @@ ChatApp {
 .message-body {
     padding-left: 2;
     color: $text;
+    width: 1fr;
 }
 
 .error .message-body { color: $error; }

@@ -116,11 +116,16 @@ def status(
     else:
         typer.echo("Model:     (none loaded)")
 
+    # Process
+    proc = data.get("process")
+    if proc:
+        rss = proc["memory_rss_bytes"]
+        cpu = proc["cpu_percent"]
+        typer.echo(f"Process:   {_fmt_bytes(rss)} RSS, {cpu}% CPU")
+
     # Requests
     req = data["requests"]
-    typer.echo(
-        f"Requests:  {req['total']} total, {req['active']} active, {req['errors']} errors"
-    )
+    typer.echo(f"Requests:  {req['total']} total, {req['active']} active, {req['errors']} errors")
 
     # Tokens
     tok = data["tokens"]
@@ -128,8 +133,29 @@ def status(
         typer.echo(
             f"Tokens:    {tok['prompt']} in / {tok['completion']} out ({tok['total']} total)"
         )
+        speed = tok.get("speed", {})
+        if speed.get("last_tok_per_sec") is not None:
+            parts = [f"{speed['last_tok_per_sec']} tok/s (last)"]
+            if speed.get("avg_tok_per_sec") is not None:
+                parts.append(f"{speed['avg_tok_per_sec']} tok/s (avg)")
+            typer.echo(f"Speed:     {', '.join(parts)}")
+        ttft = tok.get("ttft", {})
+        if ttft.get("last_seconds") is not None:
+            parts = [f"{ttft['last_seconds']:.3f}s (last)"]
+            if ttft.get("avg_seconds") is not None:
+                parts.append(f"{ttft['avg_seconds']:.3f}s (avg)")
+            typer.echo(f"TTFT:      {', '.join(parts)}")
     else:
         typer.echo("Tokens:    (none)")
+
+
+def _fmt_bytes(b: int) -> str:
+    """Format bytes into a human-readable size string."""
+    if b >= 1_073_741_824:
+        return f"{b / 1_073_741_824:.1f} GB"
+    if b >= 1_048_576:
+        return f"{b / 1_048_576:.1f} MB"
+    return f"{b / 1024:.0f} KB"
 
 
 def _fmt_duration(seconds: float) -> str:

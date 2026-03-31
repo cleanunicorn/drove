@@ -7,9 +7,9 @@ import json
 import logging
 import signal
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -106,6 +106,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     "listen": f"{config.listen_host}:{config.listen_port}",
                 },
                 "model": model_data,
+                "process": manager.get_process_stats(),
                 "requests": {
                     "total": stats.request_count,
                     "active": stats.active_requests,
@@ -115,6 +116,26 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     "prompt": stats.tokens_prompt,
                     "completion": stats.tokens_completion,
                     "total": stats.tokens_prompt + stats.tokens_completion,
+                    "speed": {
+                        "last_tok_per_sec": (
+                            round(stats.last_tokens_per_second, 1)
+                            if stats.last_tokens_per_second is not None
+                            else None
+                        ),
+                        "avg_tok_per_sec": (
+                            round(stats.avg_tokens_per_second, 1)
+                            if stats.avg_tokens_per_second is not None
+                            else None
+                        ),
+                    },
+                    "ttft": {
+                        "last_seconds": (
+                            round(stats.last_ttft, 3) if stats.last_ttft is not None else None
+                        ),
+                        "avg_seconds": (
+                            round(stats.avg_ttft, 3) if stats.avg_ttft is not None else None
+                        ),
+                    },
                 },
             }
         )
@@ -271,10 +292,17 @@ async def _counting_stream(
     """Wrap a response stream, collecting bytes to extract token usage afterwards."""
     try:
         chunks: list[bytes] = []
+        t_start = time.monotonic()
+        t_first_chunk: float | None = None
         async for chunk in raw_iter:
+            if t_first_chunk is None:
+                t_first_chunk = time.monotonic()
             chunks.append(chunk)
             yield chunk
-        _record_usage(b"".join(chunks), stats)
+        t_end = time.monotonic()
+        if t_first_chunk is not None:
+            stats.record_ttft(t_first_chunk - t_start)
+        _record_usage(b"".join(chunks), stats, t_end - t_start)
     except Exception:
         stats.request_error()
         raise
@@ -282,32 +310,63 @@ async def _counting_stream(
         stats.request_finished()
 
 
-def _record_usage(body: bytes, stats: ProxyStats) -> None:
+def _extract_tokens_from_obj(data: dict[str, object], out: dict[str, int | float | None]) -> None:
+    """Extract token counts and speed from a response object (usage or timings)."""
+    # OpenAI-style usage
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        out["prompt"] = usage.get("prompt_tokens", 0) or out["prompt"]
+        out["completion"] = usage.get("completion_tokens", 0) or out["completion"]
+
+    # llama.cpp timings (always present in last streaming chunk)
+    timings = data.get("timings")
+    if isinstance(timings, dict):
+        if not out["prompt"]:
+            out["prompt"] = timings.get("prompt_n", 0)
+        if not out["completion"]:
+            out["completion"] = timings.get("predicted_n", 0)
+        if timings.get("predicted_per_second"):
+            out["speed"] = timings["predicted_per_second"]
+
+
+def _record_usage(body: bytes, stats: ProxyStats, duration: float = 0.0) -> None:
     """Best-effort extraction of token usage from a response body."""
     text = body.decode("utf-8", errors="replace")
+    tokens_out: dict[str, int | float | None] = {"prompt": 0, "completion": 0, "speed": None}
 
     # Non-streaming: plain JSON with a top-level "usage" field
     try:
         data = json.loads(text)
-        usage = data.get("usage") if isinstance(data, dict) else None
-        if usage:
-            stats.add_tokens(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
-            return
-    except (json.JSONDecodeError, ValueError):
+        if isinstance(data, dict):
+            _extract_tokens_from_obj(data, tokens_out)
+    except json.JSONDecodeError, ValueError:
         pass
 
-    # Streaming SSE: scan backwards for the last data: line containing usage
-    for line in reversed(text.splitlines()):
-        line = line.strip()
-        if not line.startswith("data: ") or line == "data: [DONE]":
-            continue
-        try:
-            data = json.loads(line[6:])
-            usage = data.get("usage") if isinstance(data, dict) else None
-            if usage:
-                stats.add_tokens(
-                    usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
-                )
-                return
-        except (json.JSONDecodeError, ValueError):
-            continue
+    # Streaming SSE: scan backwards for the last data: line containing usage/timings
+    if not tokens_out["completion"]:
+        for line in reversed(text.splitlines()):
+            stripped = line.strip()
+            if not stripped.startswith("data: ") or stripped == "data: [DONE]":
+                continue
+            try:
+                data = json.loads(stripped[6:])
+                if not isinstance(data, dict):
+                    continue
+                _extract_tokens_from_obj(data, tokens_out)
+                if tokens_out["completion"]:
+                    break
+            except json.JSONDecodeError, ValueError:
+                continue
+
+    prompt_tokens = tokens_out["prompt"]
+    completion_tokens = tokens_out["completion"]
+    tok_per_sec = tokens_out["speed"]
+
+    if prompt_tokens or completion_tokens:
+        stats.add_tokens(prompt_tokens, completion_tokens)
+
+    # Record speed: prefer server-reported timing, fall back to our own measurement
+    if tok_per_sec and tok_per_sec > 0:
+        stats.record_completion_speed(completion_tokens, completion_tokens / tok_per_sec)
+    elif completion_tokens > 0 and duration > 0:
+        stats.record_completion_speed(completion_tokens, duration)

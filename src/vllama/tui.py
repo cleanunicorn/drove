@@ -78,6 +78,15 @@ ChatApp {
     text-style: italic;
 }
 
+.tool-call-section {
+    margin-bottom: 0;
+    padding-left: 2;
+}
+
+.tool-call-section Label {
+    color: $text-muted;
+}
+
 #autocomplete {
     display: none;
     height: auto;
@@ -227,6 +236,17 @@ class Message(Static):
             except NoMatches:
                 pass
 
+    async def append_tool_call(self, name: str, arguments: str, result: str) -> None:
+        """Add a collapsible tool call section after the body."""
+        result_preview = result[:200] + ("…" if len(result) > 200 else "")
+        collapsible = Collapsible(
+            Label(f"Arguments: {arguments}\n\nResult:\n{result}", markup=False),
+            title=f"⚙ {name} → {result_preview}",
+            collapsed=True,
+            classes="tool-call-section",
+        )
+        await self.mount(collapsible)
+
 
 # ── Session picker modal ────────────────────────────────────────────────────────
 
@@ -333,11 +353,28 @@ class ChatApp(App[None]):
             self.call_after_refresh(self._replay_history)
 
     async def _replay_history(self) -> None:
+        # Index tool results by tool_call_id for pairing
+        tool_results: dict[str, str] = {}
         for msg in self._history:
-            if msg["role"] == "system":
+            if msg["role"] == "tool":
+                tool_results[msg["tool_call_id"]] = msg.get("content", "")
+
+        for msg in self._history:
+            role = msg["role"]
+            if role in ("system", "tool"):
                 continue
-            bubble = Message(msg["role"], msg["content"])
+            content = msg.get("content") or ""
+            bubble = Message(role, content)
             await self.query_one("#messages").mount(bubble)
+
+            # Render tool calls as collapsible sections
+            for tc in msg.get("tool_calls", []):
+                func = tc.get("function", {})
+                name = func.get("name", "")
+                arguments = func.get("arguments", "")
+                result = tool_results.get(tc.get("id", ""), "")
+                await bubble.append_tool_call(name, arguments, result)
+
         self._scroll_to_bottom()
 
     # ── Slash commands ──────────────────────────────────────────────────────────
@@ -621,13 +658,6 @@ class ChatApp(App[None]):
 
                 # Execute each tool call and show results
                 for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
-                    # Show tool invocation in the UI
-                    tool_label = f"⚙ {tc['name']}({tc['arguments']})"
-                    if full_response:
-                        assistant_bubble.append_text(f"\n\n{tool_label}")
-                    else:
-                        assistant_bubble.append_text(tool_label)
-
                     result = execute_tool(tc["name"], tc["arguments"])
 
                     # Append tool result to history
@@ -639,9 +669,10 @@ class ChatApp(App[None]):
                         }
                     )
 
-                    # Show a summary in the UI
-                    result_preview = result[:200] + ("…" if len(result) > 200 else "")
-                    assistant_bubble.append_text(f"\n→ {result_preview}\n")
+                    # Show as collapsible section
+                    await assistant_bubble.append_tool_call(
+                        tc["name"], tc["arguments"], result,
+                    )
                     self._scroll_to_bottom()
 
                 self._session.messages = self._history

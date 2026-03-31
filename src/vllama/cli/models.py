@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -224,7 +224,7 @@ def _fmt_size(b: int) -> str:
     return f"{b / 1_048_576:.1f} MB"
 
 
-def _print_download_plan(plan: "DownloadPlan", models_dir: Path) -> None:  # type: ignore[name-defined]
+def _print_download_plan(plan: DownloadPlan, models_dir: Path) -> None:  # type: ignore[name-defined]
     from vllama.downloader import DownloadPlan  # noqa: F401
 
     dest = plan.destination(models_dir)
@@ -258,7 +258,7 @@ def download_model(
         ),
     ],
     name: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--name", "-n", help="Override local model name."),
     ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
@@ -331,10 +331,10 @@ def download_model(
 def model_config_cmd(
     ctx: typer.Context,
     name: Annotated[str, typer.Argument(help="Model name.", autocompletion=_complete_model_name)],
-    key: Annotated[Optional[str], typer.Argument(help="Config key to get/set.")] = None,
-    value: Annotated[Optional[str], typer.Argument(help="Value to set.")] = None,
+    key: Annotated[str | None, typer.Argument(help="Config key to get/set.")] = None,
+    value: Annotated[str | None, typer.Argument(help="Value to set.")] = None,
     unset: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--unset", help="Remove a config key."),
     ] = None,
 ) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 import uvicorn
@@ -26,7 +26,7 @@ app.add_typer(completions_app, name="completions")
 def _root(
     ctx: typer.Context,
     config_file: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--config", "-c", help="Path to config TOML file."),
     ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
@@ -43,8 +43,8 @@ def _root(
 @app.command()
 def serve(
     ctx: typer.Context,
-    host: Annotated[Optional[str], typer.Option(help="Listen host.")] = None,
-    port: Annotated[Optional[int], typer.Option(help="Listen port.")] = None,
+    host: Annotated[str | None, typer.Option(help="Listen host.")] = None,
+    port: Annotated[int | None, typer.Option(help="Listen port.")] = None,
 ) -> None:
     """Start the vllama proxy server."""
     from vllama.proxy import create_app
@@ -77,8 +77,8 @@ def serve(
 @app.command()
 def status(
     ctx: typer.Context,
-    host: Annotated[Optional[str], typer.Option(help="vllama host (overrides config).")] = None,
-    port: Annotated[Optional[int], typer.Option(help="vllama port (overrides config).")] = None,
+    host: Annotated[str | None, typer.Option(help="vllama host (overrides config).")] = None,
+    port: Annotated[int | None, typer.Option(help="vllama port (overrides config).")] = None,
 ) -> None:
     """Show the status of the running vllama server."""
     import httpx
@@ -173,8 +173,8 @@ def _fmt_duration(seconds: float) -> str:
 @app.command()
 def config(
     ctx: typer.Context,
-    key: Annotated[Optional[str], typer.Argument(help="Config key to get or set.")] = None,
-    value: Annotated[Optional[str], typer.Argument(help="Value to set.")] = None,
+    key: Annotated[str | None, typer.Argument(help="Config key to get or set.")] = None,
+    value: Annotated[str | None, typer.Argument(help="Value to set.")] = None,
 ) -> None:
     """Show or edit configuration values.
 
@@ -233,7 +233,7 @@ def config(
 _MISSING = object()
 
 
-def _config_get(conf: "Config", key: str) -> object:  # type: ignore[name-defined]
+def _config_get(conf: Config, key: str) -> object:  # type: ignore[name-defined]
     """Return the config value for key, or _MISSING if the key doesn't exist."""
     parts = key.split(".", 1)
     data = conf.model_dump()
@@ -245,7 +245,7 @@ def _config_get(conf: "Config", key: str) -> object:  # type: ignore[name-define
     return section.get(parts[1], _MISSING)
 
 
-def _config_set(conf: "Config", key: str, raw_value: str) -> "Config":  # type: ignore[name-defined]
+def _config_set(conf: Config, key: str, raw_value: str) -> Config:  # type: ignore[name-defined]
     from vllama.config import Config, LlamaServerDefaults
 
     parts = key.split(".", 1)
@@ -298,12 +298,12 @@ def _coerce(annotation: object, raw: str) -> object:
 def chat(
     ctx: typer.Context,
     model: Annotated[
-        Optional[str],
+        str | None,
         typer.Argument(help="Model name to chat with.", autocompletion=_complete_model_name),
     ] = None,
-    host: Annotated[Optional[str], typer.Option(help="vllama host (overrides config).")] = None,
-    port: Annotated[Optional[int], typer.Option(help="vllama port (overrides config).")] = None,
-    system: Annotated[Optional[str], typer.Option("--system", "-s", help="System prompt.")] = None,
+    host: Annotated[str | None, typer.Option(help="vllama host (overrides config).")] = None,
+    port: Annotated[int | None, typer.Option(help="vllama port (overrides config).")] = None,
+    system: Annotated[str | None, typer.Option("--system", "-s", help="System prompt.")] = None,
     resume: Annotated[
         bool, typer.Option("--resume", "-r", help="Resume the latest saved session.")
     ] = False,

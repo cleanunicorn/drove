@@ -30,6 +30,7 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from vllama.sessions import Session, list_sessions, new_session, save_session
+from vllama.tools import TOOL_DEFINITIONS, execute_tool
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -141,6 +142,29 @@ SessionPicker {
     height: 1fr;
 }
 """
+
+
+# ── Chat input ─────────────────────────────────────────────────────────────────
+
+
+class ChatInput(TextArea):
+    """TextArea that sends Enter as submit and Shift+Enter as newline."""
+
+    BINDINGS = [
+        Binding("enter", "submit", "Send", priority=True),
+    ]
+
+    def action_submit(self) -> None:
+        self.post_message(self.Submitted(self))
+
+    class Submitted(TextArea.Changed):
+        pass
+
+    def _on_key(self, event) -> None:
+        if event.key == "shift+enter":
+            self.insert("\n")
+            event.prevent_default()
+            event.stop()
 
 
 # ── Message widget ──────────────────────────────────────────────────────────────
@@ -255,7 +279,6 @@ class ChatApp(App[None]):
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("escape", "quit", "Quit"),
-        Binding("enter", "submit", "Send", priority=True),
     ]
 
     is_generating: reactive[bool] = reactive(False)
@@ -296,20 +319,19 @@ class ChatApp(App[None]):
             yield LoadingIndicator(id="spinner")
         yield OptionList(id="autocomplete")
         with Vertical(id="input-bar"):
-            yield TextArea(id="user-input")
+            yield ChatInput(id="user-input")
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "vllama chat"
         self.sub_title = self._model
         self._update_status()
-        self.query_one("#user-input", TextArea).focus()
+        self.query_one("#user-input", ChatInput).focus()
 
         # Replay existing messages when resuming
         if self._session.message_count > 0:
             self.call_after_refresh(self._replay_history)
 
-    @work
     async def _replay_history(self) -> None:
         for msg in self._history:
             if msg["role"] == "system":
@@ -401,7 +423,7 @@ class ChatApp(App[None]):
     # ── Input handling ──────────────────────────────────────────────────────────
 
     def action_submit(self) -> None:
-        textarea = self.query_one("#user-input", TextArea)
+        textarea = self.query_one("#user-input", ChatInput)
         text = textarea.text.strip()
         if not text:
             return
@@ -457,7 +479,7 @@ class ChatApp(App[None]):
     def _fill_command(self, cmd: str | None) -> None:
         if cmd is None:
             return
-        textarea = self.query_one("#user-input", TextArea)
+        textarea = self.query_one("#user-input", ChatInput)
         textarea.clear()
         textarea.insert(cmd)
         self._hide_autocomplete()
@@ -465,20 +487,14 @@ class ChatApp(App[None]):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id == "autocomplete":
             self._fill_command(event.option.id)
-            self.query_one("#user-input", TextArea).focus()
+            self.query_one("#user-input", ChatInput).focus()
+
+    def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        self.action_submit()
 
     def on_key(self, event) -> None:
         ac = self.query_one("#autocomplete", OptionList)
         ac_visible = ac.has_class("visible")
-
-        # Shift+Enter inserts a newline in the TextArea (let it through)
-        if event.key == "shift+enter":
-            textarea = self.query_one("#user-input", TextArea)
-            if textarea.has_focus:
-                textarea.insert("\n")
-                event.prevent_default()
-                event.stop()
-            return
 
         if not ac_visible:
             return
@@ -525,37 +541,114 @@ class ChatApp(App[None]):
         self._session.messages = self._history
         self._scroll_to_bottom()
 
-        assistant_bubble = Message("assistant")
-        await self.query_one("#messages").mount(assistant_bubble)
-        self._scroll_to_bottom()
-
-        full_response = ""
-        full_thinking = ""
-        token_count = 0
-        was_thinking = False
         t_start = time.monotonic()
         t_first: float | None = None
+        token_count = 0
+
         try:
-            async for kind, chunk in self._stream_chat(self._history):
-                if t_first is None:
-                    t_first = time.monotonic()
-                token_count += 1
-                if kind == "thinking":
-                    was_thinking = True
-                    full_thinking += chunk
-                    await assistant_bubble.append_thinking(chunk)
-                else:
-                    if was_thinking:
-                        assistant_bubble.finish_thinking()
-                        was_thinking = False
-                    assistant_bubble.append_text(chunk)
-                    full_response += chunk
+            while True:
+                assistant_bubble = Message("assistant")
+                await self.query_one("#messages").mount(assistant_bubble)
                 self._scroll_to_bottom()
+
+                full_response = ""
+                full_thinking = ""
+                was_thinking = False
+                tool_calls: dict[int, dict] = {}
+
+                async for event in self._stream_chat(self._history):
+                    kind = event["kind"]
+                    if t_first is None:
+                        t_first = time.monotonic()
+
+                    if kind == "thinking":
+                        token_count += 1
+                        was_thinking = True
+                        full_thinking += event["chunk"]
+                        await assistant_bubble.append_thinking(event["chunk"])
+                    elif kind == "content":
+                        token_count += 1
+                        if was_thinking:
+                            assistant_bubble.finish_thinking()
+                            was_thinking = False
+                        assistant_bubble.append_text(event["chunk"])
+                        full_response += event["chunk"]
+                    elif kind == "tool_call":
+                        idx = event["index"]
+                        if idx not in tool_calls:
+                            tool_calls[idx] = {
+                                "id": event.get("id", ""),
+                                "name": event.get("name", ""),
+                                "arguments": "",
+                            }
+                        if event.get("id"):
+                            tool_calls[idx]["id"] = event["id"]
+                        if event.get("name"):
+                            tool_calls[idx]["name"] = event["name"]
+                        tool_calls[idx]["arguments"] += event.get("arguments", "")
+                    self._scroll_to_bottom()
+
+                if was_thinking:
+                    assistant_bubble.finish_thinking()
+
+                if not tool_calls:
+                    # No tool calls — save the final assistant message and break
+                    saved_content = full_response or full_thinking
+                    if saved_content:
+                        self._history.append({"role": "assistant", "content": saved_content})
+                        self._session.messages = self._history
+                        save_session(self._sessions_dir, self._session)
+                    break
+
+                # Build the assistant message with tool_calls for history
+                assistant_msg: dict = {"role": "assistant"}
+                if full_response:
+                    assistant_msg["content"] = full_response
+                else:
+                    assistant_msg["content"] = None
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
+                        },
+                    }
+                    for tc in sorted(tool_calls.values(), key=lambda t: t["id"])
+                ]
+                self._history.append(assistant_msg)
+
+                # Execute each tool call and show results
+                for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
+                    # Show tool invocation in the UI
+                    tool_label = f"⚙ {tc['name']}({tc['arguments']})"
+                    if full_response:
+                        assistant_bubble.append_text(f"\n\n{tool_label}")
+                    else:
+                        assistant_bubble.append_text(tool_label)
+
+                    result = execute_tool(tc["name"], tc["arguments"])
+
+                    # Append tool result to history
+                    self._history.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result,
+                        }
+                    )
+
+                    # Show a summary in the UI
+                    result_preview = result[:200] + ("…" if len(result) > 200 else "")
+                    assistant_bubble.append_text(f"\n→ {result_preview}\n")
+                    self._scroll_to_bottom()
+
+                self._session.messages = self._history
+                # Loop back to get the model's next response
+
         except Exception as e:
             await self.query_one("#messages").mount(Message("error", str(e)))
-
-        if was_thinking:
-            assistant_bubble.finish_thinking()
 
         t_end = time.monotonic()
         if t_first is not None:
@@ -566,18 +659,20 @@ class ChatApp(App[None]):
             self._last_speed = None
             self._last_ttft = None
 
-        saved_content = full_response or full_thinking
-        if saved_content:
-            self._history.append({"role": "assistant", "content": saved_content})
-            self._session.messages = self._history
-            save_session(self._sessions_dir, self._session)
-
         self._update_status()
         self.is_generating = False
 
-    async def _stream_chat(self, messages: list[dict[str, str]]) -> AsyncIterator[tuple[str, str]]:
-        """Yield (kind, text) tuples where kind is 'thinking' or 'content'."""
-        payload = {"model": self._model, "messages": messages, "stream": True}
+    async def _stream_chat(
+        self,
+        messages: list[dict],
+    ) -> AsyncIterator[dict]:
+        """Yield event dicts: {kind: "thinking"/"content"/"tool_call", ...}."""
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "stream": True,
+            "tools": TOOL_DEFINITIONS,
+        }
         async with httpx.AsyncClient(timeout=300.0) as client:
             async with client.stream(
                 "POST", f"{self._base_url}/v1/chat/completions", json=payload
@@ -596,12 +691,23 @@ class ChatApp(App[None]):
                     try:
                         obj = json.loads(data)
                         delta = obj["choices"][0]["delta"]
+
                         reasoning = delta.get("reasoning_content", "")
                         if reasoning:
-                            yield ("thinking", reasoning)
+                            yield {"kind": "thinking", "chunk": reasoning}
+
                         content = delta.get("content", "")
                         if content:
-                            yield ("content", content)
+                            yield {"kind": "content", "chunk": content}
+
+                        for tc in delta.get("tool_calls", []):
+                            yield {
+                                "kind": "tool_call",
+                                "index": tc.get("index", 0),
+                                "id": tc.get("id", ""),
+                                "name": tc.get("function", {}).get("name", ""),
+                                "arguments": tc.get("function", {}).get("arguments", ""),
+                            }
                     except KeyError, json.JSONDecodeError:
                         continue
 

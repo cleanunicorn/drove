@@ -192,7 +192,7 @@ class ServerManager:
         except TimeoutError, Exception:
             return ""
 
-    def _build_args(self, model_path: Path, model_cfg: "ModelConfig") -> list[str]:  # type: ignore[name-defined]
+    def _build_args(self, model_path: Path, model_cfg: ModelConfig) -> list[str]:  # type: ignore[name-defined]
         from vllama.model_config import ModelConfig  # local import to avoid circular
 
         # Start with global defaults

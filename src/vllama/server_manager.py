@@ -9,9 +9,13 @@ import signal
 import socket
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 import psutil
+
+if TYPE_CHECKING:
+    from vllama.model_config import ModelConfig
 
 from vllama.config import Config
 from vllama.model_config import load_model_config
@@ -192,7 +196,7 @@ class ServerManager:
         except TimeoutError, Exception:
             return ""
 
-    def _build_args(self, model_path: Path, model_cfg: ModelConfig) -> list[str]:  # type: ignore[name-defined]
+    def _build_args(self, model_path: Path, model_cfg: ModelConfig) -> list[str]:
         from vllama.model_config import ModelConfig  # local import to avoid circular
 
         # Start with global defaults

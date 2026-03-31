@@ -11,7 +11,7 @@ import uvicorn
 
 from vllama.cli.completions import completions_app
 from vllama.cli.models import _complete_model_name, _iter_models, models_app
-from vllama.config import DEFAULT_CONFIG_PATH, load_config
+from vllama.config import DEFAULT_CONFIG_PATH, Config, load_config
 
 app = typer.Typer(
     name="vllama",
@@ -191,7 +191,8 @@ def config(
 
     if key is None:
         typer.echo(
-            f"Config file: {cfg_path} ({'exists' if cfg_path.exists() else 'not found, using defaults'})"
+            f"Config file: {cfg_path} "
+            f"({'exists' if cfg_path.exists() else 'not found, using defaults'})"
         )
         typer.echo("")
         flat = conf.model_dump()
@@ -233,7 +234,7 @@ def config(
 _MISSING = object()
 
 
-def _config_get(conf: Config, key: str) -> object:  # type: ignore[name-defined]
+def _config_get(conf: Config, key: str) -> object:
     """Return the config value for key, or _MISSING if the key doesn't exist."""
     parts = key.split(".", 1)
     data = conf.model_dump()
@@ -245,7 +246,7 @@ def _config_get(conf: Config, key: str) -> object:  # type: ignore[name-defined]
     return section.get(parts[1], _MISSING)
 
 
-def _config_set(conf: Config, key: str, raw_value: str) -> Config:  # type: ignore[name-defined]
+def _config_set(conf: Config, key: str, raw_value: str) -> Config:
     from vllama.config import Config, LlamaServerDefaults
 
     parts = key.split(".", 1)
@@ -285,11 +286,11 @@ def _coerce(annotation: object, raw: str) -> object:
         if non_none:
             annotation = non_none[0]
 
-    if annotation is bool or annotation == bool:
+    if annotation is bool:
         return raw.lower() in ("1", "true", "yes")
-    if annotation is int or annotation == int:
+    if annotation is int:
         return int(raw)
-    if annotation is float or annotation == float:
+    if annotation is float:
         return float(raw)
     return raw
 

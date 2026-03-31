@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
+
+if TYPE_CHECKING:
+    from vllama.downloader import DownloadPlan
 
 from vllama.model_config import (
     DownloadInfo,
@@ -224,7 +227,7 @@ def _fmt_size(b: int) -> str:
     return f"{b / 1_048_576:.1f} MB"
 
 
-def _print_download_plan(plan: DownloadPlan, models_dir: Path) -> None:  # type: ignore[name-defined]
+def _print_download_plan(plan: DownloadPlan, models_dir: Path) -> None:
     from vllama.downloader import DownloadPlan  # noqa: F401
 
     dest = plan.destination(models_dir)

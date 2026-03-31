@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import time
 from collections import deque
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator
 
 import httpx
-from textual import on, work
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -16,17 +17,19 @@ from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
+    Collapsible,
     DataTable,
     Footer,
     Header,
-    Input,
     Label,
     LoadingIndicator,
+    OptionList,
     Static,
+    TextArea,
 )
+from textual.widgets.option_list import Option
 
 from vllama.sessions import Session, list_sessions, new_session, save_session
-
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -64,13 +67,41 @@ ChatApp {
 .error .message-body { color: $error; }
 .system-note .message-body { color: $text-muted; text-style: italic; }
 
+.thinking-section {
+    margin-bottom: 0;
+    padding-left: 2;
+}
+
+.thinking-section Label {
+    color: $text-muted;
+    text-style: italic;
+}
+
+#autocomplete {
+    display: none;
+    height: auto;
+    max-height: 10;
+    margin: 0 2;
+    background: $panel;
+    border: solid $accent;
+}
+
+#autocomplete.visible {
+    display: block;
+}
+
 #input-bar {
     height: auto;
     padding: 1 2;
     border-top: solid $panel;
 }
 
-#user-input { width: 1fr; }
+#user-input {
+    width: 1fr;
+    height: auto;
+    min-height: 3;
+    max-height: 12;
+}
 
 #status-bar {
     height: 1;
@@ -120,6 +151,8 @@ class Message(Static):
         super().__init__()
         self._role = role
         self._content = content
+        self._thinking = ""
+        self._has_thinking_widget = False
         self.add_class("message", role)
 
     def compose(self) -> ComposeResult:
@@ -138,6 +171,37 @@ class Message(Static):
             self.query_one(f"#body-{id(self)}", Label).update(self._content)
         except NoMatches:
             pass
+
+    async def append_thinking(self, chunk: str) -> None:
+        self._thinking += chunk
+        if not self._has_thinking_widget:
+            self._has_thinking_widget = True
+            collapsible = Collapsible(
+                Label(self._thinking, id=f"thinking-{id(self)}"),
+                title="Thinking…",
+                collapsed=True,
+                classes="thinking-section",
+            )
+            # Insert before the body label
+            try:
+                body = self.query_one(f"#body-{id(self)}", Label)
+                await self.mount(collapsible, before=body)
+            except NoMatches:
+                await self.mount(collapsible)
+        else:
+            try:
+                self.query_one(f"#thinking-{id(self)}", Label).update(self._thinking)
+            except NoMatches:
+                pass
+
+    def finish_thinking(self) -> None:
+        """Update the collapsible title to show final state."""
+        if self._has_thinking_widget:
+            try:
+                collapsible = self.query_one(".thinking-section", Collapsible)
+                collapsible.title = f"Thinking ({len(self._thinking)} chars)"
+            except NoMatches:
+                pass
 
 
 # ── Session picker modal ────────────────────────────────────────────────────────
@@ -191,6 +255,7 @@ class ChatApp(App[None]):
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("escape", "quit", "Quit"),
+        Binding("enter", "submit", "Send", priority=True),
     ]
 
     is_generating: reactive[bool] = reactive(False)
@@ -212,6 +277,8 @@ class ChatApp(App[None]):
         self._config_path = config_path
         self._system_prompt = system_prompt
         self._queue: deque[str] = deque()
+        self._last_speed: float | None = None  # tok/s from last response
+        self._last_ttft: float | None = None  # time-to-first-token (seconds)
         self.theme = theme
 
         if resume_session:
@@ -227,15 +294,16 @@ class ChatApp(App[None]):
         with Horizontal(id="status-bar"):
             yield Label("", id="status-label")
             yield LoadingIndicator(id="spinner")
+        yield OptionList(id="autocomplete")
         with Vertical(id="input-bar"):
-            yield Input(placeholder="Message or /help for commands…", id="user-input")
+            yield TextArea(id="user-input")
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "vllama chat"
         self.sub_title = self._model
         self._update_status()
-        self.query_one("#user-input", Input).focus()
+        self.query_one("#user-input", TextArea).focus()
 
         # Replay existing messages when resuming
         if self._session.message_count > 0:
@@ -332,12 +400,14 @@ class ChatApp(App[None]):
 
     # ── Input handling ──────────────────────────────────────────────────────────
 
-    @on(Input.Submitted, "#user-input")
-    def handle_submit(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+    def action_submit(self) -> None:
+        textarea = self.query_one("#user-input", TextArea)
+        text = textarea.text.strip()
         if not text:
             return
-        event.input.clear()
+
+        self._hide_autocomplete()
+        textarea.clear()
 
         if text.startswith("/"):
             self.run_worker(self._dispatch_command(text), exclusive=False)
@@ -348,6 +418,89 @@ class ChatApp(App[None]):
             self._update_status()
         else:
             self._send_message(text)
+
+    # ── Autocomplete ───────────────────────────────────────────────────────────
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        text = event.text_area.text
+        # Only autocomplete when the entire input is a partial slash command
+        if text.startswith("/") and "\n" not in text:
+            prefix = text.lower()
+            matches = [
+                (cmd, desc) for cmd, desc in self._COMMANDS.items() if cmd.startswith(prefix)
+            ]
+            self._show_autocomplete(matches)
+        else:
+            self._hide_autocomplete()
+
+    def _show_autocomplete(self, matches: list[tuple[str, str]]) -> None:
+        ac = self.query_one("#autocomplete", OptionList)
+        ac.clear_options()
+        if not matches:
+            self._hide_autocomplete()
+            return
+        for cmd, desc in matches:
+            ac.add_option(Option(f"{cmd:<12}  {desc}", id=cmd))
+        ac.highlighted = 0
+        ac.add_class("visible")
+
+    def _hide_autocomplete(self) -> None:
+        ac = self.query_one("#autocomplete", OptionList)
+        ac.remove_class("visible")
+
+    def _accept_autocomplete(self) -> None:
+        ac = self.query_one("#autocomplete", OptionList)
+        if ac.highlighted is not None:
+            option = ac.get_option_at_index(ac.highlighted)
+            self._fill_command(option.id)
+
+    def _fill_command(self, cmd: str | None) -> None:
+        if cmd is None:
+            return
+        textarea = self.query_one("#user-input", TextArea)
+        textarea.clear()
+        textarea.insert(cmd)
+        self._hide_autocomplete()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_list.id == "autocomplete":
+            self._fill_command(event.option.id)
+            self.query_one("#user-input", TextArea).focus()
+
+    def on_key(self, event) -> None:
+        ac = self.query_one("#autocomplete", OptionList)
+        ac_visible = ac.has_class("visible")
+
+        # Shift+Enter inserts a newline in the TextArea (let it through)
+        if event.key == "shift+enter":
+            textarea = self.query_one("#user-input", TextArea)
+            if textarea.has_focus:
+                textarea.insert("\n")
+                event.prevent_default()
+                event.stop()
+            return
+
+        if not ac_visible:
+            return
+
+        if event.key == "up":
+            if ac.highlighted is not None and ac.highlighted > 0:
+                ac.highlighted -= 1
+            event.prevent_default()
+            event.stop()
+        elif event.key == "down":
+            if ac.highlighted is not None and ac.highlighted < ac.option_count - 1:
+                ac.highlighted += 1
+            event.prevent_default()
+            event.stop()
+        elif event.key == "tab":
+            self._accept_autocomplete()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "escape":
+            self._hide_autocomplete()
+            event.prevent_default()
+            event.stop()
 
     # ── Generation ──────────────────────────────────────────────────────────────
 
@@ -377,22 +530,53 @@ class ChatApp(App[None]):
         self._scroll_to_bottom()
 
         full_response = ""
+        full_thinking = ""
+        token_count = 0
+        was_thinking = False
+        t_start = time.monotonic()
+        t_first: float | None = None
         try:
-            async for chunk in self._stream_chat(self._history):
-                assistant_bubble.append_text(chunk)
-                full_response += chunk
+            async for kind, chunk in self._stream_chat(self._history):
+                if t_first is None:
+                    t_first = time.monotonic()
+                token_count += 1
+                if kind == "thinking":
+                    was_thinking = True
+                    full_thinking += chunk
+                    await assistant_bubble.append_thinking(chunk)
+                else:
+                    if was_thinking:
+                        assistant_bubble.finish_thinking()
+                        was_thinking = False
+                    assistant_bubble.append_text(chunk)
+                    full_response += chunk
                 self._scroll_to_bottom()
         except Exception as e:
             await self.query_one("#messages").mount(Message("error", str(e)))
 
-        if full_response:
-            self._history.append({"role": "assistant", "content": full_response})
+        if was_thinking:
+            assistant_bubble.finish_thinking()
+
+        t_end = time.monotonic()
+        if t_first is not None:
+            self._last_ttft = t_first - t_start
+            gen_duration = t_end - t_first
+            self._last_speed = token_count / gen_duration if gen_duration > 0 else None
+        else:
+            self._last_speed = None
+            self._last_ttft = None
+
+        saved_content = full_response or full_thinking
+        if saved_content:
+            self._history.append({"role": "assistant", "content": saved_content})
             self._session.messages = self._history
             save_session(self._sessions_dir, self._session)
 
+        self._update_status()
         self.is_generating = False
 
-    async def _stream_chat(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def _stream_chat(self, messages: list[dict[str, str]]) -> AsyncIterator[tuple[str, str]]:
+        """Yield (kind, text) tuples where kind is 'thinking' or 'content'."""
         payload = {"model": self._model, "messages": messages, "stream": True}
         async with httpx.AsyncClient(timeout=300.0) as client:
             async with client.stream(
@@ -411,9 +595,13 @@ class ChatApp(App[None]):
                         break
                     try:
                         obj = json.loads(data)
-                        delta = obj["choices"][0]["delta"].get("content", "")
-                        if delta:
-                            yield delta
+                        delta = obj["choices"][0]["delta"]
+                        reasoning = delta.get("reasoning_content", "")
+                        if reasoning:
+                            yield ("thinking", reasoning)
+                        content = delta.get("content", "")
+                        if content:
+                            yield ("content", content)
                     except KeyError, json.JSONDecodeError:
                         continue
 
@@ -421,6 +609,10 @@ class ChatApp(App[None]):
 
     def _update_status(self) -> None:
         parts = [f"  model: {self._model}", self._base_url, f"session: {self._session.id}"]
+        if self._last_speed is not None:
+            parts.append(f"{self._last_speed:.1f} tok/s")
+        if self._last_ttft is not None:
+            parts.append(f"TTFT {self._last_ttft:.2f}s")
         if self._queue:
             parts.append(f"{len(self._queue)} queued")
         self.query_one("#status-label", Label).update("  •  ".join(parts))

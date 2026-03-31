@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import httpx
+import psutil
 
 from vllama.config import Config
 from vllama.model_config import load_model_config
@@ -58,6 +59,23 @@ class ServerManager:
     def base_url(self) -> str:
         port = self._server_port or 0
         return f"http://{self._config.llama_server_host}:{port}"
+
+    def get_process_stats(self) -> dict[str, object] | None:
+        """Return memory/CPU stats for the llama-server process, or None."""
+        if self._process is None or self._process.returncode is not None:
+            return None
+        try:
+            proc = psutil.Process(self._process.pid)
+            mem = proc.memory_info()
+            cpu_times = proc.cpu_times()
+            elapsed = time.time() - proc.create_time()
+            cpu_pct = (cpu_times.user + cpu_times.system) / elapsed * 100 if elapsed > 0 else 0
+            return {
+                "memory_rss_bytes": mem.rss,
+                "cpu_percent": round(cpu_pct, 1),
+            }
+        except psutil.NoSuchProcess, psutil.AccessDenied:
+            return None
 
     def record_request(self) -> None:
         """Call on each proxied request to reset the idle timer."""
@@ -171,10 +189,10 @@ class ServerManager:
         try:
             data = await asyncio.wait_for(proc.stderr.read(4096), timeout=1.0)
             return data.decode(errors="replace").strip()
-        except (TimeoutError, Exception):
+        except TimeoutError, Exception:
             return ""
 
-    def _build_args(self, model_path: Path, model_cfg: "ModelConfig") -> list[str]:  # type: ignore[name-defined]
+    def _build_args(self, model_path: Path, model_cfg: ModelConfig) -> list[str]:  # type: ignore[name-defined]
         from vllama.model_config import ModelConfig  # local import to avoid circular
 
         # Start with global defaults

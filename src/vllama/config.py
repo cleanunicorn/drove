@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +13,6 @@ from pydantic_settings import (
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
-
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "vllama" / "config.toml"
 DEFAULT_MODELS_DIR = Path.home() / ".local" / "share" / "vllama" / "models"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 from typing import Annotated
 
@@ -52,6 +51,7 @@ def _generate_script(shell: str) -> str:
     """Generate the completion script for the given shell via Click's API."""
     from click.shell_completion import get_completion_class
     from typer.main import get_command
+
     from vllama.cli.main import app as vllama_app  # avoid circular at import time
 
     prog_name = "vllama"

@@ -110,7 +110,7 @@ class DownloadPlan:
     def execute(
         self,
         models_dir: Path,
-        progress_cb: "ProgressCallback | None" = None,
+        progress_cb: ProgressCallback | None = None,
     ) -> Path:
         """Download all files and return the path to the model entry point."""
         dest = self.destination(models_dir)

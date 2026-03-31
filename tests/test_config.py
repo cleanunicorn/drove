@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import tomli_w
@@ -27,7 +26,6 @@ def test_toml_overrides_defaults(tmp_path: Path) -> None:
 
 
 def test_env_var_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import pytest  # noqa: PLC0415
 
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_bytes(tomli_w.dumps({"listen_port": 9090}).encode())

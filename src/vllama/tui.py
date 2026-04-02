@@ -314,6 +314,7 @@ class ChatApp(App[None]):
         system_prompt: str | None = None,
         resume_session: Session | None = None,
         theme: str = "textual-dark",
+        api_key: str | None = None,
     ) -> None:
         super().__init__()
         self._base_url = base_url.rstrip("/")
@@ -321,6 +322,7 @@ class ChatApp(App[None]):
         self._sessions_dir = sessions_dir
         self._config_path = config_path
         self._system_prompt = system_prompt
+        self._api_key = api_key
         self._queue: deque[str] = deque()
         self._last_speed: float | None = None  # tok/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
@@ -708,9 +710,15 @@ class ChatApp(App[None]):
             "stream": True,
             "tools": TOOL_DEFINITIONS,
         }
+        headers: dict[str, str] = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         async with httpx.AsyncClient(timeout=300.0) as client:
             async with client.stream(
-                "POST", f"{self._base_url}/v1/chat/completions", json=payload
+                "POST",
+                f"{self._base_url}/v1/chat/completions",
+                json=payload,
+                headers=headers,
             ) as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
@@ -743,7 +751,7 @@ class ChatApp(App[None]):
                                 "name": tc.get("function", {}).get("name", ""),
                                 "arguments": tc.get("function", {}).get("arguments", ""),
                             }
-                    except KeyError, json.JSONDecodeError:
+                    except (KeyError, json.JSONDecodeError):
                         continue
 
     # ── Helpers ─────────────────────────────────────────────────────────────────

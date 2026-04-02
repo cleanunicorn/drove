@@ -10,7 +10,7 @@ import typer
 import uvicorn
 
 from vllama.cli.completions import completions_app
-from vllama.cli.models import _complete_model_name, _iter_models, models_app
+from vllama.cli.models import _complete_model_name, models_app
 from vllama.config import DEFAULT_CONFIG_PATH, Config, load_config
 
 app = typer.Typer(
@@ -103,6 +103,7 @@ def status(
     server = data["server"]
     typer.echo(f"Server:    running ({_fmt_duration(server['uptime_seconds'])} uptime)")
     typer.echo(f"Listen:    {server['listen']}")
+    typer.echo(f"Endpoint:  {base}/v1")
 
     # Model
     model = data["model"]
@@ -304,12 +305,23 @@ def chat(
     ] = None,
     host: Annotated[str | None, typer.Option(help="vllama host (overrides config).")] = None,
     port: Annotated[int | None, typer.Option(help="vllama port (overrides config).")] = None,
+    endpoint: Annotated[
+        str | None,
+        typer.Option("--endpoint", "-e", help="OpenAI-compatible base URL (e.g. https://api.openai.com/v1)."),
+    ] = None,
+    api_key: Annotated[
+        str | None,
+        typer.Option("--api-key", "-k", help="API key for the endpoint."),
+    ] = None,
     system: Annotated[str | None, typer.Option("--system", "-s", help="System prompt.")] = None,
     resume: Annotated[
         bool, typer.Option("--resume", "-r", help="Resume the latest saved session.")
     ] = False,
 ) -> None:
-    """Open an interactive TUI chat session with the running vllama server.
+    """Open an interactive TUI chat session.
+
+    By default connects to the local vllama server. Use --endpoint to connect
+    to any OpenAI-compatible API (OpenAI, Anthropic, Groq, etc.).
 
     Use /help inside the chat to see available commands (/sessions, /theme, …).
     """
@@ -317,13 +329,19 @@ def chat(
     from vllama.tui import ChatApp
 
     config = ctx.obj["config"]
-    base_url = f"http://{host or config.listen_host}:{port or config.listen_port}"
-    base_url = base_url.replace("//0.0.0.0:", "//127.0.0.1:")
+
+    if endpoint:
+        base_url = endpoint.rstrip("/")
+        # Strip /v1 suffix if present — the TUI adds /v1/chat/completions
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+    else:
+        base_url = f"http://{host or config.listen_host}:{port or config.listen_port}"
+        base_url = base_url.replace("//0.0.0.0:", "//127.0.0.1:")
 
     if model is None:
-        model = _select_model(config.models_dir)
+        model = _select_model_from_endpoint(base_url, api_key)
         if model is None:
-            typer.echo("No models found. Use 'vllama models download' to download a model.")
             raise typer.Exit(1)
 
     resume_session = None
@@ -341,34 +359,63 @@ def chat(
         system_prompt=system,
         resume_session=resume_session,
         theme=config.tui_theme,
+        api_key=api_key,
     )
     tui.run()
 
 
-def _select_model(models_dir: Path) -> str | None:
-    """Prompt user to select a model from available models."""
-    models = _iter_models(models_dir)
+def _select_model_from_endpoint(base_url: str, api_key: str | None) -> str | None:
+    """Fetch models from an OpenAI-compatible /v1/models endpoint and prompt selection."""
+    import httpx
 
-    if not models:
+    url = f"{base_url}/v1/models"
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        resp = httpx.get(url, headers=headers, timeout=5.0)
+        resp.raise_for_status()
+    except httpx.ConnectError:
+        typer.echo(f"Could not connect to {base_url}", err=True)
+        typer.echo("Is the server running?", err=True)
+        return None
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"Failed to list models: {e.response.status_code}", err=True)
+        return None
+    except httpx.HTTPError as e:
+        typer.echo(f"Failed to list models: {e}", err=True)
         return None
 
-    if len(models) == 1:
-        return models[0][0]
+    try:
+        data = resp.json()
+        model_list = data.get("data", [])
+    except Exception:
+        typer.echo("Invalid response from /v1/models.", err=True)
+        return None
+
+    names = [m["id"] for m in model_list if "id" in m]
+    if not names:
+        typer.echo("No models available at this endpoint.", err=True)
+        return None
+
+    if len(names) == 1:
+        typer.echo(f"Using model: {names[0]}")
+        return names[0]
 
     typer.echo("Available models:")
     typer.echo("")
-    for i, (name, path, size) in enumerate(models, 1):
-        size_mb = size / 1_048_576
-        typer.echo(f"  {i}. {name:<40} ({size_mb:.1f} MB)")
+    for i, name in enumerate(names, 1):
+        typer.echo(f"  {i}. {name}")
     typer.echo("")
 
     while True:
         try:
             choice = int(typer.prompt("Select a model", default="1"))
-            if 1 <= choice <= len(models):
-                return models[choice - 1][0]
-            typer.echo(f"Please enter a number between 1 and {len(models)}")
-        except ValueError, TypeError:
+            if 1 <= choice <= len(names):
+                return names[choice - 1]
+            typer.echo(f"Please enter a number between 1 and {len(names)}")
+        except (ValueError, TypeError):
             typer.echo("Please enter a valid number")
 
 

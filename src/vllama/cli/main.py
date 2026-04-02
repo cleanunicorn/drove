@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Annotated
 
+import click
 import typer
 import uvicorn
+from typer.core import TyperCommand
 
 from vllama.cli.completions import completions_app
 from vllama.cli.models import _complete_model_name, models_app
@@ -74,18 +77,64 @@ def serve(
     )
 
 
-@app.command()
+class _OptionalValueCommand(TyperCommand):
+    """Allow ``--watch`` to be used as a bare flag or with a value.
+
+    When ``--watch`` appears without a following numeric argument, the default
+    value ``2.0`` is injected so Click sees ``--watch 2.0``.
+    """
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        new_args = list(args)
+        for i, arg in enumerate(new_args):
+            if arg in ("--watch", "-w"):
+                next_idx = i + 1
+                if next_idx >= len(new_args) or new_args[next_idx].startswith("-"):
+                    new_args.insert(next_idx, "2.0")
+                break
+        return super().parse_args(ctx, new_args)
+
+
+@app.command(cls=_OptionalValueCommand)
 def status(
     ctx: typer.Context,
     host: Annotated[str | None, typer.Option(help="vllama host (overrides config).")] = None,
     port: Annotated[int | None, typer.Option(help="vllama port (overrides config).")] = None,
+    watch: Annotated[
+        float | None,
+        typer.Option(
+            "--watch",
+            "-w",
+            help="Continuously refresh every N seconds (default 2).",
+        ),
+    ] = None,
 ) -> None:
-    """Show the status of the running vllama server."""
-    import httpx
+    """Show the status of the running vllama server.
 
+    Use --watch to continuously refresh. Examples:
+
+        vllama status --watch        # refresh every 2s
+        vllama status --watch 5      # refresh every 5s
+    """
     config = ctx.obj["config"]
     base = f"http://{host or config.listen_host}:{port or config.listen_port}"
     base = base.replace("//0.0.0.0:", "//127.0.0.1:")
+
+    if watch is not None:
+        try:
+            while True:
+                typer.clear()
+                _print_status(base)
+                time.sleep(watch)
+        except KeyboardInterrupt:
+            pass
+    else:
+        _print_status(base)
+
+
+def _print_status(base: str) -> None:
+    """Fetch and print the server status. Exits on connection failure."""
+    import httpx
 
     try:
         resp = httpx.get(f"{base}/status", timeout=5.0)

@@ -140,6 +140,24 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
             }
         )
 
+    @app.get("/v1/models")
+    async def list_models() -> JSONResponse:
+        """OpenAI-compatible model listing."""
+        from vllama.cli.models import _iter_models
+
+        models = _iter_models(config.models_dir)
+        model_objects = []
+        for name, _path, _size in models:
+            model_objects.append(
+                {
+                    "id": name,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "local",
+                }
+            )
+        return JSONResponse({"object": "list", "data": model_objects})
+
     @app.api_route(
         "/{path:path}",
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
@@ -263,7 +281,7 @@ def _setup_sighup(app: FastAPI, config_path: Path) -> None:
 
     try:
         loop.add_signal_handler(signal.SIGHUP, _handler)
-    except OSError, NotImplementedError:
+    except (OSError, NotImplementedError):
         pass  # Windows or environments without SIGHUP
 
 

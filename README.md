@@ -17,9 +17,12 @@ llama-server --version
 
 - **Lazy model loading**: Models start on first request and shut down after inactivity
 - **HuggingFace integration**: Download models directly with `vllama models download`
+- **Auto-conversion**: Safetensors models are automatically converted to GGUF on download
 - **Per-model configuration**: Set context size, GPU layers, and other parameters per model
-- **Interactive chat**: TUI chat interface with session persistence
-- **OpenAI-compatible API**: Proxy requests to llama-server with standard endpoints
+- **Interactive chat**: TUI chat interface with session persistence, collapsible thinking, and token speed display
+- **Any OpenAI endpoint**: Chat with local models or connect to any OpenAI-compatible API (OpenAI, Groq, etc.)
+- **OpenAI-compatible API**: Full proxy with `/v1/chat/completions`, `/v1/models`, and server stats
+- **Live metrics**: Token speed (tok/s), TTFT, and usage stats via `vllama status`
 - **Systemd support**: Optional user service for persistent operation
 
 ## Model Management
@@ -147,14 +150,50 @@ vllama config llama_server.n_gpu_layers 42      # nested key
 Open an interactive TUI chat session:
 
 ```bash
+# Chat with the local vllama server (lists available models)
 vllama chat
+
+# Specify a model directly
+vllama chat Qwen3.5-35B-A3B-Q4_K_M
+
+# Resume the latest session
 vllama chat --resume
+
+# Connect to any OpenAI-compatible endpoint
+vllama chat --endpoint https://api.openai.com/v1 --api-key sk-...
+vllama chat -e https://api.groq.com/openai/v1 -k gsk-...
 ```
 
 Options:
+- `--endpoint`, `-e` - OpenAI-compatible base URL (connects to local server if omitted)
+- `--api-key`, `-k` - API key for the endpoint
 - `--system`, `-s` - Set system prompt
 - `--resume`, `-r` - Resume latest session
-- `--host`, `--port` - Override server address
+- `--host`, `--port` - Override local server address
+
+When no model is specified, vllama queries the endpoint's `/v1/models` and prompts you to pick one.
+
+### Status
+
+Show server status with token speed and usage stats:
+
+```bash
+vllama status
+```
+
+```
+Server:    running (2h 15m uptime)
+Listen:    0.0.0.0:7777
+Endpoint:  http://127.0.0.1:7777/v1
+Model:     Qwen3.5-35B-A3B-Q4_K_M
+  Loaded:  1h 30m ago
+  Idle:    5m 12s / 10m 0s
+Process:   22.3 GB RSS, 175.7% CPU
+Requests:  403 total, 0 active, 0 errors
+Tokens:    903018 in / 165063 out (1068081 total)
+Speed:     53.4 tok/s (last), 51.0 tok/s (avg)
+TTFT:      0.042s (last), 0.038s (avg)
+```
 
 ## Configuration
 
@@ -167,6 +206,8 @@ listen_port = 8080
 llama_server_bin = "llama-server"
 idle_timeout_seconds = 1800
 tui_theme = "dracula"
+convert_output_type = "f16"       # f32, f16, bf16, q8_0
+# convert_script = "/path/to/convert_hf_to_gguf.py"  # auto-detected if omitted
 
 [llama_server]
 n_gpu_layers = -1
@@ -188,12 +229,21 @@ n_gpu_layers = 42
 vllama proxies to llama-server and exposes an OpenAI-compatible API. Once the server is running:
 
 ```bash
+# List available models
+curl http://localhost:8080/v1/models
+
+# Chat completion
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "qwen3-8b", "messages": [{"role": "user", "content": "Hello!"}]}'
+
+# Server status and metrics
+curl http://localhost:8080/status
 ```
 
 Models are started lazily on first request and shut down after `idle_timeout_seconds` of inactivity.
+
+Use the endpoint URL shown by `vllama status` as `OPENAI_BASE_URL` in any OpenAI-compatible client.
 
 ## Development
 

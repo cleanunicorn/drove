@@ -140,6 +140,28 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
             }
         )
 
+    @app.post("/server/stop")
+    async def server_stop() -> JSONResponse:
+        """Stop the currently loaded model (llama-server subprocess)."""
+        if not manager.is_running:
+            return JSONResponse({"status": "no model loaded"})
+        model = manager.current_model
+        await manager.stop()
+        return JSONResponse({"status": "stopped", "model": model})
+
+    @app.post("/server/restart")
+    async def server_restart() -> JSONResponse:
+        """Restart the currently loaded model."""
+        if not manager.is_running or not manager.current_model:
+            return JSONResponse(
+                {"status": "error", "detail": "No model is loaded to restart."},
+                status_code=400,
+            )
+        model = manager.current_model
+        await manager.stop()
+        await manager.ensure_running(model)
+        return JSONResponse({"status": "restarted", "model": model})
+
     @app.get("/v1/models")
     async def list_models() -> JSONResponse:
         """OpenAI-compatible model listing."""

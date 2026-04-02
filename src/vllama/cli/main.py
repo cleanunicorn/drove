@@ -1,4 +1,4 @@
-"""vllama CLI — root app and serve command."""
+"""vllama CLI — root app and subcommand registration."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from typing import Annotated
 
 import click
 import typer
-import uvicorn
 from typer.core import TyperCommand
 
 from vllama.cli.completions import completions_app
 from vllama.cli.models import _complete_model_name, models_app
+from vllama.cli.server import server_app
 from vllama.config import DEFAULT_CONFIG_PATH, Config, load_config
 
 app = typer.Typer(
@@ -23,6 +23,7 @@ app = typer.Typer(
 )
 app.add_typer(models_app, name="models")
 app.add_typer(completions_app, name="completions")
+app.add_typer(server_app, name="server")
 
 
 @app.callback()
@@ -41,40 +42,6 @@ def _root(
     ctx.ensure_object(dict)
     ctx.obj["config"] = load_config(config_file)
     ctx.obj["config_path"] = config_file or DEFAULT_CONFIG_PATH
-
-
-@app.command()
-def serve(
-    ctx: typer.Context,
-    host: Annotated[str | None, typer.Option(help="Listen host.")] = None,
-    port: Annotated[int | None, typer.Option(help="Listen port.")] = None,
-) -> None:
-    """Start the vllama proxy server."""
-    from vllama.proxy import create_app
-
-    config = ctx.obj["config"]
-    if host:
-        config = config.model_copy(update={"listen_host": host})
-    if port:
-        config = config.model_copy(update={"listen_port": port})
-
-    config.models_dir.mkdir(parents=True, exist_ok=True)
-
-    cfg_path: Path = ctx.obj["config_path"]
-
-    typer.echo(f"Starting vllama on {config.listen_host}:{config.listen_port}")
-    typer.echo(f"Models directory: {config.models_dir}")
-    typer.echo(f"Idle timeout: {config.idle_timeout_seconds}s")
-    if cfg_path.exists():
-        typer.echo(f"Config file: {cfg_path} (watching for changes)")
-
-    fastapi_app = create_app(config, config_path=cfg_path if cfg_path.exists() else None)
-    uvicorn.run(
-        fastapi_app,
-        host=config.listen_host,
-        port=config.listen_port,
-        log_level="warning",
-    )
 
 
 class _OptionalValueCommand(TyperCommand):

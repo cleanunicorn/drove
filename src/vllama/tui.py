@@ -751,7 +751,7 @@ class ChatApp(App[None]):
                                 "name": tc.get("function", {}).get("name", ""),
                                 "arguments": tc.get("function", {}).get("arguments", ""),
                             }
-                    except (KeyError, json.JSONDecodeError):
+                    except KeyError, json.JSONDecodeError:
                         continue
 
     # ── Helpers ─────────────────────────────────────────────────────────────────

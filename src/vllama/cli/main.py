@@ -307,7 +307,9 @@ def chat(
     port: Annotated[int | None, typer.Option(help="vllama port (overrides config).")] = None,
     endpoint: Annotated[
         str | None,
-        typer.Option("--endpoint", "-e", help="OpenAI-compatible base URL (e.g. https://api.openai.com/v1)."),
+        typer.Option(
+            "--endpoint", "-e", help="OpenAI-compatible base URL (e.g. https://api.openai.com/v1)."
+        ),
     ] = None,
     api_key: Annotated[
         str | None,
@@ -415,7 +417,7 @@ def _select_model_from_endpoint(base_url: str, api_key: str | None) -> str | Non
             if 1 <= choice <= len(names):
                 return names[choice - 1]
             typer.echo(f"Please enter a number between 1 and {len(names)}")
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             typer.echo("Please enter a valid number")
 
 

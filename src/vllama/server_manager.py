@@ -78,7 +78,7 @@ class ServerManager:
                 "memory_rss_bytes": mem.rss,
                 "cpu_percent": round(cpu_pct, 1),
             }
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess, psutil.AccessDenied:
             return None
 
     def record_request(self) -> None:
@@ -193,7 +193,7 @@ class ServerManager:
         try:
             data = await asyncio.wait_for(proc.stderr.read(4096), timeout=1.0)
             return data.decode(errors="replace").strip()
-        except (TimeoutError, Exception):
+        except TimeoutError, Exception:
             return ""
 
     def _build_args(self, model_path: Path, model_cfg: ModelConfig) -> list[str]:

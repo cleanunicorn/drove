@@ -281,7 +281,7 @@ def _setup_sighup(app: FastAPI, config_path: Path) -> None:
 
     try:
         loop.add_signal_handler(signal.SIGHUP, _handler)
-    except (OSError, NotImplementedError):
+    except OSError, NotImplementedError:
         pass  # Windows or environments without SIGHUP
 
 

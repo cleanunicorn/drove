@@ -26,51 +26,30 @@ HEALTH_CHECK_INTERVAL = 0.5  # seconds between health poll attempts
 HEALTH_CHECK_TIMEOUT = 60.0  # max seconds to wait for llama-server to be ready
 
 
-class ServerManager:
-    """Manages a single llama-server subprocess.
+class _ModelInstance:
+    """State for a single running llama-server process."""
 
-    Only one model can be loaded at a time. Loading a different model
-    stops the current server and starts a new one.
-    """
-
-    def __init__(self, config: Config) -> None:
-        self._config = config
-        self._process: asyncio.subprocess.Process | None = None
-        self._current_model: str | None = None  # model name (stem)
-        self._last_request_time: float = time.monotonic()
-        self._active_requests: int = 0
-        self._lock = asyncio.Lock()
-        self._idle_task: asyncio.Task[None] | None = None
-        self._model_loaded_at: float | None = None  # wall-clock time
-        self._server_port: int | None = None  # dynamically assigned
+    def __init__(self, model_name: str, process: asyncio.subprocess.Process, port: int) -> None:
+        self.model_name = model_name
+        self.process = process
+        self.port = port
+        self.loaded_at: float = time.time()
+        self.last_request_time: float = time.monotonic()
+        self.active_requests: int = 0
 
     @property
     def is_running(self) -> bool:
-        return self._process is not None and self._process.returncode is None
-
-    @property
-    def current_model(self) -> str | None:
-        return self._current_model
-
-    @property
-    def model_loaded_at(self) -> float | None:
-        return self._model_loaded_at
+        return self.process.returncode is None
 
     @property
     def idle_seconds(self) -> float:
-        return time.monotonic() - self._last_request_time
-
-    @property
-    def base_url(self) -> str:
-        port = self._server_port or 0
-        return f"http://{self._config.llama_server_host}:{port}"
+        return time.monotonic() - self.last_request_time
 
     def get_process_stats(self) -> dict[str, object] | None:
-        """Return memory/CPU stats for the llama-server process, or None."""
-        if self._process is None or self._process.returncode is not None:
+        if not self.is_running:
             return None
         try:
-            proc = psutil.Process(self._process.pid)
+            proc = psutil.Process(self.process.pid)
             mem = proc.memory_info()
             cpu_times = proc.cpu_times()
             elapsed = time.time() - proc.create_time()
@@ -82,37 +61,135 @@ class ServerManager:
         except psutil.NoSuchProcess, psutil.AccessDenied:
             return None
 
-    def record_request(self) -> None:
-        """Call on each proxied request to reset the idle timer."""
-        self._last_request_time = time.monotonic()
 
-    def request_started(self) -> None:
-        """Mark a request as in-flight. Idle shutdown is suppressed while active."""
-        self._active_requests += 1
-        self._last_request_time = time.monotonic()
+class ServerManager:
+    """Manages multiple llama-server subprocesses, one per model.
 
-    def request_finished(self) -> None:
-        """Mark a request as complete and reset the idle timer."""
-        self._active_requests = max(0, self._active_requests - 1)
-        self._last_request_time = time.monotonic()
+    Each model gets its own llama-server on a dynamically assigned port.
+    Models are started lazily on first request and stopped after idle timeout.
+    """
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self._instances: dict[str, _ModelInstance] = {}
+        self._idle_tasks: dict[str, asyncio.Task[None]] = {}
+        self._lock = asyncio.Lock()
+
+    @property
+    def is_running(self) -> bool:
+        return any(inst.is_running for inst in self._instances.values())
+
+    @property
+    def loaded_models(self) -> list[str]:
+        return [name for name, inst in self._instances.items() if inst.is_running]
+
+    @property
+    def current_model(self) -> str | None:
+        """For backwards compatibility — returns the first loaded model, or None."""
+        models = self.loaded_models
+        return models[0] if models else None
+
+    @property
+    def model_loaded_at(self) -> float | None:
+        """For backwards compatibility — returns loaded_at of the first model."""
+        models = self.loaded_models
+        if models:
+            return self._instances[models[0]].loaded_at
+        return None
+
+    @property
+    def idle_seconds(self) -> float:
+        """For backwards compatibility — returns minimum idle across all models."""
+        running = [inst for inst in self._instances.values() if inst.is_running]
+        if not running:
+            return 0.0
+        return min(inst.idle_seconds for inst in running)
+
+    def base_url_for(self, model_name: str) -> str:
+        inst = self._instances.get(model_name)
+        port = inst.port if inst else 0
+        return f"http://{self._config.llama_server_host}:{port}"
+
+    @property
+    def base_url(self) -> str:
+        """For backwards compatibility — returns base_url of the first loaded model."""
+        model = self.current_model
+        if model:
+            return self.base_url_for(model)
+        return f"http://{self._config.llama_server_host}:0"
+
+    def get_process_stats(self) -> dict[str, object] | None:
+        """Return aggregated stats, or per-model stats if multiple models loaded."""
+        running = {name: inst for name, inst in self._instances.items() if inst.is_running}
+        if not running:
+            return None
+        if len(running) == 1:
+            return next(iter(running.values())).get_process_stats()
+        return {name: inst.get_process_stats() for name, inst in running.items()}
+
+    def get_all_model_info(self) -> list[dict[str, object]]:
+        """Return status info for all loaded models."""
+        now = time.time()
+        result = []
+        for name, inst in self._instances.items():
+            if not inst.is_running:
+                continue
+            result.append({
+                "name": name,
+                "loaded_seconds": round(now - inst.loaded_at, 1),
+                "idle_seconds": round(inst.idle_seconds, 1),
+                "idle_timeout_seconds": self._config.idle_timeout_seconds,
+                "active_requests": inst.active_requests,
+                "port": inst.port,
+            })
+        return result
+
+    def record_request(self, model_name: str) -> None:
+        """Call on each proxied request to reset the idle timer for a model."""
+        inst = self._instances.get(model_name)
+        if inst:
+            inst.last_request_time = time.monotonic()
+
+    def request_started(self, model_name: str) -> None:
+        """Mark a request as in-flight for a model."""
+        inst = self._instances.get(model_name)
+        if inst:
+            inst.active_requests += 1
+            inst.last_request_time = time.monotonic()
+
+    def request_finished(self, model_name: str) -> None:
+        """Mark a request as complete and reset the idle timer for a model."""
+        inst = self._instances.get(model_name)
+        if inst:
+            inst.active_requests = max(0, inst.active_requests - 1)
+            inst.last_request_time = time.monotonic()
 
     async def ensure_running(self, model_name: str) -> None:
-        """Ensure llama-server is running with the requested model.
+        """Ensure llama-server is running for the requested model.
 
-        If a different model is loaded, the current server is stopped first.
-        Thread-safe: concurrent callers wait on the lock.
+        If the model is already loaded, this is a no-op.
+        Multiple models can run simultaneously.
         """
         async with self._lock:
-            if self.is_running and self._current_model == model_name:
+            inst = self._instances.get(model_name)
+            if inst is not None and inst.is_running:
                 return
-            if self.is_running:
-                await self._stop()
+            # Clean up stale instance if process died
+            if inst is not None:
+                await self._stop_instance(model_name)
             await self._start(model_name)
 
     async def stop(self) -> None:
-        """Gracefully stop the running llama-server."""
+        """Gracefully stop all running llama-server processes."""
         async with self._lock:
-            await self._stop()
+            names = list(self._instances.keys())
+            for name in names:
+                await self._stop_instance(name)
+
+    async def stop_model(self, model_name: str) -> None:
+        """Gracefully stop a specific model's llama-server."""
+        async with self._lock:
+            await self._stop_instance(model_name)
 
     async def _start(self, model_name: str) -> None:
         binary = self._config.llama_server_bin
@@ -125,71 +202,67 @@ class ServerManager:
         model_path = self._resolve_model(model_name)
         model_cfg = load_model_config(model_path)
 
-        self._server_port = _find_free_port()
-
-        # Merge global defaults then model-specific overrides
-        args = self._build_args(model_path, model_cfg)
+        port = _find_free_port()
+        args = self._build_args(model_path, model_cfg, port)
 
         logger.info("Starting llama-server: %s %s", binary, " ".join(args))
-        self._process = await asyncio.create_subprocess_exec(
+        process = await asyncio.create_subprocess_exec(
             binary,
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        self._current_model = model_name
-        self._last_request_time = time.monotonic()
+
+        inst = _ModelInstance(model_name, process, port)
+        self._instances[model_name] = inst
 
         try:
-            await self._wait_for_health()
+            await self._wait_for_health(inst)
         except (RuntimeError, TimeoutError) as e:
-            logger.error("llama-server failed to start: %s", e)
+            logger.error("llama-server failed to start for model=%s: %s", model_name, e)
+            await self._stop_instance(model_name)
             raise
-        self._model_loaded_at = time.time()
-        self._start_idle_watcher()
-        logger.info("llama-server ready (model=%s)", model_name)
 
-    async def _stop(self) -> None:
-        if self._idle_task is not None:
-            self._idle_task.cancel()
-            self._idle_task = None
+        self._start_idle_watcher(model_name)
+        logger.info("llama-server ready (model=%s, port=%d)", model_name, port)
 
-        if self._process is None:
+    async def _stop_instance(self, model_name: str) -> None:
+        task = self._idle_tasks.pop(model_name, None)
+        if task is not None:
+            task.cancel()
+
+        inst = self._instances.pop(model_name, None)
+        if inst is None:
             return
 
-        proc = self._process
-        self._process = None
-        self._current_model = None
-        self._model_loaded_at = None
-        self._server_port = None
+        if not inst.is_running:
+            return
 
-        if proc.returncode is not None:
-            return  # already dead
-
-        logger.info("Stopping llama-server (pid=%d)", proc.pid)
+        logger.info("Stopping llama-server (model=%s, pid=%d)", model_name, inst.process.pid)
         try:
-            proc.send_signal(signal.SIGTERM)
+            inst.process.send_signal(signal.SIGTERM)
             try:
-                await asyncio.wait_for(proc.wait(), timeout=10.0)
+                await asyncio.wait_for(inst.process.wait(), timeout=10.0)
             except TimeoutError:
                 logger.warning("llama-server did not stop in time, sending SIGKILL")
-                proc.kill()
-                await proc.wait()
+                inst.process.kill()
+                await inst.process.wait()
         except ProcessLookupError:
             pass  # already gone
 
-    async def _wait_for_health(self) -> None:
+    async def _wait_for_health(self, inst: _ModelInstance) -> None:
+        url = f"http://{self._config.llama_server_host}:{inst.port}/health"
         deadline = time.monotonic() + HEALTH_CHECK_TIMEOUT
         async with httpx.AsyncClient() as client:
             while time.monotonic() < deadline:
-                if not self.is_running:
-                    stderr = await self._read_stderr()
+                if not inst.is_running:
+                    stderr = await self._read_stderr(inst)
                     msg = "llama-server exited unexpectedly during startup"
                     if stderr:
                         msg += f"\nstderr: {stderr}"
                     raise RuntimeError(msg)
                 try:
-                    resp = await client.get(f"{self.base_url}/health", timeout=2.0)
+                    resp = await client.get(url, timeout=2.0)
                     if resp.status_code == 200:
                         return
                 except httpx.TransportError:
@@ -197,17 +270,16 @@ class ServerManager:
                 await asyncio.sleep(HEALTH_CHECK_INTERVAL)
         raise TimeoutError(f"llama-server did not become healthy within {HEALTH_CHECK_TIMEOUT}s")
 
-    async def _read_stderr(self) -> str:
-        proc = self._process
-        if proc is None or proc.stderr is None:
+    async def _read_stderr(self, inst: _ModelInstance) -> str:
+        if inst.process.stderr is None:
             return ""
         try:
-            data = await asyncio.wait_for(proc.stderr.read(4096), timeout=1.0)
+            data = await asyncio.wait_for(inst.process.stderr.read(4096), timeout=1.0)
             return data.decode(errors="replace").strip()
         except TimeoutError, Exception:
             return ""
 
-    def _build_args(self, model_path: Path, model_cfg: ModelConfig) -> list[str]:
+    def _build_args(self, model_path: Path, model_cfg: ModelConfig, port: int) -> list[str]:
         from vllama.model_config import ModelConfig  # local import to avoid circular
 
         # Start with global defaults
@@ -224,7 +296,7 @@ class ServerManager:
             "--host",
             self._config.llama_server_host,
             "--port",
-            str(self._server_port),
+            str(port),
         ]
         args.extend(merged.to_llama_args())
         return args
@@ -249,19 +321,24 @@ class ServerManager:
             "Run 'vllama models list' to see available models."
         )
 
-    def _start_idle_watcher(self) -> None:
-        self._idle_task = asyncio.create_task(self._idle_watcher())
+    def _start_idle_watcher(self, model_name: str) -> None:
+        self._idle_tasks[model_name] = asyncio.create_task(self._idle_watcher(model_name))
 
-    async def _idle_watcher(self) -> None:
+    async def _idle_watcher(self, model_name: str) -> None:
         while True:
             await asyncio.sleep(30)  # check every 30 seconds
-            if self._active_requests > 0:
+            inst = self._instances.get(model_name)
+            if inst is None or not inst.is_running:
+                return
+            if inst.active_requests > 0:
                 continue  # never shut down while requests are in-flight
-            idle = time.monotonic() - self._last_request_time
+            idle = time.monotonic() - inst.last_request_time
             if idle >= self._config.idle_timeout_seconds:
-                logger.info("Idle timeout reached (%.0fs), stopping llama-server", idle)
+                logger.info(
+                    "Idle timeout reached for model=%s (%.0fs), stopping", model_name, idle
+                )
                 async with self._lock:
-                    await self._stop()
+                    await self._stop_instance(model_name)
                 return
 
 

@@ -115,59 +115,6 @@ def status(
         _print_status(base)
 
 
-@server_app.command()
-def stop(
-    ctx: typer.Context,
-    host: Annotated[str | None, typer.Option(help="vllama host (overrides config).")] = None,
-    port: Annotated[int | None, typer.Option(help="vllama port (overrides config).")] = None,
-) -> None:
-    """Stop the currently loaded model."""
-    import httpx
-
-    base = _base_url(ctx, host, port)
-    try:
-        resp = httpx.post(f"{base}/server/stop", timeout=30.0)
-        resp.raise_for_status()
-    except httpx.ConnectError:
-        typer.echo("Server is not running.")
-        raise typer.Exit(1)
-    except httpx.HTTPError as e:
-        typer.echo(f"Failed: {e}", err=True)
-        raise typer.Exit(1)
-
-    data = resp.json()
-    if data.get("model"):
-        typer.echo(f"Stopped model: {data['model']}")
-    else:
-        typer.echo("No model was loaded.")
-
-
-@server_app.command()
-def restart(
-    ctx: typer.Context,
-    host: Annotated[str | None, typer.Option(help="vllama host (overrides config).")] = None,
-    port: Annotated[int | None, typer.Option(help="vllama port (overrides config).")] = None,
-) -> None:
-    """Restart the currently loaded model."""
-    import httpx
-
-    base = _base_url(ctx, host, port)
-    try:
-        resp = httpx.post(f"{base}/server/restart", timeout=120.0)
-    except httpx.ConnectError:
-        typer.echo("Server is not running.")
-        raise typer.Exit(1)
-    except httpx.HTTPError as e:
-        typer.echo(f"Failed: {e}", err=True)
-        raise typer.Exit(1)
-
-    data = resp.json()
-    if resp.status_code == 400:
-        typer.echo(data.get("detail", "No model is loaded to restart."))
-        raise typer.Exit(1)
-
-    typer.echo(f"Restarted model: {data.get('model')}")
-
 
 def _print_status(base: str) -> None:
     """Fetch and print the server status. Exits on connection failure."""

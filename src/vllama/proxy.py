@@ -164,6 +164,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     )
     async def proxy(request: Request, path: str) -> StreamingResponse:
         stats.request_started()
+        manager.request_started()
         try:
             model_name = await _extract_model(request)
 
@@ -208,13 +209,14 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
             }
 
             return StreamingResponse(
-                content=_counting_stream(resp.aiter_raw(), stats),
+                content=_counting_stream(resp.aiter_raw(), stats, manager),
                 status_code=resp.status_code,
                 headers=response_headers,
                 media_type=resp.headers.get("content-type"),
                 background=None,
             )
         except Exception:
+            manager.request_finished()
             stats.request_finished()
             stats.request_error()
             raise
@@ -305,7 +307,7 @@ async def _extract_model(request: Request) -> str | None:
 
 
 async def _counting_stream(
-    raw_iter: AsyncIterator[bytes], stats: ProxyStats
+    raw_iter: AsyncIterator[bytes], stats: ProxyStats, manager: ServerManager
 ) -> AsyncIterator[bytes]:
     """Wrap a response stream, collecting bytes to extract token usage afterwards."""
     try:
@@ -325,6 +327,7 @@ async def _counting_stream(
         stats.request_error()
         raise
     finally:
+        manager.request_finished()
         stats.request_finished()
 
 

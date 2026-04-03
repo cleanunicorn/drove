@@ -38,6 +38,7 @@ class ServerManager:
         self._process: asyncio.subprocess.Process | None = None
         self._current_model: str | None = None  # model name (stem)
         self._last_request_time: float = time.monotonic()
+        self._active_requests: int = 0
         self._lock = asyncio.Lock()
         self._idle_task: asyncio.Task[None] | None = None
         self._model_loaded_at: float | None = None  # wall-clock time
@@ -83,6 +84,16 @@ class ServerManager:
 
     def record_request(self) -> None:
         """Call on each proxied request to reset the idle timer."""
+        self._last_request_time = time.monotonic()
+
+    def request_started(self) -> None:
+        """Mark a request as in-flight. Idle shutdown is suppressed while active."""
+        self._active_requests += 1
+        self._last_request_time = time.monotonic()
+
+    def request_finished(self) -> None:
+        """Mark a request as complete and reset the idle timer."""
+        self._active_requests = max(0, self._active_requests - 1)
         self._last_request_time = time.monotonic()
 
     async def ensure_running(self, model_name: str) -> None:
@@ -244,6 +255,8 @@ class ServerManager:
     async def _idle_watcher(self) -> None:
         while True:
             await asyncio.sleep(30)  # check every 30 seconds
+            if self._active_requests > 0:
+                continue  # never shut down while requests are in-flight
             idle = time.monotonic() - self._last_request_time
             if idle >= self._config.idle_timeout_seconds:
                 logger.info("Idle timeout reached (%.0fs), stopping llama-server", idle)

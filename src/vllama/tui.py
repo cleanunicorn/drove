@@ -78,6 +78,7 @@ ChatApp {
 .thinking-section Label {
     color: $text-muted;
     text-style: italic;
+    width: 1fr;
 }
 
 .tool-call-section {
@@ -87,6 +88,7 @@ ChatApp {
 
 .tool-call-section Label {
     color: $text-muted;
+    width: 1fr;
 }
 
 #autocomplete {
@@ -371,6 +373,12 @@ class ChatApp(App[None]):
             bubble = Message(role, content)
             await self.query_one("#messages").mount(bubble)
 
+            # Render thinking as collapsible section
+            thinking = msg.get("thinking", "")
+            if thinking:
+                await bubble.append_thinking(thinking)
+                bubble.finish_thinking()
+
             # Render tool calls as collapsible sections
             for tc in msg.get("tool_calls", []):
                 func = tc.get("function", {})
@@ -634,9 +642,14 @@ class ChatApp(App[None]):
 
                 if not tool_calls:
                     # No tool calls — save the final assistant message and break
-                    saved_content = full_response or full_thinking
-                    if saved_content:
-                        self._history.append({"role": "assistant", "content": saved_content})
+                    if full_response or full_thinking:
+                        assistant_msg: dict = {
+                            "role": "assistant",
+                            "content": full_response,
+                        }
+                        if full_thinking:
+                            assistant_msg["thinking"] = full_thinking
+                        self._history.append(assistant_msg)
                         self._session.messages = self._history
                         save_session(self._sessions_dir, self._session)
                     break
@@ -767,4 +780,7 @@ class ChatApp(App[None]):
         self.query_one("#status-label", Label).update("  •  ".join(parts))
 
     def _scroll_to_bottom(self) -> None:
-        self.query_one("#messages", ScrollableContainer).scroll_end(animate=False)
+        container = self.query_one("#messages", ScrollableContainer)
+        # Only auto-scroll if the user is near the bottom
+        if container.max_scroll_y - container.scroll_y <= 2:
+            container.scroll_end(animate=False)

@@ -138,24 +138,38 @@ def _print_status(base: str) -> None:
     typer.echo(f"Listen:    {server['listen']}")
     typer.echo(f"Endpoint:  {base}/v1")
 
-    # Model
-    model = data["model"]
-    if model.get("loaded") and model.get("name"):
-        typer.echo(f"Model:     {model['name']}")
-        if model.get("loaded_seconds") is not None:
-            typer.echo(f"  Loaded:  {_fmt_duration(model['loaded_seconds'])} ago")
-        idle = model.get("idle_seconds", 0)
-        timeout = model.get("idle_timeout_seconds", 0)
-        typer.echo(f"  Idle:    {_fmt_duration(idle)} / {_fmt_duration(timeout)}")
+    # Models
+    models = data.get("models", [])
+    if models:
+        typer.echo(f"Models:    {len(models)} loaded")
+        for model in models:
+            typer.echo(f"  - {model['name']}")
+            if model.get("loaded_seconds") is not None:
+                typer.echo(
+                    f"    Loaded:  {_fmt_duration(model['loaded_seconds'])} ago"
+                )
+            idle = model.get("idle_seconds", 0)
+            timeout = model.get("idle_timeout_seconds", 0)
+            typer.echo(
+                f"    Idle:    {_fmt_duration(idle)} / {_fmt_duration(timeout)}"
+            )
+            if model.get("active_requests", 0) > 0:
+                typer.echo(f"    Active:  {model['active_requests']} request(s)")
     else:
-        typer.echo("Model:     (none loaded)")
+        typer.echo("Models:    (none loaded)")
 
     # Process
     proc = data.get("process")
     if proc:
-        rss = proc["memory_rss_bytes"]
-        cpu = proc["cpu_percent"]
-        typer.echo(f"Process:   {_fmt_bytes(rss)} RSS, {cpu}% CPU")
+        if "memory_rss_bytes" in proc:
+            rss = _fmt_bytes(proc["memory_rss_bytes"])
+            typer.echo(f"Process:   {rss} RSS, {proc['cpu_percent']}% CPU")
+        else:
+            for name, pstats in proc.items():
+                if pstats:
+                    rss = _fmt_bytes(pstats["memory_rss_bytes"])
+                    cpu = pstats["cpu_percent"]
+                    typer.echo(f"Process ({name}): {rss} RSS, {cpu}% CPU")
 
     # Requests
     req = data["requests"]

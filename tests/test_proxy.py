@@ -86,7 +86,7 @@ def test_health_endpoint_no_model(tmp_path: Path) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["model"] is None
+    assert body["models"] == []
     assert body["server_running"] is False
 
 
@@ -99,7 +99,7 @@ def test_status_endpoint_no_model(tmp_path: Path) -> None:
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["model"]["loaded"] is False
+    assert body["models"] == []
     assert body["requests"]["total"] == 0
     assert body["tokens"]["total"] == 0
     assert "uptime_seconds" in body["server"]

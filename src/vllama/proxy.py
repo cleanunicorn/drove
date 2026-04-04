@@ -82,7 +82,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         return JSONResponse(
             {
                 "status": "ok",
-                "model": manager.current_model,
+                "models": manager.loaded_models,
                 "server_running": manager.is_running,
             }
         )
@@ -91,13 +91,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     async def status() -> JSONResponse:
         now = time.time()
 
-        model_data: dict[str, object] = {"loaded": manager.is_running}
-        if manager.is_running and manager.current_model:
-            model_data["name"] = manager.current_model
-            if manager.model_loaded_at:
-                model_data["loaded_seconds"] = round(now - manager.model_loaded_at, 1)
-            model_data["idle_seconds"] = round(manager.idle_seconds, 1)
-            model_data["idle_timeout_seconds"] = config.idle_timeout_seconds
+        models_info = manager.get_all_model_info()
 
         return JSONResponse(
             {
@@ -105,7 +99,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     "uptime_seconds": round(now - stats.started_at, 1),
                     "listen": f"{config.listen_host}:{config.listen_port}",
                 },
-                "model": model_data,
+                "models": models_info,
                 "process": manager.get_process_stats(),
                 "requests": {
                     "total": stats.request_count,
@@ -164,29 +158,37 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     )
     async def proxy(request: Request, path: str) -> StreamingResponse:
         stats.request_started()
+        model_name = await _extract_model(request)
+
+        if model_name is None:
+            if not manager.is_running:
+                stats.request_finished()
+                stats.request_error()
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "No model is loaded. Specify a 'model' field in your request "
+                        "or load a model first."
+                    ),
+                )
+            # Use the first loaded model as fallback for the upstream URL
+            resolved_model = manager.current_model
+        else:
+            resolved_model = model_name
+            try:
+                await manager.ensure_running(model_name)
+            except FileNotFoundError as e:
+                stats.request_finished()
+                stats.request_error()
+                raise HTTPException(status_code=404, detail=str(e)) from e
+            except (TimeoutError, RuntimeError) as e:
+                stats.request_finished()
+                stats.request_error()
+                raise HTTPException(status_code=503, detail=str(e)) from e
+
+        manager.request_started(resolved_model)
         try:
-            model_name = await _extract_model(request)
-
-            if model_name is None:
-                if not manager.is_running:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "No model is loaded. Specify a 'model' field in your request "
-                            "or load a model first."
-                        ),
-                    )
-            else:
-                try:
-                    await manager.ensure_running(model_name)
-                except FileNotFoundError as e:
-                    raise HTTPException(status_code=404, detail=str(e)) from e
-                except TimeoutError as e:
-                    raise HTTPException(status_code=503, detail=str(e)) from e
-                except RuntimeError as e:
-                    raise HTTPException(status_code=503, detail=str(e)) from e
-
-            manager.record_request()
+            manager.record_request(resolved_model)
 
             headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
             body = await request.body()
@@ -194,7 +196,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
             try:
                 upstream = client.build_request(
                     method=request.method,
-                    url=f"{manager.base_url}/{path}",
+                    url=f"{manager.base_url_for(resolved_model)}/{path}",
                     params=request.query_params,
                     headers=headers,
                     content=body,
@@ -208,13 +210,14 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
             }
 
             return StreamingResponse(
-                content=_counting_stream(resp.aiter_raw(), stats),
+                content=_counting_stream(resp.aiter_raw(), stats, manager, resolved_model),
                 status_code=resp.status_code,
                 headers=response_headers,
                 media_type=resp.headers.get("content-type"),
                 background=None,
             )
         except Exception:
+            manager.request_finished(resolved_model)
             stats.request_finished()
             stats.request_error()
             raise
@@ -305,7 +308,10 @@ async def _extract_model(request: Request) -> str | None:
 
 
 async def _counting_stream(
-    raw_iter: AsyncIterator[bytes], stats: ProxyStats
+    raw_iter: AsyncIterator[bytes],
+    stats: ProxyStats,
+    manager: ServerManager,
+    model_name: str,
 ) -> AsyncIterator[bytes]:
     """Wrap a response stream, collecting bytes to extract token usage afterwards."""
     try:
@@ -325,6 +331,7 @@ async def _counting_stream(
         stats.request_error()
         raise
     finally:
+        manager.request_finished(model_name)
         stats.request_finished()
 
 

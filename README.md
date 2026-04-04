@@ -16,6 +16,7 @@ llama-server --version
 ## Features
 
 - **Lazy model loading**: Models start on first request and shut down after inactivity
+- **Multiple concurrent models**: Run several models simultaneously, each on its own llama-server instance
 - **HuggingFace integration**: Download models directly with `vllama models download`
 - **Auto-conversion**: Safetensors models are automatically converted to GGUF on download
 - **Per-model configuration**: Set context size, GPU layers, and other parameters per model

@@ -246,7 +246,7 @@ curl http://localhost:8080/v1/chat/completions \
 curl http://localhost:8080/status
 ```
 
-Models are started lazily on first request and shut down after `idle_timeout_seconds` of inactivity.
+Models are started lazily on first request and shut down individually after `idle_timeout_seconds` of inactivity. Multiple models can run concurrently — each gets its own llama-server process on a separate port, managed transparently by the proxy.
 
 Use the endpoint URL shown by `vllama status` as `OPENAI_BASE_URL` in any OpenAI-compatible client.
 

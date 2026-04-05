@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class DownloadInfo(BaseModel):
@@ -47,8 +47,17 @@ class ModelConfig(BaseModel):
     threads: int | None = None
     threads_batch: int | None = None
 
-    # Flash attention
-    flash_attn: bool | None = None
+    # Flash attention (on, off, auto)
+    flash_attn: str | None = None
+
+    @field_validator("flash_attn", mode="before")
+    @classmethod
+    def _coerce_flash_attn(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return "on" if v else "off"
+        return str(v)
 
     # Rope scaling
     rope_freq_base: float | None = None

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from vllama.model_config import ModelConfig
 
 from vllama.config import Config
-from vllama.model_config import load_model_config
+from vllama.model_config import load_global_model_config, load_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -282,13 +282,18 @@ class ServerManager:
     def _build_args(self, model_path: Path, model_cfg: ModelConfig, port: int) -> list[str]:
         from vllama.model_config import ModelConfig  # local import to avoid circular
 
-        # Start with global defaults
-        global_cfg = ModelConfig(
+        # Start with global defaults from config.toml [llama_server]
+        base_cfg = ModelConfig(
             n_gpu_layers=self._config.llama_server.n_gpu_layers,
             threads=self._config.llama_server.threads,
         )
+        # Layer on global model config from _global.toml in models dir
+        global_model_cfg = load_global_model_config(self._config.models_dir)
+        merged = base_cfg.model_copy(
+            update={k: v for k, v in global_model_cfg.to_dict().items()}
+        )
         # Model-specific overrides take precedence
-        merged = global_cfg.model_copy(update={k: v for k, v in model_cfg.to_dict().items()})
+        merged = merged.model_copy(update={k: v for k, v in model_cfg.to_dict().items()})
 
         args = [
             "--model",

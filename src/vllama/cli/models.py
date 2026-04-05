@@ -15,9 +15,12 @@ from vllama.model_config import (
     ModelConfig,
     config_path_for_model,
     load_download_info,
+    load_global_model_config,
     load_model_config,
     save_download_info,
+    save_global_model_config,
     save_model_config,
+    set_global_model_config_key,
     set_model_config_key,
 )
 
@@ -333,27 +336,119 @@ def download_model(
 @models_app.command("config")
 def model_config_cmd(
     ctx: typer.Context,
-    name: Annotated[str, typer.Argument(help="Model name.", autocompletion=_complete_model_name)],
+    name: Annotated[
+        str | None,
+        typer.Argument(
+            help="Model name, or config key for global config.",
+            autocompletion=_complete_model_name,
+        ),
+    ] = None,
     key: Annotated[str | None, typer.Argument(help="Config key to get/set.")] = None,
     value: Annotated[str | None, typer.Argument(help="Value to set.")] = None,
+    global_config: Annotated[
+        bool,
+        typer.Option(
+            "--global", "-g",
+            help="Force global config mode.",
+        ),
+    ] = False,
     unset: Annotated[
         str | None,
         typer.Option("--unset", help="Remove a config key."),
     ] = None,
 ) -> None:
-    """Get or set per-model configuration parameters.
+    """Get or set model configuration parameters.
+
+    If the first argument is a config key (not a model name), operates on
+    the global config automatically. Use --global/-g to force global mode.
+    Per-model settings override global ones.
 
     Examples:
 
-        vllama models config mymodel                  # show all params
+        vllama models config mymodel                  # show model params
 
-        vllama models config mymodel ctx_size          # get one param
+        vllama models config mymodel ctx_size 8192     # set a model param
 
-        vllama models config mymodel ctx_size 8192     # set a param
+        vllama models config ctx_size 16384            # set a global param
 
-        vllama models config mymodel --unset ctx_size  # remove a param
+        vllama models config ctx_size                  # get a global param
+
+        vllama models config --unset ctx_size          # remove a global param
+
+        vllama models config --global                  # show all global params
     """
     models_dir = _models_dir(ctx)
+
+    # Auto-detect global mode: if first arg is a known config key and not
+    # an existing model, treat it as global config operation.
+    if not global_config and name is not None:
+        is_config_key = name in ModelConfig.model_fields
+        is_model = _model_root(models_dir, name) is not None
+        if is_config_key and not is_model:
+            global_config = True
+
+    # --unset without a name arg → global unset
+    if not global_config and name is None and unset is not None:
+        global_config = True
+
+    if global_config:
+        # Positional args shift: name→key, key→value
+        effective_key = name
+        effective_value = key
+        if value is not None:
+            typer.echo("Too many arguments for global config mode.", err=True)
+            raise typer.Exit(1)
+
+        if unset:
+            cfg = load_global_model_config(models_dir)
+            if unset not in ModelConfig.model_fields:
+                typer.echo(f"Unknown key '{unset}'.", err=True)
+                raise typer.Exit(1)
+            updated = cfg.model_copy(update={unset: None})
+            save_global_model_config(models_dir, updated)
+            typer.echo(f"Unset '{unset}' from global config.")
+            return
+
+        if effective_key is None:
+            cfg = load_global_model_config(models_dir)
+            params = cfg.to_dict()
+            if not params:
+                typer.echo("No global model config set.")
+            else:
+                for k, v in params.items():
+                    typer.echo(f"{k} = {v}")
+            return
+
+        if effective_value is None:
+            cfg = load_global_model_config(models_dir)
+            params = cfg.to_dict()
+            if effective_key in params:
+                typer.echo(str(params[effective_key]))
+            else:
+                typer.echo("(not set)")
+            return
+
+        try:
+            set_global_model_config_key(
+                models_dir, effective_key, effective_value,
+            )
+            typer.echo(
+                f"Set '{effective_key}' = {effective_value}"
+                " in global config.",
+            )
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+        return
+
+    # Per-model config mode — name is required
+    if name is None:
+        typer.echo(
+            "Missing model name. Use --global for global config.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     model_path = _find_model(models_dir, name)
 
     if unset:

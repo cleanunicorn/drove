@@ -74,6 +74,62 @@ class ModelConfig(BaseModel):
         return self.model_dump(exclude_none=True)
 
 
+GLOBAL_CONFIG_FILENAME = "_global.toml"
+
+
+def global_config_path(models_dir: Path) -> Path:
+    """Return the path to the global model config file in the models directory."""
+    return models_dir / GLOBAL_CONFIG_FILENAME
+
+
+def load_global_model_config(models_dir: Path) -> ModelConfig:
+    """Load global model config from _global.toml, returning defaults if absent."""
+    cfg_path = global_config_path(models_dir)
+    if not cfg_path.exists():
+        return ModelConfig()
+    with cfg_path.open("rb") as f:
+        data = tomllib.load(f)
+    return ModelConfig(**data)
+
+
+def save_global_model_config(models_dir: Path, config: ModelConfig) -> None:
+    """Write global model config to _global.toml."""
+    cfg_path = global_config_path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_bytes(tomli_w.dumps(config.to_dict()).encode())
+
+
+def set_global_model_config_key(models_dir: Path, key: str, value: str) -> ModelConfig:
+    """Set a single key in the global model config, coercing the string value."""
+    config = load_global_model_config(models_dir)
+    fields = ModelConfig.model_fields
+
+    if key not in fields:
+        valid = ", ".join(sorted(fields.keys()))
+        raise ValueError(f"Unknown config key '{key}'. Valid keys: {valid}")
+
+    annotation = fields[key].annotation
+    origin = getattr(annotation, "__origin__", None)
+    if origin is type(None):
+        raise ValueError(f"Cannot set NoneType field '{key}'")
+
+    args = getattr(annotation, "__args__", None)
+    inner = args[0] if args else annotation
+
+    if inner is bool:
+        coerced: Any = value.lower() in ("1", "true", "yes")
+    elif inner is int:
+        coerced = int(value)
+    elif inner is float:
+        coerced = float(value)
+    else:
+        coerced = value
+
+    updated = config.model_copy(update={key: coerced})
+    save_global_model_config(models_dir, updated)
+    return updated
+
+
 def config_path_for_model(model_path: Path) -> Path:
     """Return the sidecar config path for a model file."""
     return model_path.with_suffix(".toml")

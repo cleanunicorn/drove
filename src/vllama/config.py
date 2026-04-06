@@ -53,6 +53,7 @@ class Config(BaseSettings):
     listen_port: int = 8080
     llama_server_bin: str = "llama-server"
     idle_timeout_seconds: int = 1800  # 30 minutes
+    max_loaded_models: int = 1
     llama_server_host: str = "127.0.0.1"
     tui_theme: str = "textual-dark"
 
@@ -84,6 +85,7 @@ class Config(BaseSettings):
             "listen_port": self.listen_port,
             "llama_server_bin": self.llama_server_bin,
             "idle_timeout_seconds": self.idle_timeout_seconds,
+            "max_loaded_models": self.max_loaded_models,
             "llama_server_host": self.llama_server_host,
             "tui_theme": self.tui_theme,
             "llama_server": {

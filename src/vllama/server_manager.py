@@ -168,7 +168,9 @@ class ServerManager:
         """Ensure llama-server is running for the requested model.
 
         If the model is already loaded, this is a no-op.
-        Multiple models can run simultaneously.
+        When ``max_loaded_models`` would be exceeded, the least-recently-used
+        model is drained (wait for its active requests to finish) and evicted
+        before starting the new one.
         """
         async with self._lock:
             inst = self._instances.get(model_name)
@@ -177,7 +179,44 @@ class ServerManager:
             # Clean up stale instance if process died
             if inst is not None:
                 await self._stop_instance(model_name)
+            await self._evict_if_needed()
             await self._start(model_name)
+
+    async def _evict_if_needed(self) -> None:
+        """Evict the least-recently-used model if we are at capacity.
+
+        Must be called while holding ``self._lock``.
+        """
+        max_models = self._config.max_loaded_models
+        if max_models <= 0:
+            return  # unlimited
+        running = {n: i for n, i in self._instances.items() if i.is_running}
+        if len(running) < max_models:
+            return
+
+        # Pick the model with the oldest last_request_time (LRU)
+        victim_name = min(running, key=lambda n: running[n].last_request_time)
+        victim = running[victim_name]
+
+        # Wait for in-flight requests to drain before stopping
+        if victim.active_requests > 0:
+            logger.info(
+                "Waiting for %d active request(s) on model=%s before evicting",
+                victim.active_requests,
+                victim_name,
+            )
+            # Release the lock while waiting so requests can complete
+            self._lock.release()
+            try:
+                while victim.active_requests > 0:
+                    await asyncio.sleep(0.5)
+            finally:
+                await self._lock.acquire()
+
+        logger.info(
+            "Evicting model=%s to make room (max_loaded_models=%d)", victim_name, max_models
+        )
+        await self._stop_instance(victim_name)
 
     async def stop(self) -> None:
         """Gracefully stop all running llama-server processes."""

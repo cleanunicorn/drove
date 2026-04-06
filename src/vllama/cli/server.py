@@ -107,7 +107,7 @@ def status(
         try:
             while True:
                 typer.clear()
-                _print_status(base)
+                _print_status(base, watch=True)
                 time.sleep(watch)
         except KeyboardInterrupt:
             pass
@@ -116,8 +116,12 @@ def status(
 
 
 
-def _print_status(base: str) -> None:
-    """Fetch and print the server status. Exits on connection failure."""
+def _print_status(base: str, *, watch: bool = False) -> None:
+    """Fetch and print the server status.
+
+    When *watch* is True, connection errors are printed but do not exit,
+    so the caller can retry on the next refresh cycle.
+    """
     import httpx
 
     try:
@@ -125,10 +129,14 @@ def _print_status(base: str) -> None:
         resp.raise_for_status()
     except httpx.ConnectError:
         typer.echo("Server is not running.")
-        raise typer.Exit(1)
+        if not watch:
+            raise typer.Exit(1)
+        return
     except httpx.HTTPError as e:
         typer.echo(f"Failed to connect: {e}", err=True)
-        raise typer.Exit(1)
+        if not watch:
+            raise typer.Exit(1)
+        return
 
     data = resp.json()
 

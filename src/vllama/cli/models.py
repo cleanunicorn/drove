@@ -410,13 +410,17 @@ def model_config_cmd(
             return
 
         if effective_key is None:
+            base = _base_model_config(ctx)
             cfg = load_global_model_config(models_dir)
-            params = cfg.to_dict()
-            if not params:
-                typer.echo("No global model config set.")
-            else:
-                for k, v in params.items():
-                    typer.echo(f"{k} = {v}")
+            all_fields = ModelConfig().model_dump()
+            typer.echo("Global model config (effective):\n")
+            _print_resolved_config(
+                all_fields,
+                [
+                    ("config.toml", base.to_dict()),
+                    ("_global.toml", cfg.to_dict()),
+                ],
+            )
             return
 
         if effective_value is None:
@@ -462,13 +466,19 @@ def model_config_cmd(
         return
 
     if key is None:
-        cfg = load_model_config(model_path)
-        params = cfg.to_dict()
-        if not params:
-            typer.echo(f"No config set for model '{name}'.")
-        else:
-            for k, v in params.items():
-                typer.echo(f"{k} = {v}")
+        base = _base_model_config(ctx)
+        global_cfg = load_global_model_config(models_dir)
+        model_cfg = load_model_config(model_path)
+        all_fields = ModelConfig().model_dump()
+        typer.echo(f"Model '{name}' config (effective):\n")
+        _print_resolved_config(
+            all_fields,
+            [
+                ("config.toml", base.to_dict()),
+                ("_global.toml", global_cfg.to_dict()),
+                (f"{name}.toml", model_cfg.to_dict()),
+            ],
+        )
         return
 
     if value is None:
@@ -483,3 +493,36 @@ def model_config_cmd(
     except ValueError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
+
+
+def _base_model_config(ctx: typer.Context) -> ModelConfig:
+    """Build the base ModelConfig from config.toml [llama_server] defaults."""
+    config = ctx.obj["config"]
+    return ModelConfig(
+        n_gpu_layers=config.llama_server.n_gpu_layers,
+        threads=config.llama_server.threads,
+    )
+
+
+def _print_resolved_config(
+    all_fields: dict[str, object],
+    layers: list[tuple[str, dict[str, object]]],
+) -> None:
+    """Print all ModelConfig fields with resolved values and their source.
+
+    *layers* is an ordered list of ``(label, set_values)`` pairs from lowest
+    to highest priority.  The last layer that sets a field wins.
+    """
+    for field, default in all_fields.items():
+        source = None
+        value = default
+        for label, vals in layers:
+            if field in vals:
+                value = vals[field]
+                source = label
+        if source:
+            typer.echo(f"  {field} = {value}  ({source})")
+        elif value is not None:
+            typer.echo(f"  {field} = {value}  (default)")
+        else:
+            typer.echo(f"  {field} = (not set)")

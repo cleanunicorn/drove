@@ -33,7 +33,8 @@ async def aiter(items: list[bytes]):  # type: ignore[return]
 
 def test_observe_enabled_writes_log(tmp_path: Path) -> None:
     config = make_config(tmp_path, observe=True)
-    (config.models_dir / "testmodel.gguf").write_bytes(b"")
+    (config.models_dir / "testmodel").mkdir(parents=True, exist_ok=True)
+    (config.models_dir / "testmodel" / "testmodel.gguf").write_bytes(b"")
 
     app = create_app(config)
     manager = app.state.manager
@@ -76,7 +77,8 @@ def test_observe_enabled_writes_log(tmp_path: Path) -> None:
 
 def test_observe_disabled_writes_nothing(tmp_path: Path) -> None:
     config = make_config(tmp_path, observe=False)
-    (config.models_dir / "testmodel.gguf").write_bytes(b"")
+    (config.models_dir / "testmodel").mkdir(parents=True, exist_ok=True)
+    (config.models_dir / "testmodel" / "testmodel.gguf").write_bytes(b"")
 
     app = create_app(config)
     manager = app.state.manager
@@ -104,7 +106,8 @@ def test_observe_disabled_writes_nothing(tmp_path: Path) -> None:
 
 def test_observe_record_contains_request_body(tmp_path: Path) -> None:
     config = make_config(tmp_path, observe=True)
-    (config.models_dir / "testmodel.gguf").write_bytes(b"")
+    (config.models_dir / "testmodel").mkdir(parents=True, exist_ok=True)
+    (config.models_dir / "testmodel" / "testmodel.gguf").write_bytes(b"")
 
     app = create_app(config)
     manager = app.state.manager

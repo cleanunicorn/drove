@@ -49,8 +49,9 @@ def test_proxy_unknown_model_returns_404(tmp_path: Path) -> None:
 def test_proxy_forwards_when_server_running(tmp_path: Path) -> None:
     config = make_config(tmp_path)
 
-    # Create a fake model file
-    (config.models_dir / "testmodel.gguf").write_bytes(b"")
+    # Create a fake model directory
+    (config.models_dir / "testmodel").mkdir(parents=True, exist_ok=True)
+    (config.models_dir / "testmodel" / "testmodel.gguf").write_bytes(b"")
 
     app = create_app(config)
     manager = app.state.manager
@@ -107,7 +108,8 @@ def test_status_endpoint_no_model(tmp_path: Path) -> None:
 
 def test_status_tracks_requests(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    (config.models_dir / "testmodel.gguf").write_bytes(b"")
+    (config.models_dir / "testmodel").mkdir(parents=True, exist_ok=True)
+    (config.models_dir / "testmodel" / "testmodel.gguf").write_bytes(b"")
 
     app = create_app(config)
     manager = app.state.manager

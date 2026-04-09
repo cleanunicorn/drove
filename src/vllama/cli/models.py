@@ -17,6 +17,7 @@ from vllama.model_config import (
     load_download_info,
     load_global_model_config,
     load_model_config,
+    resolve_model_alias,
     save_download_info,
     save_global_model_config,
     save_model_config,
@@ -45,10 +46,11 @@ def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
 
     names: list[str] = []
     for p in sorted(models_dir.iterdir()):
-        if p.suffix.lower() == ".gguf" and p.is_file():
-            names.append(p.stem)
-        elif p.is_dir() and not p.name.startswith("."):
+        if p.is_dir() and not p.name.startswith("."):
             names.append(p.name)
+        elif p.suffix.lower() == ".gguf" and p.is_file():
+            # Legacy: single file without directory
+            names.append(p.stem)
 
     return [n for n in names if n.lower().startswith(incomplete.lower())]
 
@@ -56,61 +58,76 @@ def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
 _MODEL_EXTS = {".gguf", ".safetensors", ".bin", ".pt"}
 
 
+def _resolve_name(models_dir: Path, name: str) -> str:
+    """Resolve a model name or HuggingFace reference to a local name."""
+    if "/" in name:
+        local = resolve_model_alias(models_dir, name)
+        if local:
+            return local
+    return name
+
+
 def _model_root(models_dir: Path, name: str) -> Path | None:
-    """Return the root path for a model (file or directory), or None if absent."""
-    candidate = models_dir / f"{name}.gguf"
-    if candidate.exists():
-        return candidate
+    """Return the model directory, or None if absent."""
+    name = _resolve_name(models_dir, name)
     subdir = models_dir / name
     if subdir.is_dir():
         return subdir
+    # Legacy: single file without directory
+    candidate = models_dir / f"{name}.gguf"
+    if candidate.exists():
+        return candidate
     return None
 
 
 def _find_model(models_dir: Path, name: str) -> Path:
-    """Locate the primary model file by name.
+    """Locate the primary model file by name or HuggingFace reference.
 
-    Returns the primary file path:
-    - Single GGUF: models_dir/<name>.gguf
-    - Sharded / multi-file: first shard inside models_dir/<name>/ (recursive)
+    Returns the primary file path (first GGUF inside the model directory).
     """
-    candidate = models_dir / f"{name}.gguf"
-    if candidate.exists():
-        return candidate
-
+    name = _resolve_name(models_dir, name)
     subdir = models_dir / name
     if subdir.is_dir():
-        # Search recursively so nested cache dirs (e.g. .cache/huggingface/) are found
         shards = sorted(p for p in subdir.rglob("*.gguf"))
         if shards:
             return shards[0]
-        others = sorted(p for p in subdir.rglob("*") if p.suffix.lower() in _MODEL_EXTS)
+        others = sorted(
+            p for p in subdir.rglob("*")
+            if p.suffix.lower() in _MODEL_EXTS
+        )
         if others:
             return others[0]
+
+    # Legacy: single file without directory
+    candidate = models_dir / f"{name}.gguf"
+    if candidate.exists():
+        return candidate
 
     typer.echo(f"Model '{name}' not found.", err=True)
     raise typer.Exit(1)
 
 
 def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
-    """Yield (name, primary_path, total_bytes) for each model."""
+    """Return (name, primary_path, total_bytes) for each model."""
     results = []
 
     if not models_dir.exists():
         return results
 
     for p in sorted(models_dir.iterdir()):
-        if p.suffix.lower() == ".gguf" and p.is_file():
-            results.append((p.stem, p, p.stat().st_size))
-        elif p.is_dir() and not p.name.startswith("."):
+        if p.is_dir() and not p.name.startswith("."):
             files = [f for f in p.rglob("*") if f.is_file()]
             total = sum(f.stat().st_size for f in files)
-            # Primary file = first shard or first file
-            primary = sorted(f for f in files if f.suffix.lower() == ".gguf")
+            primary = sorted(
+                f for f in files if f.suffix.lower() == ".gguf"
+            )
             if not primary:
                 primary = sorted(files)
             if primary:
                 results.append((p.name, primary[0], total))
+        elif p.suffix.lower() == ".gguf" and p.is_file():
+            # Legacy: single file without directory
+            results.append((p.stem, p, p.stat().st_size))
 
     return results
 
@@ -206,7 +223,7 @@ def delete_model(
         typer.echo(f"Model '{name}' not found.", err=True)
         raise typer.Exit(1)
 
-    target_str = f"{root}/" if root.is_dir() else str(root)
+    target_str = f"{root}/"
 
     if not yes:
         typer.confirm(f"Delete model '{name}' at {target_str}?", abort=True)
@@ -214,6 +231,7 @@ def delete_model(
     if root.is_dir():
         shutil.rmtree(root)
     else:
+        # Legacy: single file without directory
         root.unlink()
     typer.echo(f"Deleted {target_str}")
 

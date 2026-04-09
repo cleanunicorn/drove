@@ -137,31 +137,13 @@ class DownloadPlan:
     def total_bytes(self) -> int:
         return sum(self.files.values()) + sum(self.mmproj_files.values())
 
-    @property
-    def dest_is_dir(self) -> bool:
-        return self.sharded or len(self.files) > 1
-
     def destination(self, models_dir: Path) -> Path:
-        if self.dest_is_dir:
-            return models_dir / self.local_name
-        return models_dir / f"{self.local_name}.gguf"
-
-    def _model_dir(self, models_dir: Path) -> Path:
-        """Return the directory that contains the model (and mmproj) files."""
-        dest = self.destination(models_dir)
-        if self.dest_is_dir:
-            return dest
-        return dest.parent
+        """Return the model directory (always a directory)."""
+        return models_dir / self.local_name
 
     def _local_path(self, repo_file: str, models_dir: Path) -> Path:
         """Return the expected local path for a repo file after flattening."""
-        dest = self.destination(models_dir)
-        if self.dest_is_dir:
-            return dest / Path(repo_file).name
-        # Single-file model: model lives at dest, mmproj lives alongside it
-        if repo_file in self.mmproj_files:
-            return dest.parent / Path(repo_file).name
-        return dest
+        return self.destination(models_dir) / Path(repo_file).name
 
     def _all_remote_files(self) -> dict[str, int]:
         """Return all files (model + mmproj) with their remote sizes."""
@@ -198,78 +180,33 @@ class DownloadPlan:
     ) -> Path:
         """Download all files and return the path to the model entry point."""
         dest = self.destination(models_dir)
+        dest.mkdir(parents=True, exist_ok=True)
         all_files = sorted(self.file_names) + sorted(self.mmproj_files.keys())
         total_count = len(all_files)
         statuses = self.check_local_files(models_dir)
 
-        if self.dest_is_dir:
-            dest.mkdir(parents=True, exist_ok=True)
-            for i, repo_file in enumerate(all_files):
-                status, _ = statuses.get(
-                    repo_file, (FileStatus.MISSING, 0)
-                )
-                if status == FileStatus.COMPLETE:
-                    if progress_cb:
-                        progress_cb(i + 1, total_count, f"{repo_file} (skipped)")
-                    continue
-                if progress_cb:
-                    progress_cb(i + 1, total_count, repo_file)
-                downloaded = hf_hub_download(
-                    repo_id=self.repo_id,
-                    filename=repo_file,
-                    local_dir=str(dest),
-                )
-                # Flatten any repo subdirectory structure
-                downloaded_path = Path(downloaded)
-                flat_path = dest / downloaded_path.name
-                if downloaded_path != flat_path and downloaded_path.exists():
-                    downloaded_path.rename(flat_path)
-            primary = dest / Path(first_shard(self.file_names)).name
-        else:
-            repo_file = self.file_names[0]
-            status, _ = statuses.get(repo_file, (FileStatus.MISSING, 0))
+        for i, repo_file in enumerate(all_files):
+            status, _ = statuses.get(
+                repo_file, (FileStatus.MISSING, 0)
+            )
             if status == FileStatus.COMPLETE:
                 if progress_cb:
-                    progress_cb(1, 1, f"{repo_file} (skipped)")
-            else:
-                if progress_cb:
-                    progress_cb(1, 1, repo_file)
-                downloaded = hf_hub_download(
-                    repo_id=self.repo_id,
-                    filename=repo_file,
-                    local_dir=str(models_dir),
-                )
-                downloaded_path = Path(downloaded)
-                if downloaded_path.name != dest.name:
-                    downloaded_path.rename(dest)
-            primary = dest
+                    progress_cb(i + 1, total_count, f"{repo_file} (skipped)")
+                continue
+            if progress_cb:
+                progress_cb(i + 1, total_count, repo_file)
+            downloaded = hf_hub_download(
+                repo_id=self.repo_id,
+                filename=repo_file,
+                local_dir=str(dest),
+            )
+            # Flatten any repo subdirectory structure
+            downloaded_path = Path(downloaded)
+            flat_path = dest / downloaded_path.name
+            if downloaded_path != flat_path and downloaded_path.exists():
+                downloaded_path.rename(flat_path)
 
-        # Download mmproj files alongside the model (in the same directory)
-        if self.mmproj_files and not self.dest_is_dir:
-            model_dir = self._model_dir(models_dir)
-            mmproj_sorted = sorted(self.mmproj_files.keys())
-            for i, repo_file in enumerate(mmproj_sorted):
-                idx = len(self.files) + i + 1
-                status, _ = statuses.get(
-                    repo_file, (FileStatus.MISSING, 0)
-                )
-                if status == FileStatus.COMPLETE:
-                    if progress_cb:
-                        progress_cb(idx, total_count, f"{repo_file} (skipped)")
-                    continue
-                if progress_cb:
-                    progress_cb(idx, total_count, repo_file)
-                downloaded = hf_hub_download(
-                    repo_id=self.repo_id,
-                    filename=repo_file,
-                    local_dir=str(model_dir),
-                )
-                downloaded_path = Path(downloaded)
-                flat_path = model_dir / downloaded_path.name
-                if downloaded_path != flat_path and downloaded_path.exists():
-                    downloaded_path.rename(flat_path)
-
-        return primary
+        return dest / Path(first_shard(self.file_names)).name
 
 
 ProgressCallback = "Callable[[int, int, str], None]"

@@ -134,14 +134,16 @@ class ServerManager:
         for name, inst in self._instances.items():
             if not inst.is_running:
                 continue
-            result.append({
-                "name": name,
-                "loaded_seconds": round(now - inst.loaded_at, 1),
-                "idle_seconds": round(inst.idle_seconds, 1),
-                "idle_timeout_seconds": self._config.idle_timeout_seconds,
-                "active_requests": inst.active_requests,
-                "port": inst.port,
-            })
+            result.append(
+                {
+                    "name": name,
+                    "loaded_seconds": round(now - inst.loaded_at, 1),
+                    "idle_seconds": round(inst.idle_seconds, 1),
+                    "idle_timeout_seconds": self._config.idle_timeout_seconds,
+                    "active_requests": inst.active_requests,
+                    "port": inst.port,
+                }
+            )
         return result
 
     def record_request(self, model_name: str) -> None:
@@ -328,9 +330,7 @@ class ServerManager:
         )
         # Layer on global model config from _global.toml in models dir
         global_model_cfg = load_global_model_config(self._config.models_dir)
-        merged = base_cfg.model_copy(
-            update={k: v for k, v in global_model_cfg.to_dict().items()}
-        )
+        merged = base_cfg.model_copy(update={k: v for k, v in global_model_cfg.to_dict().items()})
         # Model-specific overrides take precedence
         merged = merged.model_copy(update={k: v for k, v in model_cfg.to_dict().items()})
 
@@ -378,9 +378,7 @@ class ServerManager:
                 continue  # never shut down while requests are in-flight
             idle = time.monotonic() - inst.last_request_time
             if idle >= self._config.idle_timeout_seconds:
-                logger.info(
-                    "Idle timeout reached for model=%s (%.0fs), stopping", model_name, idle
-                )
+                logger.info("Idle timeout reached for model=%s (%.0fs), stopping", model_name, idle)
                 async with self._lock:
                     await self._stop_instance(model_name)
                 return

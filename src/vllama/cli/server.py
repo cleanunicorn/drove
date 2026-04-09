@@ -115,7 +115,6 @@ def status(
         _print_status(base)
 
 
-
 def _print_status(base: str, *, watch: bool = False) -> None:
     """Fetch and print the server status.
 
@@ -153,14 +152,10 @@ def _print_status(base: str, *, watch: bool = False) -> None:
         for model in models:
             typer.echo(f"  - {model['name']}")
             if model.get("loaded_seconds") is not None:
-                typer.echo(
-                    f"    Loaded:  {_fmt_duration(model['loaded_seconds'])} ago"
-                )
+                typer.echo(f"    Loaded:  {_fmt_duration(model['loaded_seconds'])} ago")
             idle = model.get("idle_seconds", 0)
             timeout = model.get("idle_timeout_seconds", 0)
-            typer.echo(
-                f"    Idle:    {_fmt_duration(idle)} / {_fmt_duration(timeout)}"
-            )
+            typer.echo(f"    Idle:    {_fmt_duration(idle)} / {_fmt_duration(timeout)}")
             if model.get("active_requests", 0) > 0:
                 typer.echo(f"    Active:  {model['active_requests']} request(s)")
     else:

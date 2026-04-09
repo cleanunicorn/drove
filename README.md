@@ -23,6 +23,7 @@ llama-server --version
 - **Interactive chat** — TUI chat interface with session persistence, collapsible thinking, and token speed display
 - **Any OpenAI endpoint** — chat with local models or connect to any OpenAI-compatible API (OpenAI, Groq, etc.)
 - **OpenAI-compatible API** — full proxy with `/v1/chat/completions`, `/v1/models`, and server stats
+- **Observability** — log all API requests/responses to disk and browse them in a TUI
 - **Live metrics** — token speed (tok/s), TTFT, and usage stats via `vllama server status`
 - **Systemd support** — optional user service for persistent operation
 
@@ -133,6 +134,48 @@ TTFT:      0.000s (last), 0.000s (avg)
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--watch` | `-w` | Continuously refresh every N seconds (default 2 if no value given) |
+
+---
+
+### `vllama observe`
+
+Browse logged API requests and responses in a TUI. Enable observation logging first by setting `observe = true` in your config:
+
+```bash
+# Enable logging
+vllama config observe true
+
+# Browse all logged requests
+vllama observe
+
+# Filter by model
+vllama observe Qwen3.5-35B-A3B-Q4_K_M
+```
+
+The TUI shows a list of requests on the left and a detail pane on the right. Select a request to inspect its headers, request body, and response. Streaming responses (SSE) are automatically assembled into readable output — the full content, reasoning, and tool calls are combined into a single JSON view. The raw SSE stream is available in a collapsed "Raw Response" section for advanced debugging.
+
+Logs are stored in `~/.local/share/vllama/observe/` (configurable via `observe_dir`).
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `model`  | Filter logs by model name (optional) |
+
+**Key bindings:**
+
+| Key | Action |
+|-----|--------|
+| Arrow keys | Navigate request list |
+| `r` | Refresh the list |
+| `q` / `Escape` | Quit |
+
+**Configuration keys:**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `observe` | `false` | Enable request/response logging |
+| `observe_dir` | `~/.local/share/vllama/observe` | Log storage directory |
 
 ---
 
@@ -329,6 +372,8 @@ vllama config llama_server.n_gpu_layers 42
 |-----|---------|-------------|
 | `models_dir` | `~/.local/share/vllama/models` | Model storage directory |
 | `sessions_dir` | `~/.local/share/vllama/sessions` | Chat session storage |
+| `observe` | `false` | Enable request/response logging |
+| `observe_dir` | `~/.local/share/vllama/observe` | Observe log storage |
 | `listen_host` | `0.0.0.0` | Server listen host |
 | `listen_port` | `8080` | Server listen port |
 | `llama_server_bin` | `llama-server` | Path to llama-server binary |

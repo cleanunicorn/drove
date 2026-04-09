@@ -348,7 +348,8 @@ def model_config_cmd(
     global_config: Annotated[
         bool,
         typer.Option(
-            "--global", "-g",
+            "--global",
+            "-g",
             help="Force global config mode.",
         ),
     ] = False,
@@ -434,11 +435,12 @@ def model_config_cmd(
 
         try:
             set_global_model_config_key(
-                models_dir, effective_key, effective_value,
+                models_dir,
+                effective_key,
+                effective_value,
             )
             typer.echo(
-                f"Set '{effective_key}' = {effective_value}"
-                " in global config.",
+                f"Set '{effective_key}' = {effective_value} in global config.",
             )
         except ValueError as e:
             typer.echo(str(e), err=True)

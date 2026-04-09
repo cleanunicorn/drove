@@ -287,8 +287,40 @@ def _select_model_from_endpoint(base_url: str, api_key: str | None) -> str | Non
             if 1 <= choice <= len(names):
                 return names[choice - 1]
             typer.echo(f"Please enter a number between 1 and {len(names)}")
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             typer.echo("Please enter a valid number")
+
+
+@app.command()
+def observe(
+    ctx: typer.Context,
+    model: Annotated[
+        str | None,
+        typer.Argument(help="Filter by model name.", autocompletion=_complete_model_name),
+    ] = None,
+) -> None:
+    """Browse logged API requests and responses.
+
+    Enable observation logging by setting `observe = true` in config.
+    Logs are stored in the observe_dir (default ~/.local/share/vllama/observe/).
+    """
+    from vllama.observe_tui import ObserveApp
+
+    config = ctx.obj["config"]
+    if not config.observe_dir.exists():
+        typer.echo("No observe logs found.")
+        typer.echo(
+            "Enable observation by setting 'observe = true' in your config, "
+            "then make some requests."
+        )
+        raise typer.Exit(1)
+
+    tui = ObserveApp(
+        observe_dir=config.observe_dir,
+        model=model,
+        theme=config.tui_theme,
+    )
+    tui.run()
 
 
 @app.command("init")

@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from vllama.config import Config, load_config
+from vllama.observe import ObserveContext, save_record
 from vllama.server_manager import ServerManager
 from vllama.stats import ProxyStats
 
@@ -193,6 +194,21 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
             headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
             body = await request.body()
 
+            # Build observe context if observation is enabled
+            current_config: Config = app.state.config
+            obs_ctx: ObserveContext | None = None
+            if current_config.observe:
+                from datetime import datetime
+
+                obs_ctx = ObserveContext(
+                    timestamp=datetime.now().isoformat(timespec="seconds"),
+                    model=resolved_model,
+                    endpoint=path,
+                    method=request.method,
+                    request_headers=dict(headers),
+                    request_body=body,
+                )
+
             try:
                 upstream = client.build_request(
                     method=request.method,
@@ -209,8 +225,19 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP
             }
 
+            if obs_ctx is not None:
+                obs_ctx.response_status = resp.status_code
+                obs_ctx.response_headers = dict(response_headers)
+
             return StreamingResponse(
-                content=_counting_stream(resp.aiter_raw(), stats, manager, resolved_model),
+                content=_counting_stream(
+                    resp.aiter_raw(),
+                    stats,
+                    manager,
+                    resolved_model,
+                    obs_ctx,
+                    current_config.observe_dir,
+                ),
                 status_code=resp.status_code,
                 headers=response_headers,
                 media_type=resp.headers.get("content-type"),
@@ -312,6 +339,8 @@ async def _counting_stream(
     stats: ProxyStats,
     manager: ServerManager,
     model_name: str,
+    obs_ctx: ObserveContext | None = None,
+    observe_dir: Path | None = None,
 ) -> AsyncIterator[bytes]:
     """Wrap a response stream, collecting bytes to extract token usage afterwards."""
     try:
@@ -324,15 +353,39 @@ async def _counting_stream(
             chunks.append(chunk)
             yield chunk
         t_end = time.monotonic()
-        if t_first_chunk is not None:
-            stats.record_ttft(t_first_chunk - t_start)
-        _record_usage(b"".join(chunks), stats, t_end - t_start)
+        duration = t_end - t_start
+        ttft = (t_first_chunk - t_start) if t_first_chunk is not None else None
+        if ttft is not None:
+            stats.record_ttft(ttft)
+        full_body = b"".join(chunks)
+        tokens = _record_usage(full_body, stats, duration)
+
+        # Fire-and-forget observe logging
+        if obs_ctx is not None and observe_dir is not None:
+            obs_ctx.response_body = full_body
+            obs_ctx.duration_seconds = duration
+            obs_ctx.ttft_seconds = ttft
+            obs_ctx.tokens_prompt = int(tokens.get("prompt") or 0)
+            obs_ctx.tokens_completion = int(tokens.get("completion") or 0)
+            speed = tokens.get("speed")
+            obs_ctx.tokens_per_second = float(speed) if speed is not None else None
+            asyncio.create_task(_save_observe_record(obs_ctx, observe_dir))
     except Exception:
         stats.request_error()
         raise
     finally:
         manager.request_finished(model_name)
         stats.request_finished()
+
+
+async def _save_observe_record(obs_ctx: ObserveContext, observe_dir: Path) -> None:
+    """Write an observe record to disk (runs as a fire-and-forget task)."""
+    try:
+        record = obs_ctx.to_record()
+        save_record(observe_dir, record)
+        logger.debug("Observe record saved: %s", record.id)
+    except Exception as e:
+        logger.warning("Failed to save observe record: %s", e)
 
 
 def _extract_tokens_from_obj(data: dict[str, object], out: dict[str, int | float | None]) -> None:
@@ -354,8 +407,13 @@ def _extract_tokens_from_obj(data: dict[str, object], out: dict[str, int | float
             out["speed"] = timings["predicted_per_second"]
 
 
-def _record_usage(body: bytes, stats: ProxyStats, duration: float = 0.0) -> None:
-    """Best-effort extraction of token usage from a response body."""
+def _record_usage(
+    body: bytes, stats: ProxyStats, duration: float = 0.0
+) -> dict[str, int | float | None]:
+    """Best-effort extraction of token usage from a response body.
+
+    Returns the extracted token dict with keys: prompt, completion, speed.
+    """
     text = body.decode("utf-8", errors="replace")
     tokens_out: dict[str, int | float | None] = {"prompt": 0, "completion": 0, "speed": None}
 
@@ -395,3 +453,5 @@ def _record_usage(body: bytes, stats: ProxyStats, duration: float = 0.0) -> None
         stats.record_completion_speed(completion_tokens, completion_tokens / tok_per_sec)
     elif completion_tokens > 0 and duration > 0:
         stats.record_completion_speed(completion_tokens, duration)
+
+    return tokens_out

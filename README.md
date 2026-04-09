@@ -139,32 +139,51 @@ TTFT:      0.000s (last), 0.000s (avg)
 
 ### `vllama observe`
 
-Browse logged API requests and responses in a TUI. Enable observation logging first by setting `observe = true` in your config:
+Browse logged API requests and responses. Enable observation logging first by setting `observe = true` in your config:
 
 ```bash
 # Enable logging
 vllama config observe true
 
-# Browse all logged requests
+# Browse in TUI (default)
 vllama observe
 
 # Filter by model
-vllama observe Qwen3.5-35B-A3B-Q4_K_M
+vllama observe -m Qwen3.5-35B-A3B-Q4_K_M
+
+# Start a web UI instead
+vllama observe web
+vllama observe web --port 9090
+vllama observe web -m Qwen3.5-35B-A3B-Q4_K_M
 ```
 
-The TUI shows a list of requests on the left and a detail pane on the right. Select a request to inspect its headers, request body, and response. Streaming responses (SSE) are automatically assembled into readable output — the full content, reasoning, and tool calls are combined into a single JSON view. The raw SSE stream is available in a collapsed "Raw Response" section for advanced debugging.
+Both the TUI and web UI show a list of requests with a detail pane. Select a request to inspect its headers, request body, and response. Streaming responses (SSE) are automatically assembled into readable output — the full content, reasoning, and tool calls are combined into a single JSON view. The raw SSE stream is available in a collapsed "Raw Response" section for advanced debugging.
 
 <p align="center"><img src="assets/observe-tui.svg" alt="vllama observe TUI screenshot" width="100%"></p>
 
 Logs are stored in `~/.local/share/vllama/observe/` (configurable via `observe_dir`).
 
-**Arguments:**
+**Options:**
 
-| Argument | Description |
-|----------|-------------|
-| `model`  | Filter logs by model name (optional) |
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--model` | `-m` | Filter logs by model name |
 
-**Key bindings:**
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| *(none)* | Open the TUI browser (default) |
+| `web` | Start a web UI server |
+
+**`vllama observe web` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--host` | `127.0.0.1` | Web server listen host |
+| `--port` | `8877` | Web server listen port |
+
+**TUI key bindings:**
 
 | Key | Action |
 |-----|--------|

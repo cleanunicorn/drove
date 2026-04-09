@@ -387,7 +387,7 @@ class ChatApp(App[None]):
                 result = tool_results.get(tc.get("id", ""), "")
                 await bubble.append_tool_call(name, arguments, result)
 
-        self._scroll_to_bottom()
+        self._scroll_to_bottom(force=True)
 
     # ── Slash commands ──────────────────────────────────────────────────────────
 
@@ -588,7 +588,7 @@ class ChatApp(App[None]):
         await self.query_one("#messages").mount(user_bubble)
         self._history.append({"role": "user", "content": text})
         self._session.messages = self._history
-        self._scroll_to_bottom()
+        self._scroll_to_bottom(force=True)
 
         t_start = time.monotonic()
         t_first: float | None = None
@@ -779,8 +779,9 @@ class ChatApp(App[None]):
             parts.append(f"{len(self._queue)} queued")
         self.query_one("#status-label", Label).update("  •  ".join(parts))
 
-    def _scroll_to_bottom(self) -> None:
+    def _scroll_to_bottom(self, force: bool = False) -> None:
         container = self.query_one("#messages", ScrollableContainer)
-        # Only auto-scroll if the user is near the bottom
-        if container.max_scroll_y - container.scroll_y <= 2:
+        # Auto-scroll only if already near the bottom or forced
+        near_bottom = (container.max_scroll_y - container.scroll_y) <= 5
+        if force or near_bottom:
             container.scroll_end(animate=False)

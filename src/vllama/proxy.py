@@ -28,6 +28,9 @@ _CONFIG_POLL_SECONDS = 5
 # Settings that cannot be changed without restarting the proxy process
 _RESTART_REQUIRED = {"listen_host", "listen_port"}
 
+# Strong references to fire-and-forget tasks so they are not garbage-collected.
+_background_tasks: set[asyncio.Task[None]] = set()
+
 # Header names to strip when forwarding (hop-by-hop)
 _HOP_BY_HOP = frozenset(
     [
@@ -369,7 +372,9 @@ async def _counting_stream(
             obs_ctx.tokens_completion = int(tokens.get("completion") or 0)
             speed = tokens.get("speed")
             obs_ctx.tokens_per_second = float(speed) if speed is not None else None
-            asyncio.create_task(_save_observe_record(obs_ctx, observe_dir))
+            task = asyncio.create_task(_save_observe_record(obs_ctx, observe_dir))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
     except Exception:
         stats.request_error()
         raise

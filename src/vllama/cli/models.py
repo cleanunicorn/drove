@@ -91,10 +91,7 @@ def _find_model(models_dir: Path, name: str) -> Path:
         shards = sorted(p for p in subdir.rglob("*.gguf"))
         if shards:
             return shards[0]
-        others = sorted(
-            p for p in subdir.rglob("*")
-            if p.suffix.lower() in _MODEL_EXTS
-        )
+        others = sorted(p for p in subdir.rglob("*") if p.suffix.lower() in _MODEL_EXTS)
         if others:
             return others[0]
 
@@ -118,9 +115,7 @@ def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
         if p.is_dir() and not p.name.startswith("."):
             files = [f for f in p.rglob("*") if f.is_file()]
             total = sum(f.stat().st_size for f in files)
-            primary = sorted(
-                f for f in files if f.suffix.lower() == ".gguf"
-            )
+            primary = sorted(f for f in files if f.suffix.lower() == ".gguf")
             if not primary:
                 primary = sorted(files)
             if primary:
@@ -344,9 +339,7 @@ def download_model(
 
     statuses = plan.check_local_files(models_dir)
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
-    all_complete = has_existing and all(
-        s == FileStatus.COMPLETE for s, _ in statuses.values()
-    )
+    all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
 
     if all_complete:
         typer.echo(
@@ -359,9 +352,7 @@ def download_model(
 
     if not yes:
         if has_existing:
-            typer.confirm(
-                "Some files already exist. Resume download?", abort=True
-            )
+            typer.confirm("Some files already exist. Resume download?", abort=True)
         else:
             typer.confirm("Proceed with download?", abort=True)
 

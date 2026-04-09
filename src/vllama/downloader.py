@@ -16,6 +16,7 @@ class FileStatus(enum.Enum):
     COMPLETE = "complete"
     INCOMPLETE = "incomplete"
 
+
 # Matches shard suffixes like -00001-of-00012
 _SHARD_RE = re.compile(r"-\d{5}-of-\d{5}", re.IGNORECASE)
 
@@ -152,9 +153,7 @@ class DownloadPlan:
         all_files.update(self.mmproj_files)
         return all_files
 
-    def check_local_files(
-        self, models_dir: Path
-    ) -> dict[str, tuple[FileStatus, int]]:
+    def check_local_files(self, models_dir: Path) -> dict[str, tuple[FileStatus, int]]:
         """Check local status of each file.
 
         Returns {repo_filename: (status, local_size_bytes)}.
@@ -186,9 +185,7 @@ class DownloadPlan:
         statuses = self.check_local_files(models_dir)
 
         for i, repo_file in enumerate(all_files):
-            status, _ = statuses.get(
-                repo_file, (FileStatus.MISSING, 0)
-            )
+            status, _ = statuses.get(repo_file, (FileStatus.MISSING, 0))
             if status == FileStatus.COMPLETE:
                 if progress_cb:
                     progress_cb(i + 1, total_count, f"{repo_file} (skipped)")

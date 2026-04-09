@@ -372,10 +372,7 @@ class ServerManager:
         # Model directory
         subdir = models_dir / name
         if subdir.is_dir():
-            shards = sorted(
-                p for p in subdir.iterdir()
-                if p.suffix.lower() == ".gguf"
-            )
+            shards = sorted(p for p in subdir.iterdir() if p.suffix.lower() == ".gguf")
             if shards:
                 return shards[0]
 

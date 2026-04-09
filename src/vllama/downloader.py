@@ -65,6 +65,27 @@ def filter_by_quant(files: dict[str, int], quant: str) -> dict[str, int]:
     return {f: s for f, s in files.items() if q in Path(f).name.lower()}
 
 
+# Preferred mmproj variants, best first.
+_MMPROJ_PREF = ["f16", "bf16", "f32"]
+
+
+def pick_mmproj(files: dict[str, int]) -> dict[str, int]:
+    """Select a single mmproj file from multiple variants.
+
+    Preference order: F16 > BF16 > F32 > smallest file.
+    """
+    if len(files) <= 1:
+        return files
+    names = list(files.keys())
+    for tag in _MMPROJ_PREF:
+        for name in names:
+            if tag in Path(name).stem.lower():
+                return {name: files[name]}
+    # Fallback: pick smallest
+    smallest = min(names, key=lambda n: files[n])
+    return {smallest: files[smallest]}
+
+
 def is_sharded(files: list[str]) -> bool:
     """True when files contain shard suffixes (-00001-of-00012)."""
     return any(_SHARD_RE.search(Path(f).name) for f in files)
@@ -277,12 +298,8 @@ def resolve_download(
                 f"No files matching quantization '{quant}' in '{repo_id}'.\nAvailable: {available}"
             )
         files = matched
-        # Also filter mmproj files by quant if there are multiple variants
-        if len(mmproj_files) > 1:
-            matched_mmproj = filter_by_quant(mmproj_files, quant)
-            if matched_mmproj:
-                mmproj_files = matched_mmproj
 
+    mmproj_files = pick_mmproj(mmproj_files)
     sharded = is_sharded(list(files.keys()))
     local_name = name_override or infer_local_name(repo_id, list(files.keys()), quant)
 

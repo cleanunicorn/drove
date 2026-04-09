@@ -154,6 +154,8 @@ vllama observe Qwen3.5-35B-A3B-Q4_K_M
 
 The TUI shows a list of requests on the left and a detail pane on the right. Select a request to inspect its headers, request body, and response. Streaming responses (SSE) are automatically assembled into readable output — the full content, reasoning, and tool calls are combined into a single JSON view. The raw SSE stream is available in a collapsed "Raw Response" section for advanced debugging.
 
+<p align="center"><img src="assets/observe-tui.svg" alt="vllama observe TUI screenshot" width="100%"></p>
+
 Logs are stored in `~/.local/share/vllama/observe/` (configurable via `observe_dir`).
 
 **Arguments:**

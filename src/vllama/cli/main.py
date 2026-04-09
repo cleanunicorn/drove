@@ -291,19 +291,46 @@ def _select_model_from_endpoint(base_url: str, api_key: str | None) -> str | Non
             typer.echo("Please enter a valid number")
 
 
-@app.command()
-def observe(
+observe_app = typer.Typer(
+    help="Browse logged API requests and responses.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+app.add_typer(observe_app, name="observe")
+
+
+@observe_app.callback()
+def _observe_default(
     ctx: typer.Context,
     model: Annotated[
         str | None,
-        typer.Argument(help="Filter by model name.", autocompletion=_complete_model_name),
+        typer.Option("--model", "-m", help="Filter by model name."),
     ] = None,
 ) -> None:
     """Browse logged API requests and responses.
 
     Enable observation logging by setting `observe = true` in config.
     Logs are stored in the observe_dir (default ~/.local/share/vllama/observe/).
+
+    Run with no subcommand to open the TUI browser, or use `vllama observe web`
+    to start a web interface.
+
+    Examples:
+
+        vllama observe                    # TUI, all models
+
+        vllama observe -m mymodel         # TUI, filter by model
+
+        vllama observe web                # web UI
+
+        vllama observe web -m mymodel     # web UI, filter by model
     """
+    ctx.ensure_object(dict)
+    ctx.obj["observe_model"] = model
+
+    if ctx.invoked_subcommand is not None:
+        return
+
     from vllama.observe_tui import ObserveApp
 
     config = ctx.obj["config"]
@@ -321,6 +348,39 @@ def observe(
         theme=config.tui_theme,
     )
     tui.run()
+
+
+@observe_app.command()
+def web(
+    ctx: typer.Context,
+    host: Annotated[str, typer.Option(help="Listen host.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Listen port.")] = 8877,
+) -> None:
+    """Start a web UI for browsing observe logs.
+
+    Examples:
+
+        vllama observe web
+        vllama observe web --port 9090
+    """
+    import uvicorn
+
+    from vllama.observe_web import create_observe_app
+
+    config = ctx.obj["config"]
+    model: str | None = ctx.obj.get("observe_model")
+
+    if not config.observe_dir.exists():
+        typer.echo("No observe logs found.")
+        typer.echo(
+            "Enable observation by setting 'observe = true' in your config, "
+            "then make some requests."
+        )
+        raise typer.Exit(1)
+
+    web_app = create_observe_app(config.observe_dir, model=model)
+    typer.echo(f"Observe web UI: http://{host}:{port}")
+    uvicorn.run(web_app, host=host, port=port, log_level="warning")
 
 
 @app.command("init")

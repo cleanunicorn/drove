@@ -230,21 +230,45 @@ def _fmt_size(b: int) -> str:
     return f"{b / 1_048_576:.1f} MB"
 
 
-def _print_download_plan(plan: DownloadPlan, models_dir: Path) -> None:
-    from vllama.downloader import DownloadPlan  # noqa: F401
+def _print_download_plan(
+    plan: DownloadPlan,
+    models_dir: Path,
+    statuses: dict[str, tuple[object, int]] | None = None,
+) -> None:
+    from vllama.downloader import FileStatus
 
     dest = plan.destination(models_dir)
     col = 60
+    total_files = len(plan.files) + len(plan.mmproj_files)
 
     typer.echo("")
     typer.echo(f"  Repo        {plan.repo_id}")
     typer.echo(f"  Model name  {plan.local_name}")
     typer.echo(f"  Destination {dest}")
-    typer.echo(f"  Files       {len(plan.files)}  ({_fmt_size(plan.total_bytes)} total)")
+    typer.echo(f"  Files       {total_files}  ({_fmt_size(plan.total_bytes)} total)")
     typer.echo("")
 
+    def _status_label(fname: str, remote_size: int) -> str:
+        if statuses is None:
+            return ""
+        status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
+        if status == FileStatus.COMPLETE:
+            return "  [complete]"
+        if status == FileStatus.INCOMPLETE:
+            pct = local_size * 100 // remote_size if remote_size else 0
+            return f"  [{pct}% local]"
+        return ""
+
     for fname, size in plan.files.items():
-        typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}")
+        label = _status_label(fname, size)
+        typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}{label}")
+
+    if plan.mmproj_files:
+        typer.echo("")
+        typer.echo("  Multimodal projection (vision):")
+        for fname, size in plan.mmproj_files.items():
+            label = _status_label(fname, size)
+            typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}{label}")
 
     typer.echo("")
 
@@ -298,14 +322,30 @@ def download_model(
         typer.echo(f"Failed to resolve repo: {e}", err=True)
         raise typer.Exit(1)
 
-    if plan.already_exists(models_dir):
-        typer.echo(f"Model '{plan.local_name}' already exists at {plan.destination(models_dir)}.")
-        raise typer.Exit(1)
+    from vllama.downloader import FileStatus
 
-    _print_download_plan(plan, models_dir)
+    statuses = plan.check_local_files(models_dir)
+    has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
+    all_complete = has_existing and all(
+        s == FileStatus.COMPLETE for s, _ in statuses.values()
+    )
+
+    if all_complete:
+        typer.echo(
+            f"Model '{plan.local_name}' is already fully downloaded "
+            f"at {plan.destination(models_dir)}."
+        )
+        raise typer.Exit(0)
+
+    _print_download_plan(plan, models_dir, statuses)
 
     if not yes:
-        typer.confirm("Proceed with download?", abort=True)
+        if has_existing:
+            typer.confirm(
+                "Some files already exist. Resume download?", abort=True
+            )
+        else:
+            typer.confirm("Proceed with download?", abort=True)
 
     def progress(current: int, total: int, filename: str) -> None:
         typer.echo(f"  [{current}/{total}] {filename}")
@@ -320,14 +360,24 @@ def download_model(
     from vllama.downloader import parse_model_ref
 
     _, quant = parse_model_ref(model_ref)
+    all_files = sorted(plan.file_names) + sorted(plan.mmproj_files.keys())
     save_download_info(
         primary,
         DownloadInfo(
             repo_id=plan.repo_id,
-            files=sorted(plan.file_names),
+            files=all_files,
             quant=quant,
         ),
     )
+
+    # Auto-configure mmproj if a multimodal projection file was downloaded
+    if plan.mmproj_files:
+        mmproj_name = sorted(plan.mmproj_files.keys())[0]
+        mmproj_path = primary.parent / Path(mmproj_name).name
+        model_cfg = load_model_config(primary)
+        updated_cfg = model_cfg.model_copy(update={"mmproj": str(mmproj_path)})
+        save_model_config(primary, updated_cfg)
+        typer.echo(f"  mmproj auto-configured: {mmproj_path.name}")
 
     size_mb = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()) / 1_048_576
     typer.echo(f"\nSaved as '{plan.local_name}'  ({size_mb:.1f} MB)")

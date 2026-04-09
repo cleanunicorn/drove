@@ -67,6 +67,9 @@ class ModelConfig(BaseModel):
     cache_type_k: str | None = None
     cache_type_v: str | None = None
 
+    # Multimodal
+    mmproj: str | None = None
+
     def to_llama_args(self) -> list[str]:
         """Convert config to llama-server CLI arguments."""
         args: list[str] = []

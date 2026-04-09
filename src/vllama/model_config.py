@@ -67,6 +67,9 @@ class ModelConfig(BaseModel):
     cache_type_k: str | None = None
     cache_type_v: str | None = None
 
+    # Multimodal
+    mmproj: str | None = None
+
     def to_llama_args(self) -> list[str]:
         """Convert config to llama-server CLI arguments."""
         args: list[str] = []
@@ -214,6 +217,38 @@ def load_download_info(model_path: Path) -> DownloadInfo | None:
     if not dl:
         return None
     return DownloadInfo(**dl)
+
+
+def resolve_model_alias(models_dir: Path, ref: str) -> str | None:
+    """Resolve a HuggingFace reference (org/repo or org/repo:quant) to a local model name.
+
+    Scans sidecar TOML files for matching repo_id and optional quant tag.
+    Returns the local model name, or None if no match found.
+    """
+    # Parse optional quant tag
+    if ":" in ref:
+        repo_id, quant = ref.rsplit(":", 1)
+        quant = quant.strip().lower() or None
+    else:
+        repo_id, quant = ref, None
+
+    for p in sorted(models_dir.iterdir()):
+        if p.suffix.lower() != ".toml" or p.name == GLOBAL_CONFIG_FILENAME:
+            continue
+        try:
+            with p.open("rb") as f:
+                data = tomllib.load(f)
+        except Exception:
+            continue
+        dl = data.get("download")
+        if not dl or dl.get("repo_id") != repo_id:
+            continue
+        if quant is None:
+            return p.stem
+        stored_quant = dl.get("quant", "")
+        if stored_quant and stored_quant.lower() == quant:
+            return p.stem
+    return None
 
 
 def save_download_info(model_path: Path, info: DownloadInfo) -> None:

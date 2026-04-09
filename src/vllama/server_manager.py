@@ -348,22 +348,40 @@ class ServerManager:
     def _resolve_model(self, model_name: str) -> Path:
         models_dir = self._config.models_dir
 
-        # Single GGUF file
-        candidate = models_dir / f"{model_name}.gguf"
-        if candidate.exists():
-            return candidate
+        path = self._find_model_path(models_dir, model_name)
+        if path:
+            return path
 
-        # Subdirectory (sharded / multi-file) — return first shard
-        subdir = models_dir / model_name
-        if subdir.is_dir():
-            shards = sorted(p for p in subdir.iterdir() if p.suffix.lower() == ".gguf")
-            if shards:
-                return shards[0]
+        # Try resolving as a HuggingFace reference (org/repo or org/repo:quant)
+        if "/" in model_name:
+            from vllama.model_config import resolve_model_alias
+
+            local_name = resolve_model_alias(models_dir, model_name)
+            if local_name:
+                path = self._find_model_path(models_dir, local_name)
+                if path:
+                    return path
 
         raise FileNotFoundError(
             f"Model '{model_name}' not found in {models_dir}. "
             "Run 'vllama models list' to see available models."
         )
+
+    @staticmethod
+    def _find_model_path(models_dir: Path, name: str) -> Path | None:
+        # Model directory
+        subdir = models_dir / name
+        if subdir.is_dir():
+            shards = sorted(p for p in subdir.iterdir() if p.suffix.lower() == ".gguf")
+            if shards:
+                return shards[0]
+
+        # Legacy: single GGUF file without directory
+        candidate = models_dir / f"{name}.gguf"
+        if candidate.exists():
+            return candidate
+
+        return None
 
     def _start_idle_watcher(self, model_name: str) -> None:
         self._idle_tasks[model_name] = asyncio.create_task(self._idle_watcher(model_name))

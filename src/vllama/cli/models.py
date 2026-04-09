@@ -17,6 +17,7 @@ from vllama.model_config import (
     load_download_info,
     load_global_model_config,
     load_model_config,
+    resolve_model_alias,
     save_download_info,
     save_global_model_config,
     save_model_config,
@@ -45,10 +46,11 @@ def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
 
     names: list[str] = []
     for p in sorted(models_dir.iterdir()):
-        if p.suffix.lower() == ".gguf" and p.is_file():
-            names.append(p.stem)
-        elif p.is_dir() and not p.name.startswith("."):
+        if p.is_dir() and not p.name.startswith("."):
             names.append(p.name)
+        elif p.suffix.lower() == ".gguf" and p.is_file():
+            # Legacy: single file without directory
+            names.append(p.stem)
 
     return [n for n in names if n.lower().startswith(incomplete.lower())]
 
@@ -56,31 +58,36 @@ def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
 _MODEL_EXTS = {".gguf", ".safetensors", ".bin", ".pt"}
 
 
+def _resolve_name(models_dir: Path, name: str) -> str:
+    """Resolve a model name or HuggingFace reference to a local name."""
+    if "/" in name:
+        local = resolve_model_alias(models_dir, name)
+        if local:
+            return local
+    return name
+
+
 def _model_root(models_dir: Path, name: str) -> Path | None:
-    """Return the root path for a model (file or directory), or None if absent."""
-    candidate = models_dir / f"{name}.gguf"
-    if candidate.exists():
-        return candidate
+    """Return the model directory, or None if absent."""
+    name = _resolve_name(models_dir, name)
     subdir = models_dir / name
     if subdir.is_dir():
         return subdir
+    # Legacy: single file without directory
+    candidate = models_dir / f"{name}.gguf"
+    if candidate.exists():
+        return candidate
     return None
 
 
 def _find_model(models_dir: Path, name: str) -> Path:
-    """Locate the primary model file by name.
+    """Locate the primary model file by name or HuggingFace reference.
 
-    Returns the primary file path:
-    - Single GGUF: models_dir/<name>.gguf
-    - Sharded / multi-file: first shard inside models_dir/<name>/ (recursive)
+    Returns the primary file path (first GGUF inside the model directory).
     """
-    candidate = models_dir / f"{name}.gguf"
-    if candidate.exists():
-        return candidate
-
+    name = _resolve_name(models_dir, name)
     subdir = models_dir / name
     if subdir.is_dir():
-        # Search recursively so nested cache dirs (e.g. .cache/huggingface/) are found
         shards = sorted(p for p in subdir.rglob("*.gguf"))
         if shards:
             return shards[0]
@@ -88,29 +95,34 @@ def _find_model(models_dir: Path, name: str) -> Path:
         if others:
             return others[0]
 
+    # Legacy: single file without directory
+    candidate = models_dir / f"{name}.gguf"
+    if candidate.exists():
+        return candidate
+
     typer.echo(f"Model '{name}' not found.", err=True)
     raise typer.Exit(1)
 
 
 def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
-    """Yield (name, primary_path, total_bytes) for each model."""
+    """Return (name, primary_path, total_bytes) for each model."""
     results = []
 
     if not models_dir.exists():
         return results
 
     for p in sorted(models_dir.iterdir()):
-        if p.suffix.lower() == ".gguf" and p.is_file():
-            results.append((p.stem, p, p.stat().st_size))
-        elif p.is_dir() and not p.name.startswith("."):
+        if p.is_dir() and not p.name.startswith("."):
             files = [f for f in p.rglob("*") if f.is_file()]
             total = sum(f.stat().st_size for f in files)
-            # Primary file = first shard or first file
             primary = sorted(f for f in files if f.suffix.lower() == ".gguf")
             if not primary:
                 primary = sorted(files)
             if primary:
                 results.append((p.name, primary[0], total))
+        elif p.suffix.lower() == ".gguf" and p.is_file():
+            # Legacy: single file without directory
+            results.append((p.stem, p, p.stat().st_size))
 
     return results
 
@@ -206,7 +218,7 @@ def delete_model(
         typer.echo(f"Model '{name}' not found.", err=True)
         raise typer.Exit(1)
 
-    target_str = f"{root}/" if root.is_dir() else str(root)
+    target_str = f"{root}/"
 
     if not yes:
         typer.confirm(f"Delete model '{name}' at {target_str}?", abort=True)
@@ -214,6 +226,7 @@ def delete_model(
     if root.is_dir():
         shutil.rmtree(root)
     else:
+        # Legacy: single file without directory
         root.unlink()
     typer.echo(f"Deleted {target_str}")
 
@@ -230,21 +243,45 @@ def _fmt_size(b: int) -> str:
     return f"{b / 1_048_576:.1f} MB"
 
 
-def _print_download_plan(plan: DownloadPlan, models_dir: Path) -> None:
-    from vllama.downloader import DownloadPlan  # noqa: F401
+def _print_download_plan(
+    plan: DownloadPlan,
+    models_dir: Path,
+    statuses: dict[str, tuple[object, int]] | None = None,
+) -> None:
+    from vllama.downloader import FileStatus
 
     dest = plan.destination(models_dir)
     col = 60
+    total_files = len(plan.files) + len(plan.mmproj_files)
 
     typer.echo("")
     typer.echo(f"  Repo        {plan.repo_id}")
     typer.echo(f"  Model name  {plan.local_name}")
     typer.echo(f"  Destination {dest}")
-    typer.echo(f"  Files       {len(plan.files)}  ({_fmt_size(plan.total_bytes)} total)")
+    typer.echo(f"  Files       {total_files}  ({_fmt_size(plan.total_bytes)} total)")
     typer.echo("")
 
+    def _status_label(fname: str, remote_size: int) -> str:
+        if statuses is None:
+            return ""
+        status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
+        if status == FileStatus.COMPLETE:
+            return "  [complete]"
+        if status == FileStatus.INCOMPLETE:
+            pct = local_size * 100 // remote_size if remote_size else 0
+            return f"  [{pct}% local]"
+        return ""
+
     for fname, size in plan.files.items():
-        typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}")
+        label = _status_label(fname, size)
+        typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}{label}")
+
+    if plan.mmproj_files:
+        typer.echo("")
+        typer.echo("  Multimodal projection (vision):")
+        for fname, size in plan.mmproj_files.items():
+            label = _status_label(fname, size)
+            typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}{label}")
 
     typer.echo("")
 
@@ -298,14 +335,26 @@ def download_model(
         typer.echo(f"Failed to resolve repo: {e}", err=True)
         raise typer.Exit(1)
 
-    if plan.already_exists(models_dir):
-        typer.echo(f"Model '{plan.local_name}' already exists at {plan.destination(models_dir)}.")
-        raise typer.Exit(1)
+    from vllama.downloader import FileStatus
 
-    _print_download_plan(plan, models_dir)
+    statuses = plan.check_local_files(models_dir)
+    has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
+    all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
+
+    if all_complete:
+        typer.echo(
+            f"Model '{plan.local_name}' is already fully downloaded "
+            f"at {plan.destination(models_dir)}."
+        )
+        raise typer.Exit(0)
+
+    _print_download_plan(plan, models_dir, statuses)
 
     if not yes:
-        typer.confirm("Proceed with download?", abort=True)
+        if has_existing:
+            typer.confirm("Some files already exist. Resume download?", abort=True)
+        else:
+            typer.confirm("Proceed with download?", abort=True)
 
     def progress(current: int, total: int, filename: str) -> None:
         typer.echo(f"  [{current}/{total}] {filename}")
@@ -320,14 +369,24 @@ def download_model(
     from vllama.downloader import parse_model_ref
 
     _, quant = parse_model_ref(model_ref)
+    all_files = sorted(plan.file_names) + sorted(plan.mmproj_files.keys())
     save_download_info(
         primary,
         DownloadInfo(
             repo_id=plan.repo_id,
-            files=sorted(plan.file_names),
+            files=all_files,
             quant=quant,
         ),
     )
+
+    # Auto-configure mmproj if a multimodal projection file was downloaded
+    if plan.mmproj_files:
+        mmproj_name = sorted(plan.mmproj_files.keys())[0]
+        mmproj_path = primary.parent / Path(mmproj_name).name
+        model_cfg = load_model_config(primary)
+        updated_cfg = model_cfg.model_copy(update={"mmproj": str(mmproj_path)})
+        save_model_config(primary, updated_cfg)
+        typer.echo(f"  mmproj auto-configured: {mmproj_path.name}")
 
     size_mb = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()) / 1_048_576
     typer.echo(f"\nSaved as '{plan.local_name}'  ({size_mb:.1f} MB)")

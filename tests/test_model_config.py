@@ -15,7 +15,9 @@ from vllama.model_config import (
 
 
 def fake_model(tmp_path: Path, name: str = "mymodel") -> Path:
-    p = tmp_path / f"{name}.gguf"
+    model_dir = tmp_path / name
+    model_dir.mkdir(parents=True, exist_ok=True)
+    p = model_dir / f"{name}.gguf"
     p.write_bytes(b"")  # empty placeholder
     return p
 

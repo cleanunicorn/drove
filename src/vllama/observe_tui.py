@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from rich.syntax import Syntax
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -16,7 +17,9 @@ from textual.widgets import (
     Header,
     Label,
     Static,
+    Tree,
 )
+from textual.widgets._tree import TreeNode
 
 from vllama.observe import ObserveRecord, list_records, load_record
 
@@ -70,6 +73,12 @@ ObserveApp {
     width: 1fr;
 }
 
+.detail-section Tree {
+    height: auto;
+    max-height: 30;
+    padding-left: 2;
+}
+
 .metrics-label {
     padding-left: 2;
     color: $accent;
@@ -106,6 +115,57 @@ def _syntax_widget(text: str, lexer: str = "json") -> Static:
     )
     widget = Static(syntax, classes="section-content")
     return widget
+
+
+def _json_tree(raw: str | None, root_label: str = "root") -> Tree[str]:
+    """Build a Textual Tree widget from a JSON string."""
+    tree: Tree[str] = Tree(root_label, classes="section-content")
+    tree.show_root = False
+    if raw is None:
+        tree.root.add_leaf("(empty)")
+        return tree
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError, ValueError:
+        tree.root.add_leaf(raw)
+        return tree
+    _add_json_node(tree.root, data)
+    tree.root.expand_all()
+    return tree
+
+
+def _add_json_node(node: TreeNode[str], value: object, key: str | None = None) -> None:
+    """Recursively add JSON data to a tree node."""
+    prefix = Text()
+    if key is not None:
+        prefix.append(f'"{key}"', style="bold #9cdcfe")
+        prefix.append(": ")
+
+    if isinstance(value, dict):
+        label = prefix + Text("{...}", style="dim") if value else prefix + Text("{}")
+        branch = node.add(label)
+        for k, v in value.items():
+            _add_json_node(branch, v, key=k)
+    elif isinstance(value, list):
+        count = len(value)
+        label = prefix + Text(f"[{count} items]", style="dim") if value else prefix + Text("[]")
+        branch = node.add(label)
+        for i, v in enumerate(value):
+            _add_json_node(branch, v, key=str(i))
+    elif isinstance(value, str):
+        val_text = Text(json.dumps(value), style="#ce9178")
+        node.add_leaf(prefix + val_text)
+    elif isinstance(value, bool):
+        val_text = Text(str(value).lower(), style="bold #569cd6")
+        node.add_leaf(prefix + val_text)
+    elif isinstance(value, int | float):
+        val_text = Text(str(value), style="#b5cea8")
+        node.add_leaf(prefix + val_text)
+    elif value is None:
+        val_text = Text("null", style="bold #569cd6")
+        node.add_leaf(prefix + val_text)
+    else:
+        node.add_leaf(prefix + Text(str(value)))
 
 
 def _truncate(text: str, max_len: int = 60) -> str:
@@ -165,10 +225,9 @@ class RecordDetail(Static):
         )
 
         # Request body
-        req_body = _pretty_json(record.request_body)
         await self.mount(
             Collapsible(
-                _syntax_widget(req_body, "json"),
+                _json_tree(record.request_body, "request"),
                 title=f"Request Body ({len(record.request_body or '')} chars)",
                 collapsed=False,
                 classes="detail-section",
@@ -187,11 +246,10 @@ class RecordDetail(Static):
         )
 
         # Response body (assembled/readable)
-        resp_body = _pretty_json(record.response_body)
         body_len = len(record.response_body)
         await self.mount(
             Collapsible(
-                _syntax_widget(resp_body, "json"),
+                _json_tree(record.response_body, "response"),
                 title=f"Response ({body_len} chars)",
                 collapsed=False,
                 classes="detail-section",

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from rich.syntax import Syntax
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -15,7 +17,9 @@ from textual.widgets import (
     Header,
     Label,
     Static,
+    Tree,
 )
+from textual.widgets._tree import TreeNode
 
 from vllama.observe import ObserveRecord, list_records, load_record
 
@@ -69,6 +73,12 @@ ObserveApp {
     width: 1fr;
 }
 
+.detail-section Tree {
+    height: auto;
+    max-height: 30;
+    padding-left: 2;
+}
+
 .metrics-label {
     padding-left: 2;
     color: $accent;
@@ -92,6 +102,85 @@ def _pretty_json(raw: str | None) -> str:
         return json.dumps(parsed, indent=2, ensure_ascii=False)
     except json.JSONDecodeError, ValueError:
         return raw
+
+
+def _syntax_widget(text: str, lexer: str = "json") -> Static:
+    """Return a Static widget with syntax-highlighted content."""
+    syntax = Syntax(
+        text,
+        lexer,
+        theme="monokai",
+        word_wrap=True,
+        padding=(0, 1),
+    )
+    widget = Static(syntax, classes="section-content")
+    return widget
+
+
+def _headers_widget(headers: dict[str, str]) -> Static:
+    """Return a Static widget with highlighted HTTP headers."""
+    if not headers:
+        content = Text("(none)", style="dim italic")
+    else:
+        content = Text()
+        for i, (k, v) in enumerate(headers.items()):
+            if i > 0:
+                content.append("\n")
+            content.append(k, style="bold #9cdcfe")
+            content.append(": ")
+            content.append(v, style="#ce9178")
+    return Static(content, classes="section-content")
+
+
+def _json_tree(raw: str | None, root_label: str = "root") -> Tree[str]:
+    """Build a Textual Tree widget from a JSON string."""
+    tree: Tree[str] = Tree(root_label, classes="section-content")
+    tree.show_root = False
+    if raw is None:
+        tree.root.add_leaf("(empty)")
+        return tree
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError, ValueError:
+        tree.root.add_leaf(raw)
+        return tree
+    _add_json_node(tree.root, data)
+    tree.root.expand_all()
+    return tree
+
+
+def _add_json_node(node: TreeNode[str], value: object, key: str | None = None) -> None:
+    """Recursively add JSON data to a tree node."""
+    prefix = Text()
+    if key is not None:
+        prefix.append(f'"{key}"', style="bold #9cdcfe")
+        prefix.append(": ")
+
+    if isinstance(value, dict):
+        label = prefix + Text("{...}", style="dim") if value else prefix + Text("{}")
+        branch = node.add(label)
+        for k, v in value.items():
+            _add_json_node(branch, v, key=k)
+    elif isinstance(value, list):
+        count = len(value)
+        label = prefix + Text(f"[{count} items]", style="dim") if value else prefix + Text("[]")
+        branch = node.add(label)
+        for i, v in enumerate(value):
+            _add_json_node(branch, v, key=str(i))
+    elif isinstance(value, str):
+        val_text = Text(json.dumps(value), style="#ce9178")
+        node.add_leaf(prefix + val_text)
+    elif isinstance(value, bool):
+        val_text = Text(str(value).lower(), style="bold #569cd6")
+        node.add_leaf(prefix + val_text)
+    elif isinstance(value, int | float):
+        val_text = Text(str(value), style="#b5cea8")
+        node.add_leaf(prefix + val_text)
+    elif value is None:
+        val_text = Text("null", style="bold #569cd6")
+        node.add_leaf(prefix + val_text)
+    else:
+        node.add_leaf(prefix + Text(str(value)))
 
 
 def _truncate(text: str, max_len: int = 60) -> str:
@@ -140,10 +229,9 @@ class RecordDetail(Static):
         await self.mount(Label("  ".join(metrics_parts), classes="metrics-label"))
 
         # Request headers
-        req_headers_text = "\n".join(f"  {k}: {v}" for k, v in record.request_headers.items())
         await self.mount(
             Collapsible(
-                Label(req_headers_text or "(none)", markup=False, classes="section-content"),
+                _headers_widget(record.request_headers),
                 title="Request Headers",
                 collapsed=True,
                 classes="detail-section",
@@ -151,10 +239,9 @@ class RecordDetail(Static):
         )
 
         # Request body
-        req_body = _pretty_json(record.request_body)
         await self.mount(
             Collapsible(
-                Label(req_body, markup=False, classes="section-content"),
+                _json_tree(record.request_body, "request"),
                 title=f"Request Body ({len(record.request_body or '')} chars)",
                 collapsed=False,
                 classes="detail-section",
@@ -162,10 +249,9 @@ class RecordDetail(Static):
         )
 
         # Response headers
-        resp_headers_text = "\n".join(f"  {k}: {v}" for k, v in record.response_headers.items())
         await self.mount(
             Collapsible(
-                Label(resp_headers_text or "(none)", markup=False, classes="section-content"),
+                _headers_widget(record.response_headers),
                 title="Response Headers",
                 collapsed=True,
                 classes="detail-section",
@@ -173,11 +259,10 @@ class RecordDetail(Static):
         )
 
         # Response body (assembled/readable)
-        resp_body = _pretty_json(record.response_body)
         body_len = len(record.response_body)
         await self.mount(
             Collapsible(
-                Label(resp_body, markup=False, classes="section-content"),
+                _json_tree(record.response_body, "response"),
                 title=f"Response ({body_len} chars)",
                 collapsed=False,
                 classes="detail-section",
@@ -189,7 +274,7 @@ class RecordDetail(Static):
             raw_len = len(record.response_body_raw)
             await self.mount(
                 Collapsible(
-                    Label(record.response_body_raw, markup=False, classes="section-content"),
+                    _syntax_widget(record.response_body_raw, "text"),
                     title=f"Raw Response ({raw_len} chars)",
                     collapsed=True,
                     classes="detail-section",

@@ -114,7 +114,28 @@ _INDEX_HTML = """\
   .section-body pre { padding: 12px 14px; font-family: 'Fira Code', 'Cascadia Code', monospace;
                       font-size: 12px; line-height: 1.5; white-space: pre-wrap;
                       word-break: break-word; overflow-x: auto; margin: 0; }
+  .section-body .jt { padding: 12px 14px; font-family: 'Fira Code', 'Cascadia Code', monospace;
+                      font-size: 12px; line-height: 1.6; }
   .empty { color: var(--text2); font-style: italic; padding: 12px 14px; font-size: 13px; }
+  /* Syntax highlighting */
+  .hl-key { color: #9cdcfe; }
+  .hl-str { color: #ce9178; }
+  .hl-num { color: #b5cea8; }
+  .hl-bool { color: #569cd6; }
+  .hl-null { color: #569cd6; }
+  .hl-brace { color: #d4d4d4; }
+  .hl-hdr-key { color: #9cdcfe; }
+  .hl-hdr-val { color: #ce9178; }
+  /* JSON tree */
+  .jt-row { display: flex; align-items: flex-start; }
+  .jt-toggle { width: 14px; cursor: pointer; color: var(--text2);
+               user-select: none; flex-shrink: 0; text-align: center; }
+  .jt-toggle:hover { color: var(--text); }
+  .jt-children { padding-left: 20px; }
+  .jt-children.collapsed { display: none; }
+  .jt-ellipsis { color: var(--text2); cursor: pointer; }
+  .jt-ellipsis:hover { color: var(--text); }
+  .jt-comma { color: var(--text2); }
 </style>
 </head>
 <body>
@@ -191,13 +212,13 @@ function renderDetail(r) {
       (${r.model || 'unknown'})</span></h2>
     <div class="metrics">${metrics.join('')}</div>
     ${section('Request Headers', fmtHeaders(r.request_headers), true)}
-    ${section('Request Body', fmtJson(r.request_body), false)}
     ${section('Response Headers', fmtHeaders(r.response_headers), true)}
-    ${section('Response', fmtJson(r.response_body), false)}
     ${r.response_body_raw && r.response_body_raw !== r.response_body
       ? section('Raw Response', esc(r.response_body_raw), true)
       : ''}
   </div>`;
+  mountJsonTree('Request Body', r.request_body, false);
+  mountJsonTree('Response', r.response_body, false);
 }
 
 function mk(label, value) {
@@ -239,17 +260,140 @@ function esc(s) {
   return d.innerHTML;
 }
 
-function fmtJson(s) {
-  if (!s) return '';
-  try {
-    const obj = JSON.parse(s);
-    return esc(JSON.stringify(obj, null, 2));
-  } catch(e) { return esc(s); }
-}
-
 function fmtHeaders(h) {
   if (!h || Object.keys(h).length === 0) return '';
-  return esc(Object.entries(h).map(([k,v]) => k + ': ' + v).join('\\n'));
+  return Object.entries(h).map(([k,v]) =>
+    '<span class="hl-hdr-key">' + esc(k) + '</span>: ' +
+    '<span class="hl-hdr-val">' + esc(v) + '</span>'
+  ).join('\\n');
+}
+
+function mountJsonTree(title, raw, collapsed) {
+  var det = document.querySelector('.detail');
+  if (!det) return;
+  var rawSec = det.querySelector('.section:last-of-type');
+  var div = document.createElement('div');
+  div.className = 'section';
+  var id = 'jt-' + (sectionCounter++);
+  div.innerHTML =
+    '<div class="section-header" onclick="toggleSection(\\'' +
+    id + '\\',this)">' +
+    '<span class="' + (collapsed ? 'arrow' : 'arrow open') +
+    '">&#9654;</span> ' + title + '</div>' +
+    '<div class="section-body" id="' + id + '" style="display:' +
+    (collapsed ? 'none' : 'block') + '"></div>';
+  if (rawSec) det.insertBefore(div, rawSec);
+  else det.appendChild(div);
+  var body = div.querySelector('.section-body');
+  if (!raw) { body.innerHTML = '<div class="empty">(empty)</div>'; return; }
+  try {
+    var obj = JSON.parse(raw);
+    var container = document.createElement('div');
+    container.className = 'jt';
+    container.appendChild(buildTree(obj));
+    body.appendChild(container);
+  } catch(e) {
+    body.innerHTML = '<pre>' + esc(raw) + '</pre>';
+  }
+}
+
+function buildTree(val, key) {
+  var frag = document.createDocumentFragment();
+  if (val === null) {
+    frag.appendChild(mkLeaf(key, '<span class="hl-null">null</span>'));
+  } else if (typeof val === 'boolean') {
+    frag.appendChild(mkLeaf(key, '<span class="hl-bool">' + val + '</span>'));
+  } else if (typeof val === 'number') {
+    frag.appendChild(mkLeaf(key, '<span class="hl-num">' + val + '</span>'));
+  } else if (typeof val === 'string') {
+    frag.appendChild(mkLeaf(key, '<span class="hl-str">' +
+      esc(JSON.stringify(val)) + '</span>'));
+  } else if (Array.isArray(val)) {
+    frag.appendChild(mkNode(key, val, '[', ']'));
+  } else if (typeof val === 'object') {
+    frag.appendChild(mkNode(key, val, '{', '}'));
+  }
+  return frag;
+}
+
+function mkLeaf(key, html) {
+  var row = document.createElement('div');
+  row.className = 'jt-row';
+  var sp = document.createElement('span');
+  sp.style.width = '14px';
+  sp.style.flexShrink = '0';
+  row.appendChild(sp);
+  var content = document.createElement('span');
+  var pre = key !== undefined
+    ? '<span class="hl-key">' + esc(JSON.stringify(key)) +
+      '</span>: '
+    : '';
+  content.innerHTML = pre + html;
+  row.appendChild(content);
+  return row;
+}
+
+function mkNode(key, val, open, close) {
+  var isArr = Array.isArray(val);
+  var entries = isArr ? val.map(function(v,i){return [i,v];})
+    : Object.entries(val);
+  var wrap = document.createElement('div');
+  var row = document.createElement('div');
+  row.className = 'jt-row';
+  var toggle = document.createElement('span');
+  toggle.className = 'jt-toggle';
+  toggle.textContent = entries.length ? '\\u25BC' : ' ';
+  row.appendChild(toggle);
+  var head = document.createElement('span');
+  var pre = key !== undefined
+    ? '<span class="hl-key">' + esc(JSON.stringify(key)) +
+      '</span>: '
+    : '';
+  head.innerHTML = pre + '<span class="hl-brace">' + open + '</span>';
+  row.appendChild(head);
+  var ellipsis = document.createElement('span');
+  ellipsis.className = 'jt-ellipsis';
+  ellipsis.style.display = 'none';
+  ellipsis.textContent = '...';
+  row.appendChild(ellipsis);
+  wrap.appendChild(row);
+  var children = document.createElement('div');
+  children.className = 'jt-children';
+  for (var ci = 0; ci < entries.length; ci++) {
+    var ek = isArr ? undefined : entries[ci][0];
+    var ev = entries[ci][1];
+    var child = buildTree(ev, ek);
+    if (ci < entries.length - 1) {
+      appendComma(child);
+    }
+    children.appendChild(child);
+  }
+  wrap.appendChild(children);
+  var closeRow = document.createElement('div');
+  closeRow.innerHTML = '<span style="width:14px;display:inline-block">' +
+    '</span><span class="hl-brace">' + close + '</span>';
+  wrap.appendChild(closeRow);
+  if (entries.length) {
+    toggle.onclick = function() {
+      var open = !children.classList.contains('collapsed');
+      children.classList.toggle('collapsed');
+      closeRow.style.display = open ? 'none' : '';
+      ellipsis.style.display = open ? 'inline' : 'none';
+      toggle.textContent = open ? '\\u25B6' : '\\u25BC';
+    };
+    ellipsis.onclick = toggle.onclick;
+  }
+  return wrap;
+}
+
+function appendComma(frag) {
+  var last = frag.lastChild || frag;
+  if (last.nodeType === 1) {
+    var c = document.createElement('span');
+    c.className = 'jt-comma';
+    c.textContent = ',';
+    last.appendChild(c);
+  }
 }
 
 loadRecords();

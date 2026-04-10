@@ -18,7 +18,12 @@ if TYPE_CHECKING:
     from vllama.model_config import ModelConfig
 
 from vllama.config import Config
-from vllama.model_config import load_global_model_config, load_model_config
+from vllama.model_config import (
+    config_path_for_model,
+    global_config_path,
+    load_global_model_config,
+    load_model_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +34,20 @@ HEALTH_CHECK_TIMEOUT = 60.0  # max seconds to wait for llama-server to be ready
 class _ModelInstance:
     """State for a single running llama-server process."""
 
-    def __init__(self, model_name: str, process: asyncio.subprocess.Process, port: int) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        process: asyncio.subprocess.Process,
+        port: int,
+        model_path: Path,
+        config_mtimes: tuple[float, float],
+    ) -> None:
         self.model_name = model_name
         self.process = process
         self.port = port
+        self.model_path = model_path
+        self.config_mtimes = config_mtimes  # (per-model mtime, global mtime) at startup
+        self.needs_restart: bool = False
         self.loaded_at: float = time.time()
         self.last_request_time: float = time.monotonic()
         self.active_requests: int = 0
@@ -105,6 +120,17 @@ class ServerManager:
             return 0.0
         return min(inst.idle_seconds for inst in running)
 
+    def _get_config_mtimes(self, model_path: Path) -> tuple[float, float]:
+        """Return modification times of the per-model and global config files.
+
+        Returns 0.0 for files that do not exist yet.
+        """
+        model_cfg_path = config_path_for_model(model_path)
+        global_cfg_path = global_config_path(self._config.models_dir)
+        model_mtime = model_cfg_path.stat().st_mtime if model_cfg_path.exists() else 0.0
+        global_mtime = global_cfg_path.stat().st_mtime if global_cfg_path.exists() else 0.0
+        return (model_mtime, global_mtime)
+
     def base_url_for(self, model_name: str) -> str:
         inst = self._instances.get(model_name)
         port = inst.port if inst else 0
@@ -169,7 +195,10 @@ class ServerManager:
     async def ensure_running(self, model_name: str) -> None:
         """Ensure llama-server is running for the requested model.
 
-        If the model is already loaded, this is a no-op.
+        If the model is already loaded with an up-to-date config, this is a no-op.
+        When the per-model or global config file has been modified since startup,
+        the instance is restarted if idle; otherwise it is flagged for restart once
+        all in-flight requests finish (the idle watcher handles that case).
         When ``max_loaded_models`` would be exceeded, the least-recently-used
         model is drained (wait for its active requests to finish) and evicted
         before starting the new one.
@@ -177,9 +206,27 @@ class ServerManager:
         async with self._lock:
             inst = self._instances.get(model_name)
             if inst is not None and inst.is_running:
-                return
-            # Clean up stale instance if process died
-            if inst is not None:
+                # Check whether the config changed since this instance was started.
+                current_mtimes = self._get_config_mtimes(inst.model_path)
+                if current_mtimes != inst.config_mtimes:
+                    if inst.active_requests == 0:
+                        logger.info(
+                            "Config changed for model=%s, restarting with new config",
+                            model_name,
+                        )
+                        await self._stop_instance(model_name)
+                        # Fall through to _evict_if_needed + _start
+                    else:
+                        logger.info(
+                            "Config changed for model=%s, will restart when requests finish",
+                            model_name,
+                        )
+                        inst.needs_restart = True
+                        return
+                else:
+                    return  # running with current config, nothing to do
+            elif inst is not None:
+                # Clean up stale instance if process died
                 await self._stop_instance(model_name)
             await self._evict_if_needed()
             await self._start(model_name)
@@ -254,7 +301,8 @@ class ServerManager:
             stderr=asyncio.subprocess.PIPE,
         )
 
-        inst = _ModelInstance(model_name, process, port)
+        config_mtimes = self._get_config_mtimes(model_path)
+        inst = _ModelInstance(model_name, process, port, model_path, config_mtimes)
         self._instances[model_name] = inst
 
         try:
@@ -394,6 +442,15 @@ class ServerManager:
                 return
             if inst.active_requests > 0:
                 continue  # never shut down while requests are in-flight
+            # Stop immediately when a config change was detected while requests were in-flight
+            if inst.needs_restart:
+                logger.info(
+                    "Stopping model=%s to apply config changes (will restart on next request)",
+                    model_name,
+                )
+                async with self._lock:
+                    await self._stop_instance(model_name)
+                return
             idle = time.monotonic() - inst.last_request_time
             if idle >= self._config.idle_timeout_seconds:
                 logger.info("Idle timeout reached for model=%s (%.0fs), stopping", model_name, idle)

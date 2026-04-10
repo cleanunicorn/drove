@@ -142,3 +142,29 @@ async def test_ensure_running_sets_needs_restart_when_busy(tmp_path: Path) -> No
     # No restart yet — server still serving the in-flight request
     assert manager._instances.get("testmodel") is inst
     assert inst.needs_restart
+
+
+async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
+    """The idle watcher should detect config changes and stop the instance,
+    even when no new request arrives to trigger ensure_running()."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+
+    # Instance started with no config file
+    old_mtimes = (0.0, 0.0)
+    inst = make_fake_instance("testmodel", model_path, old_mtimes)
+    manager._instances["testmodel"] = inst
+
+    # Config file created after startup — mtimes now differ
+    cfg_path = model_path.with_suffix(".toml")
+    cfg_path.write_text("ctx_size = 8192\n")
+
+    with patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop:
+        # Run one iteration of the idle watcher by calling it with a short sleep
+        with patch("vllama.server_manager.asyncio.sleep", new_callable=AsyncMock):
+            # _idle_watcher loops; after stopping it returns, so this will finish
+            await manager._idle_watcher("testmodel")
+
+        mock_stop.assert_awaited_once_with("testmodel")
+    assert inst.needs_restart

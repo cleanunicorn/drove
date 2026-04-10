@@ -442,7 +442,11 @@ class ServerManager:
                 return
             if inst.active_requests > 0:
                 continue  # never shut down while requests are in-flight
-            # Stop immediately when a config change was detected while requests were in-flight
+            # Detect config changes even when idle (no incoming requests)
+            current_mtimes = self._get_config_mtimes(inst.model_path)
+            if current_mtimes != inst.config_mtimes:
+                inst.needs_restart = True
+            # Stop immediately when a config change was detected
             if inst.needs_restart:
                 logger.info(
                     "Stopping model=%s to apply config changes (will restart on next request)",

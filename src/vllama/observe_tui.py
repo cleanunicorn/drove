@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from rich.syntax import Syntax
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -94,6 +95,19 @@ def _pretty_json(raw: str | None) -> str:
         return raw
 
 
+def _syntax_widget(text: str, lexer: str = "json") -> Static:
+    """Return a Static widget with syntax-highlighted content."""
+    syntax = Syntax(
+        text,
+        lexer,
+        theme="monokai",
+        word_wrap=True,
+        padding=(0, 1),
+    )
+    widget = Static(syntax, classes="section-content")
+    return widget
+
+
 def _truncate(text: str, max_len: int = 60) -> str:
     text = text.replace("\n", " ").strip()
     if len(text) > max_len:
@@ -140,10 +154,10 @@ class RecordDetail(Static):
         await self.mount(Label("  ".join(metrics_parts), classes="metrics-label"))
 
         # Request headers
-        req_headers_text = "\n".join(f"  {k}: {v}" for k, v in record.request_headers.items())
+        req_headers_text = "\n".join(f"{k}: {v}" for k, v in record.request_headers.items())
         await self.mount(
             Collapsible(
-                Label(req_headers_text or "(none)", markup=False, classes="section-content"),
+                _syntax_widget(req_headers_text or "(none)", "http"),
                 title="Request Headers",
                 collapsed=True,
                 classes="detail-section",
@@ -154,7 +168,7 @@ class RecordDetail(Static):
         req_body = _pretty_json(record.request_body)
         await self.mount(
             Collapsible(
-                Label(req_body, markup=False, classes="section-content"),
+                _syntax_widget(req_body, "json"),
                 title=f"Request Body ({len(record.request_body or '')} chars)",
                 collapsed=False,
                 classes="detail-section",
@@ -162,10 +176,10 @@ class RecordDetail(Static):
         )
 
         # Response headers
-        resp_headers_text = "\n".join(f"  {k}: {v}" for k, v in record.response_headers.items())
+        resp_headers_text = "\n".join(f"{k}: {v}" for k, v in record.response_headers.items())
         await self.mount(
             Collapsible(
-                Label(resp_headers_text or "(none)", markup=False, classes="section-content"),
+                _syntax_widget(resp_headers_text or "(none)", "http"),
                 title="Response Headers",
                 collapsed=True,
                 classes="detail-section",
@@ -177,7 +191,7 @@ class RecordDetail(Static):
         body_len = len(record.response_body)
         await self.mount(
             Collapsible(
-                Label(resp_body, markup=False, classes="section-content"),
+                _syntax_widget(resp_body, "json"),
                 title=f"Response ({body_len} chars)",
                 collapsed=False,
                 classes="detail-section",
@@ -189,7 +203,7 @@ class RecordDetail(Static):
             raw_len = len(record.response_body_raw)
             await self.mount(
                 Collapsible(
-                    Label(record.response_body_raw, markup=False, classes="section-content"),
+                    _syntax_widget(record.response_body_raw, "text"),
                     title=f"Raw Response ({raw_len} chars)",
                     collapsed=True,
                     classes="detail-section",

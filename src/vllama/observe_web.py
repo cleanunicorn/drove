@@ -115,6 +115,15 @@ _INDEX_HTML = """\
                       font-size: 12px; line-height: 1.5; white-space: pre-wrap;
                       word-break: break-word; overflow-x: auto; margin: 0; }
   .empty { color: var(--text2); font-style: italic; padding: 12px 14px; font-size: 13px; }
+  /* Syntax highlighting */
+  .hl-key { color: #9cdcfe; }
+  .hl-str { color: #ce9178; }
+  .hl-num { color: #b5cea8; }
+  .hl-bool { color: #569cd6; }
+  .hl-null { color: #569cd6; }
+  .hl-brace { color: #d4d4d4; }
+  .hl-hdr-key { color: #9cdcfe; }
+  .hl-hdr-val { color: #ce9178; }
 </style>
 </head>
 <body>
@@ -243,13 +252,54 @@ function fmtJson(s) {
   if (!s) return '';
   try {
     const obj = JSON.parse(s);
-    return esc(JSON.stringify(obj, null, 2));
+    return hlJson(JSON.stringify(obj, null, 2));
   } catch(e) { return esc(s); }
+}
+
+function hlJson(s) {
+  var out = '';
+  var i = 0;
+  while (i < s.length) {
+    var c = s[i];
+    if (c === '"') {
+      var j = i + 1;
+      while (j < s.length && s[j] !== '"') {
+        if (s[j] === '\\\\') j++;
+        j++;
+      }
+      var tok = s.slice(i, j + 1);
+      var rest = s.slice(j + 1).match(/^\\s*:/);
+      if (rest) {
+        out += '<span class="hl-key">' + esc(tok) + '</span>';
+      } else {
+        out += '<span class="hl-str">' + esc(tok) + '</span>';
+      }
+      i = j + 1;
+    } else if (c === '-' || (c >= '0' && c <= '9')) {
+      var m = s.slice(i).match(/^-?\\d+\\.?\\d*/);
+      if (m) {
+        out += '<span class="hl-num">' + m[0] + '</span>';
+        i += m[0].length;
+      } else { out += esc(c); i++; }
+    } else if (s.slice(i, i+4) === 'true') {
+      out += '<span class="hl-bool">true</span>'; i += 4;
+    } else if (s.slice(i,i+5) === 'false') {
+      out += '<span class="hl-bool">false</span>'; i += 5;
+    } else if (s.slice(i, i+4) === 'null') {
+      out += '<span class="hl-null">null</span>'; i += 4;
+    } else if ('{}[],'.indexOf(c) >= 0) {
+      out += '<span class="hl-brace">' + c + '</span>'; i++;
+    } else { out += esc(c); i++; }
+  }
+  return out;
 }
 
 function fmtHeaders(h) {
   if (!h || Object.keys(h).length === 0) return '';
-  return esc(Object.entries(h).map(([k,v]) => k + ': ' + v).join('\\n'));
+  return Object.entries(h).map(([k,v]) =>
+    '<span class="hl-hdr-key">' + esc(k) + '</span>: ' +
+    '<span class="hl-hdr-val">' + esc(v) + '</span>'
+  ).join('\\n');
 }
 
 loadRecords();

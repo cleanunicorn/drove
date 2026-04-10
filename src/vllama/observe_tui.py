@@ -117,6 +117,21 @@ def _syntax_widget(text: str, lexer: str = "json") -> Static:
     return widget
 
 
+def _headers_widget(headers: dict[str, str]) -> Static:
+    """Return a Static widget with highlighted HTTP headers."""
+    if not headers:
+        content = Text("(none)", style="dim italic")
+    else:
+        content = Text()
+        for i, (k, v) in enumerate(headers.items()):
+            if i > 0:
+                content.append("\n")
+            content.append(k, style="bold #9cdcfe")
+            content.append(": ")
+            content.append(v, style="#ce9178")
+    return Static(content, classes="section-content")
+
+
 def _json_tree(raw: str | None, root_label: str = "root") -> Tree[str]:
     """Build a Textual Tree widget from a JSON string."""
     tree: Tree[str] = Tree(root_label, classes="section-content")
@@ -214,10 +229,9 @@ class RecordDetail(Static):
         await self.mount(Label("  ".join(metrics_parts), classes="metrics-label"))
 
         # Request headers
-        req_headers_text = "\n".join(f"{k}: {v}" for k, v in record.request_headers.items())
         await self.mount(
             Collapsible(
-                _syntax_widget(req_headers_text or "(none)", "http"),
+                _headers_widget(record.request_headers),
                 title="Request Headers",
                 collapsed=True,
                 classes="detail-section",
@@ -235,10 +249,9 @@ class RecordDetail(Static):
         )
 
         # Response headers
-        resp_headers_text = "\n".join(f"{k}: {v}" for k, v in record.response_headers.items())
         await self.mount(
             Collapsible(
-                _syntax_widget(resp_headers_text or "(none)", "http"),
+                _headers_widget(record.response_headers),
                 title="Response Headers",
                 collapsed=True,
                 classes="detail-section",

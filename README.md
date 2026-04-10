@@ -157,7 +157,7 @@ vllama observe web --port 9090
 vllama observe web -m Qwen3.5-35B-A3B-Q4_K_M
 ```
 
-Both the TUI and web UI show a list of requests with a detail pane. Select a request to inspect its headers, request body, and response. Streaming responses (SSE) are automatically assembled into readable output — the full content, reasoning, and tool calls are combined into a single JSON view. The raw SSE stream is available in a collapsed "Raw Response" section for advanced debugging.
+Both the TUI and web UI show a list of requests with a detail pane. Select a request to inspect its headers, request body, and response with syntax highlighting and collapsible JSON trees — expand or collapse any object or array to drill into the data you care about. Streaming responses (SSE) are automatically assembled into readable output — the full content, reasoning, and tool calls are combined into a single JSON view. The raw SSE stream is available in a collapsed "Raw Response" section for advanced debugging.
 
 <p align="center"><img src="assets/observe-tui.svg" alt="vllama observe TUI screenshot" width="100%"></p>
 

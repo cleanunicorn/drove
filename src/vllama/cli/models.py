@@ -47,7 +47,13 @@ def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
     names: list[str] = []
     for p in sorted(models_dir.iterdir()):
         if p.is_dir() and not p.name.startswith("."):
-            names.append(p.name)
+            if _has_model_files(p):
+                names.append(p.name)
+            else:
+                # Namespace directory — list models inside
+                for sub in sorted(p.iterdir()):
+                    if sub.is_dir() and not sub.name.startswith("."):
+                        names.append(f"{p.name}/{sub.name}")
         elif p.suffix.lower() == ".gguf" and p.is_file():
             # Legacy: single file without directory
             names.append(p.stem)
@@ -104,22 +110,45 @@ def _find_model(models_dir: Path, name: str) -> Path:
     raise typer.Exit(1)
 
 
+def _has_model_files(directory: Path) -> bool:
+    """True if a directory contains model files at its immediate level."""
+    return any(f.suffix.lower() in _MODEL_EXTS for f in directory.iterdir() if f.is_file())
+
+
+def _add_model_entry(
+    directory: Path, name: str, results: list[tuple[str, Path, int]]
+) -> None:
+    """Add a model directory to the results list."""
+    files = [f for f in directory.rglob("*") if f.is_file()]
+    total = sum(f.stat().st_size for f in files)
+    primary = sorted(f for f in files if f.suffix.lower() == ".gguf")
+    if not primary:
+        primary = sorted(files)
+    if primary:
+        results.append((name, primary[0], total))
+
+
 def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
-    """Return (name, primary_path, total_bytes) for each model."""
-    results = []
+    """Return (name, primary_path, total_bytes) for each model.
+
+    Supports both flat models and namespaced models (org/model).
+    A first-level directory with model files is a model dir; one without
+    is treated as a namespace and scanned one level deeper.
+    """
+    results: list[tuple[str, Path, int]] = []
 
     if not models_dir.exists():
         return results
 
     for p in sorted(models_dir.iterdir()):
         if p.is_dir() and not p.name.startswith("."):
-            files = [f for f in p.rglob("*") if f.is_file()]
-            total = sum(f.stat().st_size for f in files)
-            primary = sorted(f for f in files if f.suffix.lower() == ".gguf")
-            if not primary:
-                primary = sorted(files)
-            if primary:
-                results.append((p.name, primary[0], total))
+            if _has_model_files(p):
+                _add_model_entry(p, p.name, results)
+            else:
+                # Namespace directory — scan one level deeper
+                for sub in sorted(p.iterdir()):
+                    if sub.is_dir() and not sub.name.startswith("."):
+                        _add_model_entry(sub, f"{p.name}/{sub.name}", results)
         elif p.suffix.lower() == ".gguf" and p.is_file():
             # Legacy: single file without directory
             results.append((p.stem, p, p.stat().st_size))

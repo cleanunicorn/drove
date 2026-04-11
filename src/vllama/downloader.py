@@ -98,19 +98,18 @@ def first_shard(files: list[str]) -> str:
 
 
 def infer_local_name(repo_id: str, files: list[str], quant: str | None) -> str:
-    """Derive a clean local model name.
+    """Derive a clean local model name using the repo/name:quant format.
 
-    For a single file: use the filename stem (sans shard suffix).
-    For multiple files: use repo basename + quant tag (if any).
+    Examples:
+        infer_local_name("unsloth/Qwen3-8B-GGUF", [...], "Q8_0")
+        → "unsloth/Qwen3-8B-GGUF:Q8_0"
+
+        infer_local_name("unsloth/Qwen3-8B-GGUF", [...], None)
+        → "unsloth/Qwen3-8B-GGUF"
     """
-    if len(files) == 1:
-        stem = Path(files[0]).stem
-        return _SHARD_RE.sub("", stem).rstrip("-")
-
-    repo_name = repo_id.split("/")[-1]
     if quant:
-        return f"{repo_name}-{quant}"
-    return repo_name
+        return f"{repo_id}:{quant}"
+    return repo_id
 
 
 class DownloadPlan:

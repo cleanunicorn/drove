@@ -222,8 +222,8 @@ def load_download_info(model_path: Path) -> DownloadInfo | None:
 def resolve_model_alias(models_dir: Path, ref: str) -> str | None:
     """Resolve a HuggingFace reference (org/repo or org/repo:quant) to a local model name.
 
-    Scans sidecar TOML files for matching repo_id and optional quant tag.
-    Returns the local model name, or None if no match found.
+    Scans sidecar TOML files (recursively) for matching repo_id and optional
+    quant tag.  Returns the local model name, or None if no match found.
     """
     # Parse optional quant tag
     if ":" in ref:
@@ -232,8 +232,8 @@ def resolve_model_alias(models_dir: Path, ref: str) -> str | None:
     else:
         repo_id, quant = ref, None
 
-    for p in sorted(models_dir.iterdir()):
-        if p.suffix.lower() != ".toml" or p.name == GLOBAL_CONFIG_FILENAME:
+    for p in sorted(models_dir.rglob("*.toml")):
+        if p.name == GLOBAL_CONFIG_FILENAME:
             continue
         try:
             with p.open("rb") as f:
@@ -243,11 +243,13 @@ def resolve_model_alias(models_dir: Path, ref: str) -> str | None:
         dl = data.get("download")
         if not dl or dl.get("repo_id") != repo_id:
             continue
-        if quant is None:
-            return p.stem
         stored_quant = dl.get("quant", "")
-        if stored_quant and stored_quant.lower() == quant:
-            return p.stem
+        if quant is None or (stored_quant and stored_quant.lower() == quant):
+            # Model name is the parent directory relative to models_dir,
+            # or the TOML stem for legacy flat files.
+            if p.parent == models_dir:
+                return p.stem
+            return str(p.parent.relative_to(models_dir))
     return None
 
 

@@ -28,7 +28,6 @@ from vllama.model_config import (
 logger = logging.getLogger(__name__)
 
 HEALTH_CHECK_INTERVAL = 0.5  # seconds between health poll attempts
-HEALTH_CHECK_TIMEOUT = 60.0  # max seconds to wait for llama-server to be ready
 
 
 class _ModelInstance:
@@ -341,7 +340,8 @@ class ServerManager:
 
     async def _wait_for_health(self, inst: _ModelInstance) -> None:
         url = f"http://{self._config.llama_server_host}:{inst.port}/health"
-        deadline = time.monotonic() + HEALTH_CHECK_TIMEOUT
+        timeout = self._config.startup_timeout_seconds
+        deadline = time.monotonic() + timeout
         async with httpx.AsyncClient() as client:
             while time.monotonic() < deadline:
                 if not inst.is_running:
@@ -357,7 +357,7 @@ class ServerManager:
                 except httpx.TransportError:
                     pass
                 await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-        raise TimeoutError(f"llama-server did not become healthy within {HEALTH_CHECK_TIMEOUT}s")
+        raise TimeoutError(f"llama-server did not become healthy within {timeout}s")
 
     async def _read_stderr(self, inst: _ModelInstance) -> str:
         if inst.process.stderr is None:

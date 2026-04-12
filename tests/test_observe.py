@@ -111,6 +111,39 @@ def test_list_records_filters_by_model(tmp_path: Path) -> None:
     assert len(records_all) == 2
 
 
+def test_list_records_finds_namespaced_models(tmp_path: Path) -> None:
+    """Records saved under 'org/repo:quant' should be discoverable.
+
+    After the naming convention switched to ``repo/name:quant``, model names
+    contain ``/`` which creates a nested directory. list_records must walk
+    two levels deep to find them alongside legacy flat records.
+    """
+    # Namespaced (new-style)
+    r1 = _make_record(
+        model="unsloth/Qwen3-8B-GGUF:Q8_0",
+        record_id="20260408-100000-nnnn0001",
+    )
+    save_record(tmp_path, r1)
+
+    # Flat (legacy)
+    r2 = _make_record(
+        model="legacy-model",
+        record_id="20260408-100000-llll0001",
+    )
+    save_record(tmp_path, r2)
+
+    records = list_records(tmp_path)
+    assert len(records) == 2
+    models = {rec.model for _, rec in records}
+    assert "unsloth/Qwen3-8B-GGUF:Q8_0" in models
+    assert "legacy-model" in models
+
+    # Filtering by namespaced name should also work
+    filtered = list_records(tmp_path, model="unsloth/Qwen3-8B-GGUF:Q8_0")
+    assert len(filtered) == 1
+    assert filtered[0][1].model == "unsloth/Qwen3-8B-GGUF:Q8_0"
+
+
 def test_list_records_empty_dir(tmp_path: Path) -> None:
     assert list_records(tmp_path) == []
 

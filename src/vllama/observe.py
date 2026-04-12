@@ -234,6 +234,36 @@ def _record_from_dict(data: dict[str, Any]) -> ObserveRecord:
     )
 
 
+def record_matches(record: ObserveRecord, query: str) -> bool:
+    """Return True if any searchable field of the record contains query (case-insensitive).
+
+    Matches across id, timestamp, model, endpoint, method, status, bodies, headers,
+    and metrics so a single search box works as a global filter.
+    """
+    if not query:
+        return True
+    q = query.lower()
+    parts: list[str] = [
+        record.id,
+        record.timestamp,
+        record.model or "",
+        record.endpoint,
+        record.method,
+        str(record.response_status),
+        record.request_body or "",
+        record.response_body or "",
+        record.response_body_raw or "",
+        json.dumps(record.request_headers, ensure_ascii=False),
+        json.dumps(record.response_headers, ensure_ascii=False),
+        str(record.tokens_prompt),
+        str(record.tokens_completion),
+        "" if record.tokens_per_second is None else str(record.tokens_per_second),
+        "" if record.ttft_seconds is None else str(record.ttft_seconds),
+        str(record.duration_seconds),
+    ]
+    return any(q in p.lower() for p in parts)
+
+
 def save_record(observe_dir: Path, record: ObserveRecord) -> Path:
     """Write an observe record to disk. Returns the file path."""
     model_dir = observe_dir / (record.model or "_unknown")

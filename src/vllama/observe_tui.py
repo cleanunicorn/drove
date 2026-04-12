@@ -15,13 +15,14 @@ from textual.widgets import (
     DataTable,
     Footer,
     Header,
+    Input,
     Label,
     Static,
     Tree,
 )
 from textual.widgets._tree import TreeNode
 
-from vllama.observe import ObserveRecord, list_records, load_record
+from vllama.observe import ObserveRecord, list_records, load_record, record_matches
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -40,6 +41,11 @@ ObserveApp {
     max-width: 80;
     height: 1fr;
     border-right: solid $panel;
+}
+
+#search-input {
+    margin: 0;
+    border: tall $panel;
 }
 
 #record-table {
@@ -293,6 +299,7 @@ class ObserveApp(App[None]):
         Binding("escape", "quit", "Quit"),
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("r", "refresh_list", "Refresh"),
+        Binding("/", "focus_search", "Search"),
     ]
 
     def __init__(
@@ -306,11 +313,14 @@ class ObserveApp(App[None]):
         self._model = model
         self.theme = theme
         self._records: list[tuple[Path, ObserveRecord]] = []
+        self._all_records: list[tuple[Path, ObserveRecord]] = []
+        self._search: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="main-container"):
             with Vertical(id="record-list"):
+                yield Input(placeholder="Search anything…  (press / to focus)", id="search-input")
                 table: DataTable[str] = DataTable(
                     id="record-table", cursor_type="row", zebra_stripes=True
                 )
@@ -325,9 +335,32 @@ class ObserveApp(App[None]):
         if self._model:
             self.sub_title = f"model: {self._model}"
         self._load_records()
+        if self._records:
+            self.query_one("#record-table", DataTable).focus()
+
+    def action_focus_search(self) -> None:
+        self.query_one("#search-input", Input).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "search-input":
+            self._search = event.value
+            self._apply_filter()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "search-input" and self._records:
+            self.query_one("#record-table", DataTable).focus()
 
     def _load_records(self) -> None:
-        self._records = list_records(self._observe_dir, self._model)
+        self._all_records = list_records(self._observe_dir, self._model)
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        if self._search:
+            self._records = [
+                (p, r) for (p, r) in self._all_records if record_matches(r, self._search)
+            ]
+        else:
+            self._records = list(self._all_records)
 
         table = self.query_one("#record-table", DataTable)
         table.clear(columns=True)
@@ -346,13 +379,15 @@ class ObserveApp(App[None]):
             speed = f"{record.tokens_per_second:.1f}" if record.tokens_per_second else "-"
             table.add_row(time_str, model, endpoint, status, tokens, speed)
 
-        status_text = f"  {len(self._records)} records"
+        total = len(self._all_records)
+        shown = len(self._records)
+        if self._search:
+            status_text = f"  {shown}/{total} records  (search: {self._search!r})"
+        else:
+            status_text = f"  {total} records"
         if self._model:
             status_text += f" (model: {self._model})"
         self.query_one("#status-bar", Label).update(status_text)
-
-        if self._records:
-            table.focus()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         idx = event.cursor_row

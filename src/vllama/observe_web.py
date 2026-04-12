@@ -7,17 +7,19 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from vllama.observe import _record_to_dict, list_records, load_record
+from vllama.observe import _record_to_dict, list_records, load_record, record_matches
 
 
 def create_observe_app(observe_dir: Path, model: str | None = None) -> FastAPI:
     app = FastAPI(title="vllama observe")
 
     @app.get("/api/records")
-    async def get_records() -> JSONResponse:
+    async def get_records(search: str = "") -> JSONResponse:
         records = list_records(observe_dir, model)
         items = []
         for _path, record in records:
+            if search and not record_matches(record, search):
+                continue
             items.append(
                 {
                     "id": record.id,
@@ -79,6 +81,11 @@ _INDEX_HTML = """\
   header button { background: var(--bg3); color: var(--text); border: 1px solid var(--border);
                   padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; }
   header button:hover { background: var(--border); }
+  header input.search { background: var(--bg3); color: var(--text);
+                        border: 1px solid var(--border); padding: 4px 10px;
+                        border-radius: 4px; font-size: 13px; min-width: 260px;
+                        font-family: inherit; }
+  header input.search:focus { outline: none; border-color: var(--accent); }
   .main { display: flex; flex: 1; overflow: hidden; }
   .list-pane { width: 420px; min-width: 300px; border-right: 1px solid var(--border);
                overflow-y: auto; flex-shrink: 0; }
@@ -142,6 +149,8 @@ _INDEX_HTML = """\
 <header>
   <h1>vllama observe</h1>
   <span class="filter">{{FILTER_LABEL}}</span>
+  <input id="search" class="search" type="text" placeholder="Search anything…"
+         oninput="onSearchInput()" autocomplete="off">
   <button onclick="loadRecords()">Refresh</button>
 </header>
 <div class="main">
@@ -153,9 +162,17 @@ _INDEX_HTML = """\
 <script>
 let records = [];
 let selectedId = null;
+let searchDebounce = null;
+
+function onSearchInput() {
+  if (searchDebounce) clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(loadRecords, 150);
+}
 
 async function loadRecords() {
-  const resp = await fetch('/api/records');
+  const q = (document.getElementById('search') || {}).value || '';
+  const url = q ? '/api/records?search=' + encodeURIComponent(q) : '/api/records';
+  const resp = await fetch(url);
   records = await resp.json();
   renderList();
 }

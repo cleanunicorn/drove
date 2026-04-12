@@ -144,6 +144,76 @@ async def test_ensure_running_sets_needs_restart_when_busy(tmp_path: Path) -> No
     assert inst.needs_restart
 
 
+async def test_ensure_running_claim_increments_active_requests(tmp_path: Path) -> None:
+    """ensure_running(claim=True) must atomically reserve a request slot.
+
+    Without this, a concurrent ensure_running() for a different model could
+    evict an idle-looking instance between the first ensure_running() return
+    and the caller's request_started() call — killing the server mid-request
+    and producing empty 502 'Upstream error:' responses.
+    """
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+
+    mtimes = (0.0, 0.0)
+    inst = make_fake_instance("testmodel", model_path, mtimes)
+    manager._instances["testmodel"] = inst
+
+    assert inst.active_requests == 0
+    await manager.ensure_running("testmodel", claim=True)
+    # Slot was claimed atomically under the lock
+    assert inst.active_requests == 1
+
+
+async def test_ensure_running_claim_prevents_eviction_race(tmp_path: Path) -> None:
+    """After claim=True, the model cannot be evicted by another ensure_running call."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, max_loaded_models=1)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+
+    model_a_path = make_model(config, "model-a")
+    make_model(config, "model-b")
+
+    mtimes = (0.0, 0.0)
+    inst_a = make_fake_instance("model-a", model_a_path, mtimes)
+    manager._instances["model-a"] = inst_a
+
+    # Request 1 arrives for model-a and claims a slot.
+    await manager.ensure_running("model-a", claim=True)
+    assert inst_a.active_requests == 1
+
+    # Request 2 arrives for model-b. _evict_if_needed should see that model-a
+    # has an in-flight request and wait (we patch the wait loop to observe this).
+    wait_count = 0
+
+    original_sleep = __import__("asyncio").sleep
+
+    async def fake_sleep(seconds: float) -> None:
+        nonlocal wait_count
+        wait_count += 1
+        if wait_count >= 2:
+            # Simulate the request finishing during the wait
+            inst_a.active_requests = 0
+        await original_sleep(0)
+
+    async def fake_start_b(model_name: str) -> None:
+        manager._instances[model_name] = make_fake_instance(
+            model_name, config.models_dir / model_name / f"{model_name}.gguf", mtimes
+        )
+
+    with (
+        patch("vllama.server_manager.asyncio.sleep", side_effect=fake_sleep),
+        patch.object(manager, "_start", new_callable=AsyncMock, side_effect=fake_start_b),
+        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
+    ):
+        await manager.ensure_running("model-b")
+
+    # model-a was only evicted after its in-flight request drained (wait_count >= 2)
+    assert wait_count >= 2
+    mock_stop.assert_awaited_with("model-a")
+
+
 async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
     """The idle watcher should detect config changes and stop the instance,
     even when no new request arrives to trigger ensure_running()."""

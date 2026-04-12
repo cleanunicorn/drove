@@ -61,7 +61,7 @@ def test_proxy_forwards_when_server_running(tmp_path: Path) -> None:
     fake_response.headers = httpx.Headers({"content-type": "application/json"})
     fake_response.aiter_raw = AsyncMock(return_value=aiter([b'{"ok": true}']))
 
-    async def fake_ensure_running(model_name: str) -> None:
+    async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
         pass
 
     with (
@@ -123,7 +123,7 @@ def test_status_tracks_requests(tmp_path: Path) -> None:
         [b'{"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}']
     )
 
-    async def fake_ensure_running(model_name: str) -> None:
+    async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
         pass
 
     with (

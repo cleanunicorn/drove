@@ -46,7 +46,7 @@ def test_observe_enabled_writes_log(tmp_path: Path) -> None:
         [b'{"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}']
     )
 
-    async def fake_ensure_running(model_name: str) -> None:
+    async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
         pass
 
     with (
@@ -88,7 +88,7 @@ def test_observe_disabled_writes_nothing(tmp_path: Path) -> None:
     fake_response.headers = httpx.Headers({"content-type": "application/json"})
     fake_response.aiter_raw = lambda: aiter([b'{"choices": []}'])
 
-    async def fake_ensure_running(model_name: str) -> None:
+    async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
         pass
 
     with (
@@ -117,7 +117,7 @@ def test_observe_record_contains_request_body(tmp_path: Path) -> None:
     fake_response.headers = httpx.Headers({"content-type": "application/json"})
     fake_response.aiter_raw = lambda: aiter([b'{"choices": []}'])
 
-    async def fake_ensure_running(model_name: str) -> None:
+    async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
         pass
 
     request_body = {"model": "testmodel", "messages": [{"role": "user", "content": "hello"}]}

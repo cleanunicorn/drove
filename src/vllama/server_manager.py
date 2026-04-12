@@ -219,7 +219,7 @@ class ServerManager:
             inst.active_requests = max(0, inst.active_requests - 1)
             inst.last_request_time = time.monotonic()
 
-    async def ensure_running(self, model_name: str) -> None:
+    async def ensure_running(self, model_name: str, *, claim: bool = False) -> None:
         """Ensure llama-server is running for the requested model.
 
         If the model is already loaded with an up-to-date config, this is a no-op.
@@ -229,6 +229,13 @@ class ServerManager:
         When ``max_loaded_models`` would be exceeded, the least-recently-used
         model is drained (wait for its active requests to finish) and evicted
         before starting the new one.
+
+        If *claim* is True, atomically increment ``active_requests`` before
+        releasing the lock.  This prevents a race where a concurrent
+        ``ensure_running`` call for a different model could evict and kill
+        this server between the time ``ensure_running`` returns and the
+        caller records the request as in-flight.  Callers passing
+        ``claim=True`` must pair it with a later ``request_finished`` call.
         """
         async with self._lock:
             inst = self._instances.get(model_name)
@@ -249,14 +256,27 @@ class ServerManager:
                             model_name,
                         )
                         inst.needs_restart = True
+                        if claim:
+                            self._claim_slot(model_name)
                         return
                 else:
+                    if claim:
+                        self._claim_slot(model_name)
                     return  # running with current config, nothing to do
             elif inst is not None:
                 # Clean up stale instance if process died
                 await self._stop_instance(model_name)
             await self._evict_if_needed()
             await self._start(model_name)
+            if claim:
+                self._claim_slot(model_name)
+
+    def _claim_slot(self, model_name: str) -> None:
+        """Increment active_requests for a model (caller must hold the lock)."""
+        inst = self._instances.get(model_name)
+        if inst is not None:
+            inst.active_requests += 1
+            inst.last_request_time = time.monotonic()
 
     async def _evict_if_needed(self) -> None:
         """Evict the least-recently-used model if we are at capacity.

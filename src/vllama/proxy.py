@@ -180,7 +180,10 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         else:
             resolved_model = model_name
             try:
-                await manager.ensure_running(model_name)
+                # claim=True atomically reserves a request slot before releasing
+                # the manager lock, so a concurrent ensure_running for another
+                # model cannot evict this one while we're mid-request.
+                await manager.ensure_running(model_name, claim=True)
             except FileNotFoundError as e:
                 stats.request_finished()
                 stats.request_error()
@@ -190,7 +193,12 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 stats.request_error()
                 raise HTTPException(status_code=503, detail=str(e)) from e
 
-        manager.request_started(resolved_model)
+        # For the "no model_name in body" fallback path, we still need to
+        # claim a slot — but without the lock since ensure_running was skipped.
+        # This path is less racy because nothing competes to evict a model
+        # that was picked as the current fallback.
+        if model_name is None:
+            manager.request_started(resolved_model)
         try:
             manager.record_request(resolved_model)
 
@@ -222,7 +230,10 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 )
                 resp = await client.send(upstream, stream=True)
             except httpx.TransportError as e:
-                raise HTTPException(status_code=502, detail=f"Upstream error: {e}") from e
+                # str(e) is empty for some httpx errors (e.g. ReadError);
+                # include the exception class name for diagnostics.
+                detail = f"Upstream error: {type(e).__name__}: {e}".rstrip(": ")
+                raise HTTPException(status_code=502, detail=detail) from e
 
             response_headers = {
                 k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP

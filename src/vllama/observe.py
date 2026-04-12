@@ -252,8 +252,8 @@ def load_record(path: Path) -> ObserveRecord:
 def list_records(observe_dir: Path, model: str | None = None) -> list[tuple[Path, ObserveRecord]]:
     """List observe records, newest first.
 
-    If model is None, lists across all model subdirectories.
-    Returns (path, record) tuples.
+    If model is None, lists across all model subdirectories (including
+    namespaced dirs like ``org/repo:quant/``).  Returns (path, record) tuples.
     """
     if not observe_dir.exists():
         return []
@@ -261,7 +261,19 @@ def list_records(observe_dir: Path, model: str | None = None) -> list[tuple[Path
     if model:
         dirs = [observe_dir / model]
     else:
-        dirs = [d for d in observe_dir.iterdir() if d.is_dir()]
+        # Walk two levels deep so namespaced models (org/repo:quant) are found
+        # alongside legacy flat model dirs.
+        dirs = []
+        for d in observe_dir.iterdir():
+            if not d.is_dir():
+                continue
+            if any(d.glob("*.json")):
+                dirs.append(d)
+            else:
+                # Treat as namespace — scan one level deeper
+                for sub in d.iterdir():
+                    if sub.is_dir():
+                        dirs.append(sub)
 
     results: list[tuple[Path, ObserveRecord]] = []
     for d in dirs:

@@ -409,13 +409,13 @@ def download_model(
     )
 
     # Auto-configure mmproj if a multimodal projection file was downloaded
+    # Store just the filename — resolved to an absolute path at server startup.
     if plan.mmproj_files:
-        mmproj_name = sorted(plan.mmproj_files.keys())[0]
-        mmproj_path = primary.parent / Path(mmproj_name).name
+        mmproj_name = Path(sorted(plan.mmproj_files.keys())[0]).name
         model_cfg = load_model_config(primary)
-        updated_cfg = model_cfg.model_copy(update={"mmproj": str(mmproj_path)})
+        updated_cfg = model_cfg.model_copy(update={"mmproj": mmproj_name})
         save_model_config(primary, updated_cfg)
-        typer.echo(f"  mmproj auto-configured: {mmproj_path.name}")
+        typer.echo(f"  mmproj auto-configured: {mmproj_name}")
 
     size_mb = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()) / 1_048_576
     typer.echo(f"\nSaved as '{plan.local_name}'  ({size_mb:.1f} MB)")

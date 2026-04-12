@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 HEALTH_CHECK_INTERVAL = 0.5  # seconds between health poll attempts
 
 
+_STDERR_MAX_BYTES = 256 * 1024  # keep last 256 KB of stderr
+
+
 class _ModelInstance:
     """State for a single running llama-server process."""
 
@@ -50,6 +53,31 @@ class _ModelInstance:
         self.loaded_at: float = time.time()
         self.last_request_time: float = time.monotonic()
         self.active_requests: int = 0
+        self._stderr_buf: bytearray = bytearray()
+        self._stderr_task: asyncio.Task[None] | None = None
+
+    def start_stderr_reader(self) -> None:
+        """Start a background task that continuously drains stderr into a buffer."""
+        if self.process.stderr is not None:
+            self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+    async def _drain_stderr(self) -> None:
+        assert self.process.stderr is not None
+        try:
+            while True:
+                chunk = await self.process.stderr.read(8192)
+                if not chunk:
+                    break
+                self._stderr_buf.extend(chunk)
+                # Trim to keep only the tail
+                if len(self._stderr_buf) > _STDERR_MAX_BYTES:
+                    self._stderr_buf = self._stderr_buf[-_STDERR_MAX_BYTES:]
+        except Exception:
+            pass
+
+    @property
+    def stderr_text(self) -> str:
+        return bytes(self._stderr_buf).decode(errors="replace").strip()
 
     @property
     def is_running(self) -> bool:
@@ -302,6 +330,7 @@ class ServerManager:
 
         config_mtimes = self._get_config_mtimes(model_path)
         inst = _ModelInstance(model_name, process, port, model_path, config_mtimes)
+        inst.start_stderr_reader()
         self._instances[model_name] = inst
 
         try:
@@ -345,8 +374,10 @@ class ServerManager:
         async with httpx.AsyncClient() as client:
             while time.monotonic() < deadline:
                 if not inst.is_running:
-                    stderr = await self._read_stderr(inst)
+                    # Give the stderr reader a moment to finish draining
+                    await asyncio.sleep(0.2)
                     msg = "llama-server exited unexpectedly during startup"
+                    stderr = inst.stderr_text
                     if stderr:
                         msg += f"\nstderr: {stderr}"
                     raise RuntimeError(msg)
@@ -357,16 +388,11 @@ class ServerManager:
                 except httpx.TransportError:
                     pass
                 await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-        raise TimeoutError(f"llama-server did not become healthy within {timeout}s")
-
-    async def _read_stderr(self, inst: _ModelInstance) -> str:
-        if inst.process.stderr is None:
-            return ""
-        try:
-            data = await asyncio.wait_for(inst.process.stderr.read(4096), timeout=1.0)
-            return data.decode(errors="replace").strip()
-        except TimeoutError, Exception:
-            return ""
+        stderr = inst.stderr_text
+        msg = f"llama-server did not become healthy within {timeout}s"
+        if stderr:
+            msg += f"\nstderr (last lines):\n{_tail(stderr, 30)}"
+        raise TimeoutError(msg)
 
     def _build_args(self, model_path: Path, model_cfg: ModelConfig, port: int) -> list[str]:
         from vllama.model_config import ModelConfig  # local import to avoid circular
@@ -381,6 +407,12 @@ class ServerManager:
         merged = base_cfg.model_copy(update={k: v for k, v in global_model_cfg.to_dict().items()})
         # Model-specific overrides take precedence
         merged = merged.model_copy(update={k: v for k, v in model_cfg.to_dict().items()})
+
+        # Resolve relative mmproj paths against the model directory
+        if merged.mmproj and not Path(merged.mmproj).is_absolute():
+            merged = merged.model_copy(
+                update={"mmproj": str(model_path.parent / merged.mmproj)}
+            )
 
         args = [
             "--model",
@@ -468,3 +500,9 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return s.getsockname()[1]
+
+
+def _tail(text: str, n: int) -> str:
+    """Return the last *n* lines of *text*."""
+    lines = text.splitlines()
+    return "\n".join(lines[-n:])

@@ -115,6 +115,35 @@ def _has_model_files(directory: Path) -> bool:
     return any(f.suffix.lower() in _MODEL_EXTS for f in directory.iterdir() if f.is_file())
 
 
+def _detect_capabilities(primary: Path) -> list[str]:
+    """Return a list of capability tags for a model (e.g. 'vision').
+
+    Detection is filesystem-based: looks for sibling mmproj files or an
+    ``mmproj`` entry in the sidecar config.  This is reliable because the
+    download command auto-saves mmproj metadata and llama.cpp expects the
+    file to live next to the primary model.
+    """
+    caps: list[str] = []
+
+    # Vision: any mmproj-*.gguf file in the same directory, or mmproj set
+    # in the sidecar config.
+    model_dir = primary.parent
+    has_mmproj_file = any(
+        f.is_file() and f.suffix.lower() == ".gguf" and "mmproj" in f.name.lower()
+        for f in model_dir.iterdir()
+    )
+    has_mmproj_cfg = False
+    if config_path_for_model(primary).exists():
+        try:
+            has_mmproj_cfg = load_model_config(primary).mmproj is not None
+        except Exception:
+            pass
+    if has_mmproj_file or has_mmproj_cfg:
+        caps.append("vision")
+
+    return caps
+
+
 def _add_model_entry(
     directory: Path, name: str, results: list[tuple[str, Path, int]]
 ) -> None:
@@ -171,14 +200,15 @@ def list_models(
         typer.echo("No models found.")
         return
 
-    typer.echo(f"{'NAME':<45} {'SIZE':>10}  LOCATION")
-    typer.echo("-" * 90)
+    typer.echo(f"{'NAME':<45} {'SIZE':>10}  {'CAPS':<12}  LOCATION")
+    typer.echo("-" * 100)
     for name, primary, total_bytes in models:
         size_mb = total_bytes / 1_048_576
         has_cfg = config_path_for_model(primary).exists()
         cfg_marker = " [cfg]" if has_cfg else ""
         location = primary.parent if primary.parent != models_dir else primary
-        typer.echo(f"{name:<45} {size_mb:>9.1f}M  {location}{cfg_marker}")
+        caps = ",".join(_detect_capabilities(primary)) or "-"
+        typer.echo(f"{name:<45} {size_mb:>9.1f}M  {caps:<12}  {location}{cfg_marker}")
 
         if verbose:
             dl = load_download_info(primary)
@@ -210,6 +240,10 @@ def model_info(
     typer.echo(f"Files:   {len(all_files)}")
     typer.echo(f"Size:    {total_bytes / 1_048_576:.1f} MB")
     typer.echo(f"Primary: {primary}")
+
+    caps = _detect_capabilities(primary)
+    if caps:
+        typer.echo(f"Caps:    {', '.join(caps)}")
 
     dl = load_download_info(primary)
     if dl:

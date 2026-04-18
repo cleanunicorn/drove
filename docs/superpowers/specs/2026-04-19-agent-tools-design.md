@@ -41,7 +41,7 @@
 | Web | WebFetch only (no search) |
 | Permission UX | Modal block with Allow / Session-allow / Deny&Continue / Deny&Abort |
 | Edit format | Unified diff (`apply_patch`) |
-| Grep/glob impl | Python pure (`re` + `pathlib`) |
+| Grep/glob impl | `ripgrep` when present, Python `re` + `pathlib` fallback |
 | Output handling | Cap per tool + paging hint |
 | Background bash interface | Run flag + `bash_output` + `bash_kill` |
 | Integration surface | TUI-only; tools designed reusable |
@@ -72,6 +72,8 @@ src/vllama/agents/
         task.py                  # task (subagent)
     router.py                    # LLM tool selector
     evaluator.py                 # LLM done-detector
+    compaction.py                # history summarize+trim
+    rate_limit.py                # per-model token bucket + 429 retry
     runtime.py                   # ToolRuntime: dispatch + permission + caps
     permissions.py               # Policy, Tier, Decision, PromptHook
     bash_procs.py                # BgProcs singleton manager
@@ -125,12 +127,13 @@ def all_specs() -> list[ToolSpec]:
 ```
 append user_msg to history
 for iter in range(max_iterations):
-    selected = await router.select(history, all_specs())        # skipped if router.enabled=false
-    response = await stream_chat(history, selected)             # existing _stream_chat
+    history = await compaction.maybe_compact(history, ctx_size)  # no-op if under threshold
+    selected = await router.select(history, all_specs())         # skipped if router.enabled=false
+    response = await stream_chat(history, selected)              # existing _stream_chat
     append assistant_msg to history
     if response.tool_calls:
         for tc in response.tool_calls:
-            result = await runtime.dispatch(tc, ctx)             # may raise AbortTurn
+            result = await runtime.dispatch(tc, ctx)              # may raise AbortTurn
             append tool_result msg
         continue
     else:
@@ -248,6 +251,70 @@ Todos:
 
 Return JSON only.
 ```
+
+### Compaction (`compaction.py`)
+
+When history token count exceeds `ctx_size × compaction.threshold` (default 0.7), summarize older messages into one replacement.
+
+```python
+async def maybe_compact(
+    history: list[dict],
+    ctx_size: int,
+    client, model,
+    config: CompactionConfig,
+) -> list[dict]:
+    tokens = estimate_tokens(history)
+    if tokens < int(ctx_size * config.threshold):
+        return history
+    keep_tail = config.keep_tail_messages            # default 6
+    head = history[:-keep_tail]
+    tail = history[-keep_tail:]
+    summary = await summarize(head, client, model, config)
+    system_summary = {
+        "role": "system",
+        "content": f"[Earlier conversation summary]\n{summary}",
+    }
+    return [history[0]] + [system_summary] + tail    # keep original system prompt at [0]
+```
+
+Summarization prompt: *"Summarize the conversation below into a concise brief preserving decisions, file paths mentioned, tool results, and open tasks. Omit verbose tool output."*
+
+Called before each main LLM call in the turn loop (not router/evaluator — cheap calls). On summarize failure → keep original history (fail-open), log warning.
+
+### Rate limit (`rate_limit.py`)
+
+Per-model configurable limits. Applies to all LLM calls (main, router, evaluator, compaction, subagent) routed through a shared `RateLimitedClient` wrapper around `httpx.AsyncClient`.
+
+```python
+@dataclass
+class ModelLimits:
+    base_delay_ms: int = 0
+    requests_per_minute: int | None = None
+    requests_per_hour: int | None = None
+    max_retries: int = 5
+    retry_max_backoff_s: int = 60
+
+class RateLimitedClient:
+    async def post(self, url, json, model: str) -> httpx.Response:
+        limits = self._for(model)
+        await self._token_bucket(limits).acquire()
+        if limits.base_delay_ms:
+            await asyncio.sleep(limits.base_delay_ms / 1000)
+        for attempt in range(limits.max_retries):
+            resp = await self._client.post(url, json=json)
+            if resp.status_code != 429:
+                return resp
+            retry_after = _parse_retry_after(resp)  # honors Retry-After header
+            if retry_after is None:
+                retry_after = min(2 ** attempt, limits.retry_max_backoff_s)
+            _surface_to_tui(f"Rate limited by {model}, retry in {retry_after}s")
+            await asyncio.sleep(retry_after)
+        raise RateLimitExceeded(model)
+```
+
+Token-bucket keyed per model: separate buckets for minute and hour windows. `requests_per_minute=None` disables that window.
+
+`_surface_to_tui`: pushes a status-line note, not a modal; user can cancel turn if too slow.
 
 ### Runtime (`runtime.py`)
 
@@ -410,13 +477,14 @@ Subagent uses the same `ServerManager` / llama-server and the same model. Tool s
 
 **`grep`** (read):
 - Args: `pattern` (regex), `path` (file or dir, default cwd), `glob` (filter, optional, default `**/*`), `context_lines` (default 0), `case_insensitive` (default false), `max_matches` (default 200).
+- Impl: `rg` binary if on `$PATH` (detected once at startup and cached); else Python `re` + walk fallback. Same output format either way.
 - Output: `path:line:match_content`. Multiline off. Paged via `offset`.
 
 ### Shell
 
 **`bash`** (exec):
 - Args: `command`, `timeout_ms` (default 120_000, max 600_000), `run_in_background` (bool, default false), `description` (string, for UI).
-- Foreground: `asyncio.create_subprocess_shell`, pipe stdout+stderr, await with `asyncio.wait_for(timeout)`. Return combined output. Non-zero exit → still returned as content, error=false; model decides.
+- Foreground: `asyncio.create_subprocess_shell`, pipe stdout+stderr, stream chunks to TUI via callback (see TUI section) while accumulating for return. Await with `asyncio.wait_for(timeout)`. Return combined output. Non-zero exit → still returned as content, error=false; model decides.
 - Background: delegate to `BgProcs.start(command, ctx.cwd)`. Return `"Background shell started. shell_id=X, pid=Y"`.
 - Timeout: `error=True`, content includes partial output + `"Process timed out after N ms and was killed."`
 
@@ -464,7 +532,8 @@ Subagent uses the same `ServerManager` / llama-server and the same model. Tool s
 Extend `Message.append_tool_call` in `tui.py`:
 - Add status badge: `pending | running | ok | error | denied | killed`.
 - `apply_patch` → collapsible with syntax-highlighted diff.
-- `bash` bg → shows `[background]` tag + `shell_id`.
+- `bash` fg → live-preview pane shows last N lines (default 10, config `agents.bash.preview_lines`) while running; full output hidden in expandable section. On completion: preview stays, full output available on expand.
+- `bash` bg → shows `[background]` tag + `shell_id`. `bash_output` calls render as extensions of the same bubble when `shell_id` matches.
 - `todo_write` → renders current todos as checklist below bubble.
 - `task` → nested collapsible showing subagent messages (collapsed by default).
 - Truncation marker visible when `ToolResult.truncated=True`.
@@ -509,20 +578,45 @@ subagent_depth = 3
 enabled = true
 permissive = true
 cache_on_unchanged_history = true
+heuristic_short_circuit = false   # optional: keyword-based pre-filter skips LLM router
+skip_on_first_iteration = true    # on 1st iter of a turn, send all tools (assume user req needs all)
 
 [agents.evaluator]
 enabled = true
-todos_in_prompt = "full"      # "full" | "counts"
+todos_in_prompt = "full"          # "full" | "counts"
+skip_when_no_todos_and_long_reply = true  # if 0 todos and assistant reply > 200 chars, treat done
+
+[agents.compaction]
+enabled = true
+threshold = 0.7                   # fraction of ctx_size
+keep_tail_messages = 6            # messages kept verbatim at end
 
 [agents.bash]
 default_timeout_ms = 120000
 max_timeout_ms = 600000
 background_buffer_bytes = 65536
 kill_on_session_end = true
+preview_lines = 10                # live preview lines for fg bash
 
 [agents.web]
 fetch_timeout_s = 10
 fetch_max_bytes = 15000000
+
+# Per-model rate limits. Key = model name (matches what proxy receives).
+# Omit a model to use no limits.
+[agents.rate_limit."qwen-2.5-coder-7b"]
+base_delay_ms = 0
+requests_per_minute = 60
+requests_per_hour = 1000
+max_retries = 5
+retry_max_backoff_s = 60
+
+[agents.rate_limit."free-remote-model"]
+base_delay_ms = 500
+requests_per_minute = 10
+requests_per_hour = 100
+max_retries = 10
+retry_max_backoff_s = 120
 
 [agents.permissions]
 # Values: "auto" | "prompt" | "deny"
@@ -563,8 +657,10 @@ Handlers return `ToolResult(error=True, content=...)` rather than raise. Errors 
 
 - `AbortTurn` exception (from Deny & Abort) caught in `_send_message`; TUI posts `"Turn aborted."`.
 - Max iterations → loop breaks; TUI posts `"Max iterations (50) reached."`.
-- Router/evaluator parse failure → fail-open (router returns all; evaluator returns done=true).
+- Router/evaluator/compaction parse failure → fail-open (router returns all; evaluator returns done=true; compaction keeps original history).
 - llama-server unavailable → existing httpx error path.
+- Rate limit hit (HTTP 429) → `RateLimitedClient` honors `Retry-After`, sleeps, retries up to `max_retries`. TUI status-line note during wait. Exhausted retries → `RateLimitExceeded` surfaced as tool-level or turn-level error depending on caller.
+- Compaction LLM failure → log warning, continue with uncompacted history (may OOM context; last-resort truncate to `keep_tail_messages` + original system prompt).
 
 ### Background
 
@@ -587,6 +683,8 @@ Extend `observe.py` to log tool calls with `{turn_id, iter, tool, args, result_b
 - `test_router.py` — parse, fallback, caching, prompt assembly.
 - `test_evaluator.py` — done/not-done, parse failure, todo integration.
 - `test_subagent.py` — fresh history, depth cap, tool subset.
+- `test_compaction.py` — below-threshold no-op, over-threshold summarize, keep-tail preserved, summarize failure fail-open.
+- `test_rate_limit.py` — token bucket window enforcement, base delay applied, 429 with `Retry-After` retry, exponential fallback when no header, per-model isolation.
 
 ### Integration (tests/test_chat_loop.py)
 
@@ -626,12 +724,15 @@ Scope: `web_fetch`, `readability-lxml` dep, tests with httpx mock.
 **Phase 7 — Subagent**
 Scope: `SubagentRunner`, `task` tool, subagent bubble nesting, tests.
 
+**Phase 8 — Compaction + rate limiting**
+Scope: `compaction.py` (summarize head + keep tail), token estimator, wire into turn loop; `rate_limit.py` (`RateLimitedClient`, token bucket, 429 retry with `Retry-After`), per-model config, TUI status-line wait note; tests with mocked 429 responses.
+
 ## Open / Deferred
 
 - Proxy-level tool injection (agentic-proxy product direction).
 - MCP server integration.
-- Live streaming of foreground bash output in TUI.
 - Image / PDF / notebook tools.
 - Cross-session / project-level todos.
 - WebSearch (any provider).
 - Subagent using a *different* model than the parent.
+- Exact-string `edit` tool alongside `apply_patch` (may revisit if small-model diff accuracy is poor).

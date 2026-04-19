@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal
@@ -66,7 +66,7 @@ class Policy:
         return cls(trust_all=True)
 
     @classmethod
-    def from_config(cls, overrides: dict[str, str]) -> Policy:
+    def from_config(cls, overrides: Mapping[str, str]) -> Policy:
         """Build a Policy from a config dict of {tool_name: 'auto'|'prompt'|'deny'}."""
         parsed: dict[str, Decision] = {}
         for name, value in overrides.items():

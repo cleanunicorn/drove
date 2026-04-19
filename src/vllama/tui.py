@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections import deque
@@ -29,9 +30,10 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from vllama.agents.permissions import Policy
+from vllama.agents.permissions import AbortTurn, Policy, PromptDecision
 from vllama.agents.runtime import ToolRuntime
 from vllama.agents.tools import ToolContext, all_specs
+from vllama.config import load_config
 from vllama.sessions import Session, list_sessions, new_session, save_session
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
@@ -394,12 +396,17 @@ class ChatApp(App[None]):
             self._session = new_session(model, system_prompt)
             self._history = list(self._session.messages)
 
+        cfg = load_config()
         self._tool_ctx = ToolContext(
             cwd=Path.cwd(),
             cap_bytes=8192,
             cap_bytes_bash=32768,
         )
-        self._runtime = ToolRuntime(policy=Policy.trust_mode(), ctx=self._tool_ctx)
+        self._runtime = ToolRuntime(
+            policy=Policy.from_config(cfg.agents.permissions),
+            ctx=self._tool_ctx,
+            prompt_hook=self._prompt_hook,
+        )
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -512,6 +519,19 @@ class ChatApp(App[None]):
         bubble = Message("system-note", text)
         await self.query_one("#messages").mount(bubble)
         self._scroll_to_bottom()
+
+    async def _prompt_hook(self, name: str, args: dict[str, object]) -> PromptDecision:
+        """Push PermissionModal and await user's choice."""
+        future: asyncio.Future[PromptDecision] = asyncio.get_running_loop().create_future()
+
+        def _on_close(choice: str | None) -> None:
+            if choice is None:
+                future.set_result("deny_abort")
+            elif not future.done():
+                future.set_result(choice)  # type: ignore[arg-type]
+
+        await self.push_screen(PermissionModal(name=name, args=args), _on_close)
+        return await future
 
     async def _load_session(self, session: Session) -> None:
         self._session = session
@@ -738,26 +758,30 @@ class ChatApp(App[None]):
                 self._history.append(assistant_msg)
 
                 # Execute each tool call and show results
-                for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
-                    tool_result = await self._runtime.dispatch(tc["name"], tc["arguments"])
-                    result = tool_result.content
+                try:
+                    for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
+                        tool_result = await self._runtime.dispatch(tc["name"], tc["arguments"])
+                        result = tool_result.content
 
-                    # Append tool result to history
-                    self._history.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": result,
-                        }
-                    )
+                        # Append tool result to history
+                        self._history.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "content": result,
+                            }
+                        )
 
-                    # Show as collapsible section
-                    await assistant_bubble.append_tool_call(
-                        tc["name"],
-                        tc["arguments"],
-                        result,
-                    )
-                    self._scroll_to_bottom()
+                        # Show as collapsible section
+                        await assistant_bubble.append_tool_call(
+                            tc["name"],
+                            tc["arguments"],
+                            result,
+                        )
+                        self._scroll_to_bottom()
+                except AbortTurn:
+                    await self._show_note("Turn aborted by user.")
+                    return
 
                 self._session.messages = self._history
                 # Loop back to get the model's next response

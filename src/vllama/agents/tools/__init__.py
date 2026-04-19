@@ -1,6 +1,7 @@
 """Tool registry. Importing this package populates all tool specs."""
 
 # Import for registration side-effects.
+from vllama.agents.tools import bash as _bash  # noqa: F401
 from vllama.agents.tools import edit as _edit  # noqa: F401
 from vllama.agents.tools import glob as _glob  # noqa: F401
 from vllama.agents.tools import grep as _grep  # noqa: F401

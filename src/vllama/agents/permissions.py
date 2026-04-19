@@ -1,9 +1,11 @@
-"""Permission policy scaffold. Phase 1 ships with Policy.trust_mode() as the default."""
+"""Permission policy + prompt hook types."""
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Literal
 
 
 class Tier(StrEnum):
@@ -18,6 +20,25 @@ class Decision(StrEnum):
     DENY = "deny"
 
 
+PromptDecision = Literal["allow", "session_allow", "deny_continue", "deny_abort"]
+PROMPT_DECISIONS: tuple[PromptDecision, ...] = (
+    "allow",
+    "session_allow",
+    "deny_continue",
+    "deny_abort",
+)
+
+# Signature: (tool_name, tool_args) -> await decision
+PromptHook = Callable[[str, dict[str, object]], Awaitable[PromptDecision]]
+
+
+class AbortTurn(Exception):
+    """Raised from ToolRuntime.dispatch when the user picks Deny & Abort.
+
+    Callers (the TUI turn loop) catch this and cancel the whole turn.
+    """
+
+
 _TIER_DEFAULTS: dict[Tier, Decision] = {
     Tier.READ: Decision.AUTO,
     Tier.MUTATE: Decision.PROMPT,
@@ -27,11 +48,7 @@ _TIER_DEFAULTS: dict[Tier, Decision] = {
 
 @dataclass
 class Policy:
-    """Per-tool permission decision resolver.
-
-    If ``trust_all`` is True, every tool returns ``Decision.AUTO``
-    regardless of overrides or tier.
-    """
+    """Per-tool permission decision resolver."""
 
     overrides: dict[str, Decision] = field(default_factory=dict)
     trust_all: bool = False
@@ -45,5 +62,19 @@ class Policy:
 
     @classmethod
     def trust_mode(cls) -> Policy:
-        """All tools auto-approve. Used in Phase 1 until PromptHook lands."""
+        """All tools auto-approve. Used in tests and when agents.enabled=false."""
         return cls(trust_all=True)
+
+    @classmethod
+    def from_config(cls, overrides: dict[str, str]) -> Policy:
+        """Build a Policy from a config dict of {tool_name: 'auto'|'prompt'|'deny'}."""
+        parsed: dict[str, Decision] = {}
+        for name, value in overrides.items():
+            try:
+                parsed[name] = Decision(value)
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid permission decision for {name!r}: {value!r}."
+                    f" Expected one of {[d.value for d in Decision]}."
+                ) from e
+        return cls(overrides=parsed)

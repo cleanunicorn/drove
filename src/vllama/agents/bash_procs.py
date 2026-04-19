@@ -53,6 +53,7 @@ class BgProcs:
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(cwd),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,

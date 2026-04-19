@@ -8,6 +8,8 @@ mode delegates to `ctx.bg_procs`, returning a shell_id + pid.
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 from typing import Any
 
 from vllama.agents.tools._base import ToolContext, ToolResult, ToolSpec, register
@@ -122,8 +124,10 @@ async def _bash_handler(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(ctx.cwd),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
     except OSError as e:
         return ToolResult(content=f"Error launching command: {e}", error=True)
@@ -131,10 +135,14 @@ async def _bash_handler(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_ms / 1000)
     except TimeoutError:
+        # Kill the whole process group so shell-spawned children die too.
         try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         partial = b""
         if proc.stdout is not None:
             try:

@@ -5,22 +5,14 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-import pytest
-
 from vllama.agents.tools._base import (
     ToolContext,
     ToolResult,
     ToolSpec,
     all_specs,
-    clear_registry,
     get_spec,
     register,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_registry() -> None:
-    clear_registry()
 
 
 def test_tool_result_defaults() -> None:

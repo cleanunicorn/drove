@@ -8,12 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from vllama.agents.tools._base import ToolContext, clear_registry, get_spec
-
-
-@pytest.fixture(autouse=True)
-def _reset() -> None:
-    clear_registry()
+from vllama.agents.tools._base import ToolContext, get_spec
 
 
 @pytest.fixture(autouse=True)
@@ -21,11 +16,6 @@ def _force_python_impl(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Default test config: pretend rg is not installed so we hit the Python path."""
     monkeypatch.setattr("shutil.which", lambda name: None)
     yield
-
-
-@pytest.fixture
-def ctx(tmp_path: Path) -> ToolContext:
-    return ToolContext(cwd=tmp_path, cap_bytes=8192, cap_bytes_bash=32768)
 
 
 def _load() -> None:

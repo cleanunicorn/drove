@@ -5,27 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from vllama.agents.permissions import Policy
 from vllama.agents.runtime import ToolRuntime
 from vllama.agents.tools._base import (
     ToolContext,
     ToolResult,
     ToolSpec,
-    clear_registry,
     register,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset() -> None:
-    clear_registry()
-
-
-@pytest.fixture
-def ctx(tmp_path: Path) -> ToolContext:
-    return ToolContext(cwd=tmp_path, cap_bytes=32, cap_bytes_bash=128)
 
 
 async def _echo_handler(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -69,10 +56,10 @@ async def test_dispatch_success(ctx: ToolContext) -> None:
     assert r.content == "hi"
 
 
-async def test_dispatch_caps_output(ctx: ToolContext) -> None:
+async def test_dispatch_caps_output(tmp_path: Path) -> None:
     _reg("echo")
+    ctx = ToolContext(cwd=tmp_path, cap_bytes=32, cap_bytes_bash=128)
     rt = ToolRuntime(policy=Policy.trust_mode(), ctx=ctx)
-    # ctx.cap_bytes = 32 from fixture.
     payload = "A" * 200
     r = await rt.dispatch("echo", '{"text": "' + payload + '"}')
     assert r.truncated is True

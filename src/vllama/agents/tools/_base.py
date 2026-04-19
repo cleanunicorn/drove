@@ -20,7 +20,7 @@ class ToolResult:
     meta: dict[str, Any] | None = None
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ToolContext:
     """Runtime context passed to every tool handler."""
 

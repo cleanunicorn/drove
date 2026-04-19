@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+import pytest
+
 from vllama.agents.tools._base import (
     ToolContext,
     ToolResult,
@@ -57,6 +59,12 @@ def test_tool_context_shape(tmp_path: Path) -> None:
     assert ctx.cwd == tmp_path
     assert ctx.cap_bytes == 8192
     assert ctx.cap_bytes_bash == 32768
+
+
+def test_tool_context_requires_kwargs(tmp_path: Path) -> None:
+    """ToolContext construction must be kw-only (protects against positional drift)."""
+    with pytest.raises(TypeError):
+        ToolContext(tmp_path, 8192, 32768)  # type: ignore[misc]
 
 
 def test_package_import_registers_all_six_tools() -> None:

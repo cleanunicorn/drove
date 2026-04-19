@@ -30,6 +30,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
+from vllama.agents.bash_procs import BgProcs
 from vllama.agents.permissions import AbortTurn, Policy, PromptDecision
 from vllama.agents.runtime import ToolRuntime
 from vllama.agents.tools import ToolContext, all_specs
@@ -406,6 +407,7 @@ class ChatApp(App[None]):
         self._queue: deque[str] = deque()
         self._last_speed: float | None = None  # tok/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
+        self._follow = True  # auto-scroll to bottom on new content
         self.theme = theme
 
         if resume_session:
@@ -416,10 +418,12 @@ class ChatApp(App[None]):
             self._history = list(self._session.messages)
 
         cfg = load_config()
+        self._bg_procs = BgProcs()
         self._tool_ctx = ToolContext(
             cwd=Path.cwd(),
             cap_bytes=8192,
             cap_bytes_bash=32768,
+            bg_procs=self._bg_procs,
         )
         self._runtime = ToolRuntime(
             policy=Policy.from_config(cfg.agents.permissions),
@@ -444,9 +448,19 @@ class ChatApp(App[None]):
         self._update_status()
         self.query_one("#user-input", ChatInput).focus()
 
+        container = self.query_one("#messages", ScrollableContainer)
+
+        def _on_scroll_y(value: float) -> None:
+            self._follow = (container.max_scroll_y - value) <= 2
+
+        self.watch(container, "scroll_y", _on_scroll_y)
+
         # Replay existing messages when resuming
         if self._session.message_count > 0:
             self.call_after_refresh(self._replay_history)
+
+    async def on_unmount(self) -> None:
+        await self._bg_procs.shutdown()
 
     async def _replay_history(self) -> None:
         # Index tool results by tool_call_id for pairing
@@ -893,7 +907,7 @@ class ChatApp(App[None]):
 
     def _scroll_to_bottom(self, force: bool = False) -> None:
         container = self.query_one("#messages", ScrollableContainer)
-        # Auto-scroll only if already near the bottom or forced
-        near_bottom = (container.max_scroll_y - container.scroll_y) <= 5
-        if force or near_bottom:
+        if force:
+            self._follow = True
+        if self._follow:
             container.scroll_end(animate=False)

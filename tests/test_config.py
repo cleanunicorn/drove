@@ -103,3 +103,59 @@ def test_agents_permissions_invalid_value_rejected(tmp_path: Path) -> None:
     path.write_bytes(tomli_w.dumps({"agents": {"permissions": {"bash": "ignore"}}}).encode())
     with pytest.raises(Exception):
         load_config(path)
+
+
+def test_agents_router_defaults(tmp_path: Path) -> None:
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_text("", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.agents.router.enabled is True
+    assert cfg.agents.router.permissive is True
+    assert cfg.agents.router.skip_on_first_iteration is True
+
+
+def test_agents_evaluator_defaults(tmp_path: Path) -> None:
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_text("", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.agents.evaluator.enabled is True
+    assert cfg.agents.evaluator.skip_when_no_todos_and_long_reply is True
+
+
+def test_agents_max_iterations_default(tmp_path: Path) -> None:
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_text("", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.agents.max_iterations == 50
+
+
+def test_agents_max_iterations_from_toml(tmp_path: Path) -> None:
+    import tomli_w
+
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_bytes(
+        tomli_w.dumps({"agents": {"max_iterations": 10}}).encode()
+    )
+    cfg = load_config(path)
+    assert cfg.agents.max_iterations == 10
+
+
+def test_agents_router_toggle_via_toml(tmp_path: Path) -> None:
+    import tomli_w
+
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_bytes(
+        tomli_w.dumps({"agents": {"router": {"enabled": False}}}).encode()
+    )
+    cfg = load_config(path)
+    assert cfg.agents.router.enabled is False

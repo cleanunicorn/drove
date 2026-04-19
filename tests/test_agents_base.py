@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 import pytest
@@ -64,3 +65,38 @@ def test_tool_context_shape(tmp_path: Path) -> None:
     assert ctx.cwd == tmp_path
     assert ctx.cap_bytes == 8192
     assert ctx.cap_bytes_bash == 32768
+
+
+def test_package_import_registers_all_six_tools() -> None:
+    # Re-populate by explicitly reloading each child module.
+    # This ensures register() side-effects fire even after _reset_registry.
+    from vllama.agents.tools import edit, glob, grep, list, read, write  # noqa: F401
+
+    for mod in (edit, glob, grep, list, read, write):
+        importlib.reload(mod)
+
+    names = {s.name for s in all_specs()}
+    assert names == {
+        "read_file",
+        "write_file",
+        "apply_patch",
+        "list_dir",
+        "glob_files",
+        "grep",
+    }
+
+
+def test_all_definitions_match_openai_shape() -> None:
+    # Re-populate by explicitly reloading each child module.
+    from vllama.agents.tools import edit, glob, grep, list, read, write  # noqa: F401
+
+    for mod in (edit, glob, grep, list, read, write):
+        importlib.reload(mod)
+
+    for spec in all_specs():
+        assert spec.definition.get("type") == "function"
+        fn = spec.definition.get("function")
+        assert isinstance(fn, dict)
+        assert fn.get("name") == spec.name
+        assert "description" in fn
+        assert "parameters" in fn

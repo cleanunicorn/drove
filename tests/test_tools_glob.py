@@ -7,19 +7,7 @@ import os
 import time
 from pathlib import Path
 
-import pytest
-
-from vllama.agents.tools._base import ToolContext, clear_registry, get_spec
-
-
-@pytest.fixture(autouse=True)
-def _reset() -> None:
-    clear_registry()
-
-
-@pytest.fixture
-def ctx(tmp_path: Path) -> ToolContext:
-    return ToolContext(cwd=tmp_path, cap_bytes=8192, cap_bytes_bash=32768)
+from vllama.agents.tools._base import ToolContext, get_spec
 
 
 def _load() -> None:

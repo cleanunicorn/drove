@@ -8,12 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from vllama.agents.tools._base import ToolContext, clear_registry, get_spec
-
-
-@pytest.fixture(autouse=True)
-def _reset() -> None:
-    clear_registry()
+from vllama.agents.tools._base import ToolContext, get_spec
 
 
 @pytest.fixture(autouse=True)
@@ -21,11 +16,6 @@ def _force_python_impl(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Default test config: pretend rg is not installed so we hit the Python path."""
     monkeypatch.setattr("shutil.which", lambda name: None)
     yield
-
-
-@pytest.fixture
-def ctx(tmp_path: Path) -> ToolContext:
-    return ToolContext(cwd=tmp_path, cap_bytes=8192, cap_bytes_bash=32768)
 
 
 def _load() -> None:
@@ -79,14 +69,10 @@ async def test_grep_glob_filter(tmp_path: Path, ctx: ToolContext) -> None:
 
 async def test_grep_context_lines(tmp_path: Path, ctx: ToolContext) -> None:
     _load()
-    (tmp_path / "a.py").write_text(
-        "line1\nline2\ntarget\nline4\nline5\n", encoding="utf-8"
-    )
+    (tmp_path / "a.py").write_text("line1\nline2\ntarget\nline4\nline5\n", encoding="utf-8")
     spec = get_spec("grep")
     assert spec is not None
-    result = await spec.handler(
-        {"pattern": "target", "context_lines": 1}, ctx
-    )
+    result = await spec.handler({"pattern": "target", "context_lines": 1}, ctx)
     assert "line2" in result.content
     assert "target" in result.content
     assert "line4" in result.content

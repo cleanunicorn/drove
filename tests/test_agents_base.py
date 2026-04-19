@@ -12,15 +12,9 @@ from vllama.agents.tools._base import (
     ToolResult,
     ToolSpec,
     all_specs,
-    clear_registry,
     get_spec,
     register,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_registry() -> None:
-    clear_registry()
 
 
 def test_tool_result_defaults() -> None:
@@ -65,6 +59,12 @@ def test_tool_context_shape(tmp_path: Path) -> None:
     assert ctx.cwd == tmp_path
     assert ctx.cap_bytes == 8192
     assert ctx.cap_bytes_bash == 32768
+
+
+def test_tool_context_requires_kwargs(tmp_path: Path) -> None:
+    """ToolContext construction must be kw-only (protects against positional drift)."""
+    with pytest.raises(TypeError):
+        ToolContext(tmp_path, 8192, 32768)  # type: ignore[misc]
 
 
 def test_package_import_registers_all_six_tools() -> None:

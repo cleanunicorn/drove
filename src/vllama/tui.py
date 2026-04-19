@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections import deque
@@ -29,9 +30,10 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from vllama.agents.permissions import Policy
+from vllama.agents.permissions import AbortTurn, Policy, PromptDecision
 from vllama.agents.runtime import ToolRuntime
 from vllama.agents.tools import ToolContext, all_specs
+from vllama.config import load_config
 from vllama.sessions import Session, list_sessions, new_session, save_session
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
@@ -296,7 +298,81 @@ class SessionPicker(ModalScreen[Session | None]):
             self.dismiss(self._sessions[idx])
 
 
+# ── Permission modal ────────────────────────────────────────────────────────────
+class PermissionModal(ModalScreen[str]):
+    """Modal that asks the user how to handle a prompt-tier tool call.
+
+    Dismisses with one of: "allow" | "session_allow" | "deny_continue" | "deny_abort".
+    """
+
+    BINDINGS = [
+        Binding("a", "allow", "Allow"),
+        Binding("s", "session_allow", "Session-allow"),
+        Binding("d", "deny_continue", "Deny & Continue"),
+        Binding("x", "deny_abort", "Deny & Abort"),
+        Binding("escape", "deny_abort", "Cancel"),
+    ]
+
+    def __init__(self, name: str, args: dict[str, object]) -> None:
+        super().__init__()
+        self._name = name
+        self._args = args
+
+    def compose(self) -> ComposeResult:
+        import json as _json
+
+        try:
+            pretty = _json.dumps(self._args, indent=2, default=str)
+        except TypeError, ValueError:
+            pretty = repr(self._args)
+        if len(pretty) > 1024:
+            pretty = pretty[:1024] + "\n… (truncated)"
+
+        yield Vertical(
+            Static(f"Tool call: {self._name}", id="perm-title"),
+            Static(pretty, id="perm-args"),
+            Horizontal(
+                Static(
+                    "[A]llow  [S]ession-allow  [D]eny&Continue  e[X]it-turn",
+                    id="perm-help",
+                ),
+            ),
+            id="perm-modal",
+        )
+
+    def action_allow(self) -> None:
+        self.dismiss("allow")
+
+    def action_session_allow(self) -> None:
+        self.dismiss("session_allow")
+
+    def action_deny_continue(self) -> None:
+        self.dismiss("deny_continue")
+
+    def action_deny_abort(self) -> None:
+        self.dismiss("deny_abort")
+
+
 # ── Main app ────────────────────────────────────────────────────────────────────
+
+
+def render_permits_summary(runtime: ToolRuntime) -> str:
+    """Human-readable summary of runtime permissions state, for /permits."""
+    lines: list[str] = []
+    lines.append("Tier defaults: read=auto, mutate=prompt, exec=prompt")
+    if runtime.policy.trust_all:
+        lines.append("Policy: TRUST MODE (all tools auto-approved)")
+    elif runtime.policy.overrides:
+        lines.append("Config overrides:")
+        for name, decision in sorted(runtime.policy.overrides.items()):
+            lines.append(f"  {name} = {decision.value}")
+    else:
+        lines.append("Config overrides: (none; tier defaults apply)")
+    if runtime.session_permits:
+        lines.append("Session permits: " + ", ".join(sorted(runtime.session_permits)))
+    else:
+        lines.append("Session permits: (none)")
+    return "\n".join(lines)
 
 
 class ChatApp(App[None]):
@@ -339,12 +415,17 @@ class ChatApp(App[None]):
             self._session = new_session(model, system_prompt)
             self._history = list(self._session.messages)
 
+        cfg = load_config()
         self._tool_ctx = ToolContext(
             cwd=Path.cwd(),
             cap_bytes=8192,
             cap_bytes_bash=32768,
         )
-        self._runtime = ToolRuntime(policy=Policy.trust_mode(), ctx=self._tool_ctx)
+        self._runtime = ToolRuntime(
+            policy=Policy.from_config(cfg.agents.permissions),
+            ctx=self._tool_ctx,
+            prompt_hook=self._prompt_hook,
+        )
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -407,6 +488,7 @@ class ChatApp(App[None]):
         "/clear": "Clear current chat (starts new session)",
         "/theme": "/theme [name] — list or set theme",
         "/save": "Save session now (auto-saves after each reply)",
+        "/permits": "Show current permission policy and session permits",
     }
 
     async def _dispatch_command(self, text: str) -> None:
@@ -450,6 +532,9 @@ class ChatApp(App[None]):
             save_session(self._sessions_dir, self._session)
             await self._show_note(f"Session saved  ({self._session.id})")
 
+        elif cmd == "/permits":
+            await self._show_note(render_permits_summary(self._runtime))
+
         else:
             await self._show_note(f"Unknown command '{cmd}'. Try /help.")
 
@@ -457,6 +542,19 @@ class ChatApp(App[None]):
         bubble = Message("system-note", text)
         await self.query_one("#messages").mount(bubble)
         self._scroll_to_bottom()
+
+    async def _prompt_hook(self, name: str, args: dict[str, object]) -> PromptDecision:
+        """Push PermissionModal and await user's choice."""
+        future: asyncio.Future[PromptDecision] = asyncio.get_running_loop().create_future()
+
+        def _on_close(choice: str | None) -> None:
+            if choice is None:
+                future.set_result("deny_abort")
+            elif not future.done():
+                future.set_result(choice)  # type: ignore[arg-type]
+
+        await self.push_screen(PermissionModal(name=name, args=args), _on_close)
+        return await future
 
     async def _load_session(self, session: Session) -> None:
         self._session = session
@@ -683,26 +781,30 @@ class ChatApp(App[None]):
                 self._history.append(assistant_msg)
 
                 # Execute each tool call and show results
-                for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
-                    tool_result = await self._runtime.dispatch(tc["name"], tc["arguments"])
-                    result = tool_result.content
+                try:
+                    for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
+                        tool_result = await self._runtime.dispatch(tc["name"], tc["arguments"])
+                        result = tool_result.content
 
-                    # Append tool result to history
-                    self._history.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": result,
-                        }
-                    )
+                        # Append tool result to history
+                        self._history.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "content": result,
+                            }
+                        )
 
-                    # Show as collapsible section
-                    await assistant_bubble.append_tool_call(
-                        tc["name"],
-                        tc["arguments"],
-                        result,
-                    )
-                    self._scroll_to_bottom()
+                        # Show as collapsible section
+                        await assistant_bubble.append_tool_call(
+                            tc["name"],
+                            tc["arguments"],
+                            result,
+                        )
+                        self._scroll_to_bottom()
+                except AbortTurn:
+                    await self._show_note("Turn aborted by user.")
+                    return
 
                 self._session.messages = self._history
                 # Loop back to get the model's next response

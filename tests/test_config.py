@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 import tomli_w
 
-from vllama.config import load_config
+from vllama.config import DEFAULT_CONFIG_PATH, Config, load_config
+
+
+@pytest.fixture(autouse=True)
+def _reset_config_path() -> Generator:
+    """Reset Config.model_config toml_file to default before every test."""
+    Config.model_config["toml_file"] = str(DEFAULT_CONFIG_PATH)
+    yield
+    Config.model_config["toml_file"] = str(DEFAULT_CONFIG_PATH)
 
 
 def test_defaults(tmp_path: Path) -> None:
@@ -51,3 +60,46 @@ def test_save_and_reload(tmp_path: Path) -> None:
 
     reloaded = load_config(cfg_file)
     assert reloaded.listen_port == 1234
+
+
+def test_agents_permissions_default_empty(tmp_path: Path) -> None:
+    """Default config has no per-tool permission overrides."""
+    path = tmp_path / "c.toml"
+    path.write_text("", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.agents.permissions == {}
+
+
+def test_agents_permissions_from_toml(tmp_path: Path) -> None:
+    path = tmp_path / "c.toml"
+    path.write_bytes(
+        tomli_w.dumps(
+            {
+                "agents": {
+                    "permissions": {
+                        "write_file": "auto",
+                        "bash": "deny",
+                    },
+                },
+            }
+        ).encode()
+    )
+    cfg = load_config(path)
+    assert cfg.agents.permissions == {"write_file": "auto", "bash": "deny"}
+
+
+def test_agents_permissions_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env var overrides TOML for agents.permissions."""
+    path = tmp_path / "c.toml"
+    path.write_bytes(tomli_w.dumps({"agents": {"permissions": {"bash": "prompt"}}}).encode())
+    monkeypatch.setenv("VLLAMA_AGENTS__PERMISSIONS", '{"bash": "auto"}')
+    cfg = load_config(path)
+    assert cfg.agents.permissions == {"bash": "auto"}
+
+
+def test_agents_permissions_invalid_value_rejected(tmp_path: Path) -> None:
+    """Unknown decision value raises at load time."""
+    path = tmp_path / "c.toml"
+    path.write_bytes(tomli_w.dumps({"agents": {"permissions": {"bash": "ignore"}}}).encode())
+    with pytest.raises(Exception):
+        load_config(path)

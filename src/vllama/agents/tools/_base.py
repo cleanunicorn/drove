@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from vllama.agents.bash_procs import BgProcs
 
 TierValue = Literal["read", "mutate", "exec"]
 
@@ -27,6 +30,7 @@ class ToolContext:
     cwd: Path
     cap_bytes: int
     cap_bytes_bash: int
+    bg_procs: BgProcs | None = None
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[ToolResult]]

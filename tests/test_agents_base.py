@@ -67,6 +67,16 @@ def test_tool_context_requires_kwargs(tmp_path: Path) -> None:
         ToolContext(tmp_path, 8192, 32768)  # type: ignore[misc]
 
 
+def test_tool_context_carries_bg_procs(tmp_path: Path) -> None:
+    from vllama.agents.bash_procs import BgProcs
+
+    procs = BgProcs()
+    ctx = ToolContext(
+        cwd=tmp_path, cap_bytes=8192, cap_bytes_bash=32768, bg_procs=procs
+    )
+    assert ctx.bg_procs is procs
+
+
 def test_package_import_registers_all_six_tools() -> None:
     # Re-populate by explicitly reloading each child module.
     # This ensures register() side-effects fire even after _reset_registry.

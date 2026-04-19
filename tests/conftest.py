@@ -18,4 +18,11 @@ def _reset_registry() -> None:
 @pytest.fixture
 def ctx(tmp_path: Path) -> ToolContext:
     """Default ToolContext for tool handlers: cwd=tmp_path, caps set to real defaults."""
-    return ToolContext(cwd=tmp_path, cap_bytes=8192, cap_bytes_bash=32768)
+    from vllama.agents.bash_procs import BgProcs
+
+    return ToolContext(
+        cwd=tmp_path,
+        cap_bytes=8192,
+        cap_bytes_bash=32768,
+        bg_procs=BgProcs(),
+    )

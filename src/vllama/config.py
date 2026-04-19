@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import tomli_w
-from pydantic import field_validator
+from pydantic import BaseModel, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -30,6 +30,15 @@ class LlamaServerDefaults(BaseSettings):
 
     n_gpu_layers: int = -1
     threads: int | None = None
+
+
+DecisionValue = Literal["auto", "prompt", "deny"]
+
+
+class AgentsConfig(BaseModel):
+    """Configuration for the agents subsystem (Phase 2+)."""
+
+    permissions: dict[str, DecisionValue] = {}
 
 
 class Config(BaseSettings):
@@ -62,6 +71,7 @@ class Config(BaseSettings):
     tui_theme: str = "textual-dark"
 
     llama_server: LlamaServerDefaults = LlamaServerDefaults()
+    agents: AgentsConfig = AgentsConfig()
 
     @classmethod
     def settings_customise_sources(
@@ -82,6 +92,12 @@ class Config(BaseSettings):
 
     def save(self, path: Path = DEFAULT_CONFIG_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Handle agents being either AgentsConfig or dict (after model_copy)
+        agents_data = (
+            self.agents.model_dump()
+            if isinstance(self.agents, AgentsConfig)
+            else self.agents
+        )
         data: dict[str, Any] = {
             "models_dir": str(self.models_dir),
             "sessions_dir": str(self.sessions_dir),
@@ -98,6 +114,7 @@ class Config(BaseSettings):
             "llama_server": {
                 k: v for k, v in self.llama_server.model_dump().items() if v is not None
             },
+            "agents": agents_data,
         }
         path.write_bytes(tomli_w.dumps(data).encode())
 
@@ -106,5 +123,5 @@ def load_config(path: Path | None = None) -> Config:
     """Load config from TOML file (if it exists), then apply env var overrides."""
     config_path = path or DEFAULT_CONFIG_PATH
     # Point the TOML source at the requested file by temporarily updating model_config
-    Config.model_config["toml_file"] = str(config_path)  # type: ignore[index]
+    Config.model_config["toml_file"] = str(config_path)
     return Config()

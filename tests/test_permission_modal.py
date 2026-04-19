@@ -28,9 +28,7 @@ class _Harness(App[str]):
             self.result = choice
             self.exit()
 
-        await self.push_screen(
-            PermissionModal(name=self._tool_name, args=self._tool_args), done
-        )
+        await self.push_screen(PermissionModal(name=self._tool_name, args=self._tool_args), done)
 
 
 @pytest.mark.parametrize(

@@ -34,9 +34,7 @@ class ToolRuntime:
         except json.JSONDecodeError as e:
             return ToolResult(content=f"Error: invalid JSON arguments: {e}", error=True)
         if not isinstance(args, dict):
-            return ToolResult(
-                content="Error: arguments must decode to a JSON object", error=True
-            )
+            return ToolResult(content="Error: arguments must decode to a JSON object", error=True)
 
         tier = Tier(spec.tier)
         decision = self.policy.decide(name, tier)
@@ -60,9 +58,7 @@ class ToolRuntime:
             elif choice == "session_allow":
                 self.session_permits.add(name)
             elif choice == "deny_continue":
-                return ToolResult(
-                    content=f"Error: user denied '{name}' for this call", error=True
-                )
+                return ToolResult(content=f"Error: user denied '{name}' for this call", error=True)
             elif choice == "deny_abort":
                 raise AbortTurn()
             else:  # defensive — Literal narrowing should prevent this

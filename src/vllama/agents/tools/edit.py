@@ -69,9 +69,7 @@ def _apply_hunks(old_text: str, patchset: PatchSet) -> tuple[str | None, str]:
             val = line.value.rstrip("\n")
             if line.is_context or line.is_removed:
                 if cursor >= len(old_lines):
-                    return None, (
-                        f"hunk {hunk_idx}: ran off end of file at line {cursor + 1}"
-                    )
+                    return None, (f"hunk {hunk_idx}: ran off end of file at line {cursor + 1}")
                 actual = old_lines[cursor]
                 if val != actual:
                     return None, (

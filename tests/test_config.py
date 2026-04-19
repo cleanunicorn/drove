@@ -88,14 +88,10 @@ def test_agents_permissions_from_toml(tmp_path: Path) -> None:
     assert cfg.agents.permissions == {"write_file": "auto", "bash": "deny"}
 
 
-def test_agents_permissions_env_override(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agents_permissions_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Env var overrides TOML for agents.permissions."""
     path = tmp_path / "c.toml"
-    path.write_bytes(
-        tomli_w.dumps({"agents": {"permissions": {"bash": "prompt"}}}).encode()
-    )
+    path.write_bytes(tomli_w.dumps({"agents": {"permissions": {"bash": "prompt"}}}).encode())
     monkeypatch.setenv("VLLAMA_AGENTS__PERMISSIONS", '{"bash": "auto"}')
     cfg = load_config(path)
     assert cfg.agents.permissions == {"bash": "auto"}
@@ -104,8 +100,6 @@ def test_agents_permissions_env_override(
 def test_agents_permissions_invalid_value_rejected(tmp_path: Path) -> None:
     """Unknown decision value raises at load time."""
     path = tmp_path / "c.toml"
-    path.write_bytes(
-        tomli_w.dumps({"agents": {"permissions": {"bash": "ignore"}}}).encode()
-    )
+    path.write_bytes(tomli_w.dumps({"agents": {"permissions": {"bash": "ignore"}}}).encode())
     with pytest.raises(Exception):
         load_config(path)

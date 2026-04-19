@@ -323,7 +323,7 @@ class PermissionModal(ModalScreen[str]):
 
         try:
             pretty = _json.dumps(self._args, indent=2, default=str)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pretty = repr(self._args)
         if len(pretty) > 1024:
             pretty = pretty[:1024] + "\n… (truncated)"
@@ -488,6 +488,7 @@ class ChatApp(App[None]):
         "/clear": "Clear current chat (starts new session)",
         "/theme": "/theme [name] — list or set theme",
         "/save": "Save session now (auto-saves after each reply)",
+        "/permits": "Show current permission policy and session permits",
     }
 
     async def _dispatch_command(self, text: str) -> None:

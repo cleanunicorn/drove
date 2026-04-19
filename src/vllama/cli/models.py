@@ -144,9 +144,7 @@ def _detect_capabilities(primary: Path) -> list[str]:
     return caps
 
 
-def _add_model_entry(
-    directory: Path, name: str, results: list[tuple[str, Path, int]]
-) -> None:
+def _add_model_entry(directory: Path, name: str, results: list[tuple[str, Path, int]]) -> None:
     """Add a model directory to the results list."""
     files = [f for f in directory.rglob("*") if f.is_file()]
     total = sum(f.stat().st_size for f in files)

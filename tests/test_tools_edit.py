@@ -58,9 +58,7 @@ async def test_apply_patch_missing_file(tmp_path: Path, ctx: ToolContext) -> Non
     spec = get_spec("apply_patch")
     assert spec is not None
     diff = _make_diff("a\n", "b\n", "missing.py")
-    result = await spec.handler(
-        {"path": str(tmp_path / "missing.py"), "diff": diff}, ctx
-    )
+    result = await spec.handler({"path": str(tmp_path / "missing.py"), "diff": diff}, ctx)
     assert result.error is True
     assert "not found" in result.content.lower()
 

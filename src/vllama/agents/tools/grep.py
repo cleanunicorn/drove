@@ -143,7 +143,7 @@ async def _run_ripgrep(
     root_prefix = str(root).rstrip("/") + "/"
     for raw in out_text.splitlines():
         if raw.startswith(root_prefix):
-            raw = raw[len(root_prefix):]
+            raw = raw[len(root_prefix) :]
         rel_lines.append(raw)
     return rel_lines
 
@@ -182,7 +182,7 @@ async def _handler(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         lines = _python_search(pattern, root, glob_filter, case_insensitive, context_lines)
 
     if lines and lines[0].startswith("__ERROR__"):
-        return ToolResult(content="Error: " + lines[0][len("__ERROR__: "):], error=True)
+        return ToolResult(content="Error: " + lines[0][len("__ERROR__: ") :], error=True)
 
     total = len(lines)
     lines = lines[:max_matches]

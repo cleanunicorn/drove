@@ -34,9 +34,7 @@ async def test_list_recursive(tmp_path: Path, ctx: ToolContext) -> None:
     (tmp_path / "sub" / "b.txt").write_text("y", encoding="utf-8")
     spec = get_spec("list_dir")
     assert spec is not None
-    result = await spec.handler(
-        {"path": str(tmp_path), "recursive": True}, ctx
-    )
+    result = await spec.handler({"path": str(tmp_path), "recursive": True}, ctx)
     assert "a.txt" in result.content
     assert "sub/" in result.content
     assert "sub/b.txt" in result.content
@@ -48,9 +46,7 @@ async def test_list_max_entries(tmp_path: Path, ctx: ToolContext) -> None:
         (tmp_path / f"f{i:02d}.txt").write_text("x", encoding="utf-8")
     spec = get_spec("list_dir")
     assert spec is not None
-    result = await spec.handler(
-        {"path": str(tmp_path), "max_entries": 5}, ctx
-    )
+    result = await spec.handler({"path": str(tmp_path), "max_entries": 5}, ctx)
     lines = [ln for ln in result.content.split("\n") if ln.strip()]
     # includes truncation marker line as a non-path line
     file_lines = [ln for ln in lines if ln.endswith(".txt")]

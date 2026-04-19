@@ -69,14 +69,10 @@ async def test_grep_glob_filter(tmp_path: Path, ctx: ToolContext) -> None:
 
 async def test_grep_context_lines(tmp_path: Path, ctx: ToolContext) -> None:
     _load()
-    (tmp_path / "a.py").write_text(
-        "line1\nline2\ntarget\nline4\nline5\n", encoding="utf-8"
-    )
+    (tmp_path / "a.py").write_text("line1\nline2\ntarget\nline4\nline5\n", encoding="utf-8")
     spec = get_spec("grep")
     assert spec is not None
-    result = await spec.handler(
-        {"pattern": "target", "context_lines": 1}, ctx
-    )
+    result = await spec.handler({"pattern": "target", "context_lines": 1}, ctx)
     assert "line2" in result.content
     assert "target" in result.content
     assert "line4" in result.content

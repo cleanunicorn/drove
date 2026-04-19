@@ -94,9 +94,7 @@ class Config(BaseSettings):
         path.parent.mkdir(parents=True, exist_ok=True)
         # Handle agents being either AgentsConfig or dict (after model_copy)
         agents_data = (
-            self.agents.model_dump()
-            if isinstance(self.agents, AgentsConfig)
-            else self.agents
+            self.agents.model_dump() if isinstance(self.agents, AgentsConfig) else self.agents
         )
         data: dict[str, Any] = {
             "models_dir": str(self.models_dir),

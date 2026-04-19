@@ -169,9 +169,7 @@ async def test_deny_decision_blocks_without_hook(ctx: ToolContext) -> None:
     from vllama.agents.runtime import ToolRuntime
 
     _reg("echo", tier="read")
-    rt = ToolRuntime(
-        policy=Policy(overrides={"echo": Decision.DENY}), ctx=ctx, prompt_hook=None
-    )
+    rt = ToolRuntime(policy=Policy(overrides={"echo": Decision.DENY}), ctx=ctx, prompt_hook=None)
     r = await rt.dispatch("echo", '{"text": "hi"}')
     assert r.error is True
     assert "denied" in r.content.lower()

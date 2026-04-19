@@ -59,9 +59,7 @@ async def _handler(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         with path.open("rb") as fh:
             sample = fh.read(8192)
         if _is_binary(sample):
-            return ToolResult(
-                content=f"Error: file appears to be binary: {path}", error=True
-            )
+            return ToolResult(content=f"Error: file appears to be binary: {path}", error=True)
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         return ToolResult(content=f"Error reading file: {e}", error=True)

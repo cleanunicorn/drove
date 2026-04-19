@@ -376,6 +376,19 @@ def render_permits_summary(runtime: ToolRuntime) -> str:
     return "\n".join(lines)
 
 
+def render_bg_listing(bg_procs: BgProcs) -> str:
+    """Human-readable table of background procs, for /bg."""
+    items = bg_procs.list()
+    if not items:
+        return "No background shells."
+    lines = ["Background shells:"]
+    for bp in items:
+        status = f"exit {bp.exit_code}" if bp.exit_code is not None else "running"
+        preview = bp.command if len(bp.command) < 60 else bp.command[:57] + "..."
+        lines.append(f"  {bp.shell_id}  pid={bp.pid}  {status}  {preview}")
+    return "\n".join(lines)
+
+
 class ChatApp(App[None]):
     CSS = CSS
 
@@ -503,6 +516,8 @@ class ChatApp(App[None]):
         "/theme": "/theme [name] — list or set theme",
         "/save": "Save session now (auto-saves after each reply)",
         "/permits": "Show current permission policy and session permits",
+        "/bg": "List background shells",
+        "/kill": "/kill <shell_id> — terminate a background shell",
     }
 
     async def _dispatch_command(self, text: str) -> None:
@@ -548,6 +563,21 @@ class ChatApp(App[None]):
 
         elif cmd == "/permits":
             await self._show_note(render_permits_summary(self._runtime))
+
+        elif cmd == "/bg":
+            await self._show_note(render_bg_listing(self._bg_procs))
+
+        elif cmd == "/kill":
+            if not arg:
+                await self._show_note("Usage: /kill <shell_id>")
+            elif self._bg_procs.get(arg) is None:
+                await self._show_note(f"Unknown shell_id: {arg}")
+            else:
+                ok = await self._bg_procs.kill(arg)
+                if ok:
+                    await self._show_note(f"Killed {arg}")
+                else:
+                    await self._show_note(f"Could not kill {arg} (already exited?)")
 
         else:
             await self._show_note(f"Unknown command '{cmd}'. Try /help.")

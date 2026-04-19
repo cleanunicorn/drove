@@ -296,6 +296,61 @@ class SessionPicker(ModalScreen[Session | None]):
             self.dismiss(self._sessions[idx])
 
 
+# ── Permission modal ────────────────────────────────────────────────────────────
+class PermissionModal(ModalScreen[str]):
+    """Modal that asks the user how to handle a prompt-tier tool call.
+
+    Dismisses with one of: "allow" | "session_allow" | "deny_continue" | "deny_abort".
+    """
+
+    BINDINGS = [
+        Binding("a", "allow", "Allow"),
+        Binding("s", "session_allow", "Session-allow"),
+        Binding("d", "deny_continue", "Deny & Continue"),
+        Binding("x", "deny_abort", "Deny & Abort"),
+        Binding("escape", "deny_abort", "Cancel"),
+    ]
+
+    def __init__(self, name: str, args: dict[str, object]) -> None:
+        super().__init__()
+        self._name = name
+        self._args = args
+
+    def compose(self) -> ComposeResult:
+        import json as _json
+
+        try:
+            pretty = _json.dumps(self._args, indent=2, default=str)
+        except (TypeError, ValueError):
+            pretty = repr(self._args)
+        if len(pretty) > 1024:
+            pretty = pretty[:1024] + "\n… (truncated)"
+
+        yield Vertical(
+            Static(f"Tool call: {self._name}", id="perm-title"),
+            Static(pretty, id="perm-args"),
+            Horizontal(
+                Static(
+                    "[A]llow  [S]ession-allow  [D]eny&Continue  e[X]it-turn",
+                    id="perm-help",
+                ),
+            ),
+            id="perm-modal",
+        )
+
+    def action_allow(self) -> None:
+        self.dismiss("allow")
+
+    def action_session_allow(self) -> None:
+        self.dismiss("session_allow")
+
+    def action_deny_continue(self) -> None:
+        self.dismiss("deny_continue")
+
+    def action_deny_abort(self) -> None:
+        self.dismiss("deny_abort")
+
+
 # ── Main app ────────────────────────────────────────────────────────────────────
 
 

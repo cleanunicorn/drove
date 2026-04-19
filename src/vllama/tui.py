@@ -323,7 +323,7 @@ class PermissionModal(ModalScreen[str]):
 
         try:
             pretty = _json.dumps(self._args, indent=2, default=str)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pretty = repr(self._args)
         if len(pretty) > 1024:
             pretty = pretty[:1024] + "\n… (truncated)"
@@ -354,6 +354,25 @@ class PermissionModal(ModalScreen[str]):
 
 
 # ── Main app ────────────────────────────────────────────────────────────────────
+
+
+def render_permits_summary(runtime: ToolRuntime) -> str:
+    """Human-readable summary of runtime permissions state, for /permits."""
+    lines: list[str] = []
+    lines.append("Tier defaults: read=auto, mutate=prompt, exec=prompt")
+    if runtime.policy.trust_all:
+        lines.append("Policy: TRUST MODE (all tools auto-approved)")
+    elif runtime.policy.overrides:
+        lines.append("Config overrides:")
+        for name, decision in sorted(runtime.policy.overrides.items()):
+            lines.append(f"  {name} = {decision.value}")
+    else:
+        lines.append("Config overrides: (none; tier defaults apply)")
+    if runtime.session_permits:
+        lines.append("Session permits: " + ", ".join(sorted(runtime.session_permits)))
+    else:
+        lines.append("Session permits: (none)")
+    return "\n".join(lines)
 
 
 class ChatApp(App[None]):
@@ -511,6 +530,9 @@ class ChatApp(App[None]):
         elif cmd == "/save":
             save_session(self._sessions_dir, self._session)
             await self._show_note(f"Session saved  ({self._session.id})")
+
+        elif cmd == "/permits":
+            await self._show_note(render_permits_summary(self._runtime))
 
         else:
             await self._show_note(f"Unknown command '{cmd}'. Try /help.")

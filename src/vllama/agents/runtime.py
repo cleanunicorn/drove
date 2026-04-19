@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from vllama.agents.permissions import Decision, Policy, Tier
+from vllama.agents.permissions import (
+    AbortTurn,
+    Decision,
+    Policy,
+    PromptHook,
+    Tier,
+)
 from vllama.agents.tools._base import ToolContext, ToolResult, get_spec
 
 
@@ -15,6 +21,8 @@ from vllama.agents.tools._base import ToolContext, ToolResult, get_spec
 class ToolRuntime:
     policy: Policy
     ctx: ToolContext
+    prompt_hook: PromptHook | None = None
+    session_permits: set[str] = field(default_factory=set)
 
     async def dispatch(self, name: str, arguments_json: str) -> ToolResult:
         spec = get_spec(name)
@@ -32,10 +40,36 @@ class ToolRuntime:
 
         tier = Tier(spec.tier)
         decision = self.policy.decide(name, tier)
+
         if decision is Decision.DENY:
             return ToolResult(content=f"Error: tool '{name}' denied by policy", error=True)
-        # Decision.PROMPT handled in later phases (PromptHook). In Phase 1 we rely on
-        # trust-mode or AUTO policies; treat PROMPT as AUTO for now.
+
+        if decision is Decision.PROMPT and name not in self.session_permits:
+            if self.prompt_hook is None:
+                return ToolResult(
+                    content=(
+                        f"Error: tool '{name}' requires a prompt but no prompt hook is"
+                        f" configured. Set agents.permissions.{name} to 'auto' or 'deny',"
+                        f" or wire a hook."
+                    ),
+                    error=True,
+                )
+            choice = await self.prompt_hook(name, args)
+            if choice == "allow":
+                pass
+            elif choice == "session_allow":
+                self.session_permits.add(name)
+            elif choice == "deny_continue":
+                return ToolResult(
+                    content=f"Error: user denied '{name}' for this call", error=True
+                )
+            elif choice == "deny_abort":
+                raise AbortTurn()
+            else:  # defensive — Literal narrowing should prevent this
+                return ToolResult(
+                    content=f"Error: prompt hook returned unknown decision {choice!r}",
+                    error=True,
+                )
 
         try:
             result = await spec.handler(args, self.ctx)

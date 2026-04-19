@@ -29,8 +29,10 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
+from vllama.agents.permissions import Policy
+from vllama.agents.runtime import ToolRuntime
+from vllama.agents.tools import ToolContext, all_specs
 from vllama.sessions import Session, list_sessions, new_session, save_session
-from vllama.tools import TOOL_DEFINITIONS, execute_tool
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -336,6 +338,13 @@ class ChatApp(App[None]):
         else:
             self._session = new_session(model, system_prompt)
             self._history = list(self._session.messages)
+
+        self._tool_ctx = ToolContext(
+            cwd=Path.cwd(),
+            cap_bytes=8192,
+            cap_bytes_bash=32768,
+        )
+        self._runtime = ToolRuntime(policy=Policy.trust_mode(), ctx=self._tool_ctx)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -675,7 +684,8 @@ class ChatApp(App[None]):
 
                 # Execute each tool call and show results
                 for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
-                    result = execute_tool(tc["name"], tc["arguments"])
+                    tool_result = await self._runtime.dispatch(tc["name"], tc["arguments"])
+                    result = tool_result.content
 
                     # Append tool result to history
                     self._history.append(
@@ -721,7 +731,7 @@ class ChatApp(App[None]):
             "model": self._model,
             "messages": messages,
             "stream": True,
-            "tools": TOOL_DEFINITIONS,
+            "tools": [s.definition for s in all_specs()],
         }
         headers: dict[str, str] = {}
         if self._api_key:

@@ -323,7 +323,7 @@ class PermissionModal(ModalScreen[str]):
 
         try:
             pretty = _json.dumps(self._args, indent=2, default=str)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             pretty = repr(self._args)
         if len(pretty) > 1024:
             pretty = pretty[:1024] + "\n… (truncated)"

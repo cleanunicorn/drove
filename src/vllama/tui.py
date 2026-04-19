@@ -30,6 +30,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
+from vllama.agents.bash_procs import BgProcs
 from vllama.agents.permissions import AbortTurn, Policy, PromptDecision
 from vllama.agents.runtime import ToolRuntime
 from vllama.agents.tools import ToolContext, all_specs
@@ -375,6 +376,19 @@ def render_permits_summary(runtime: ToolRuntime) -> str:
     return "\n".join(lines)
 
 
+def render_bg_listing(bg_procs: BgProcs) -> str:
+    """Human-readable table of background procs, for /bg."""
+    items = bg_procs.list()
+    if not items:
+        return "No background shells."
+    lines = ["Background shells:"]
+    for bp in items:
+        status = f"exit {bp.exit_code}" if bp.exit_code is not None else "running"
+        preview = bp.command if len(bp.command) < 60 else bp.command[:57] + "..."
+        lines.append(f"  {bp.shell_id}  pid={bp.pid}  {status}  {preview}")
+    return "\n".join(lines)
+
+
 class ChatApp(App[None]):
     CSS = CSS
 
@@ -406,6 +420,7 @@ class ChatApp(App[None]):
         self._queue: deque[str] = deque()
         self._last_speed: float | None = None  # tok/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
+        self._follow = True  # auto-scroll to bottom on new content
         self.theme = theme
 
         if resume_session:
@@ -416,10 +431,12 @@ class ChatApp(App[None]):
             self._history = list(self._session.messages)
 
         cfg = load_config()
+        self._bg_procs = BgProcs()
         self._tool_ctx = ToolContext(
             cwd=Path.cwd(),
             cap_bytes=8192,
             cap_bytes_bash=32768,
+            bg_procs=self._bg_procs,
         )
         self._runtime = ToolRuntime(
             policy=Policy.from_config(cfg.agents.permissions),
@@ -444,9 +461,19 @@ class ChatApp(App[None]):
         self._update_status()
         self.query_one("#user-input", ChatInput).focus()
 
+        container = self.query_one("#messages", ScrollableContainer)
+
+        def _on_scroll_y(value: float) -> None:
+            self._follow = (container.max_scroll_y - value) <= 2
+
+        self.watch(container, "scroll_y", _on_scroll_y)
+
         # Replay existing messages when resuming
         if self._session.message_count > 0:
             self.call_after_refresh(self._replay_history)
+
+    async def on_unmount(self) -> None:
+        await self._bg_procs.shutdown()
 
     async def _replay_history(self) -> None:
         # Index tool results by tool_call_id for pairing
@@ -489,6 +516,8 @@ class ChatApp(App[None]):
         "/theme": "/theme [name] — list or set theme",
         "/save": "Save session now (auto-saves after each reply)",
         "/permits": "Show current permission policy and session permits",
+        "/bg": "List background shells",
+        "/kill": "/kill <shell_id> — terminate a background shell",
     }
 
     async def _dispatch_command(self, text: str) -> None:
@@ -534,6 +563,21 @@ class ChatApp(App[None]):
 
         elif cmd == "/permits":
             await self._show_note(render_permits_summary(self._runtime))
+
+        elif cmd == "/bg":
+            await self._show_note(render_bg_listing(self._bg_procs))
+
+        elif cmd == "/kill":
+            if not arg:
+                await self._show_note("Usage: /kill <shell_id>")
+            elif self._bg_procs.get(arg) is None:
+                await self._show_note(f"Unknown shell_id: {arg}")
+            else:
+                ok = await self._bg_procs.kill(arg)
+                if ok:
+                    await self._show_note(f"Killed {arg}")
+                else:
+                    await self._show_note(f"Could not kill {arg} (already exited?)")
 
         else:
             await self._show_note(f"Unknown command '{cmd}'. Try /help.")
@@ -893,7 +937,7 @@ class ChatApp(App[None]):
 
     def _scroll_to_bottom(self, force: bool = False) -> None:
         container = self.query_one("#messages", ScrollableContainer)
-        # Auto-scroll only if already near the bottom or forced
-        near_bottom = (container.max_scroll_y - container.scroll_y) <= 5
-        if force or near_bottom:
+        if force:
+            self._follow = True
+        if self._follow:
             container.scroll_end(animate=False)

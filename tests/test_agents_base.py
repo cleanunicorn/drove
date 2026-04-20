@@ -79,9 +79,18 @@ def test_tool_context_carries_bg_procs(tmp_path: Path) -> None:
 
 def test_package_import_registers_all_tools() -> None:
     # Re-populate by explicitly reloading each child module.
-    from vllama.agents.tools import bash, edit, glob, grep, list, read, write  # noqa: F401
+    from vllama.agents.tools import (  # noqa: F401
+        bash,
+        edit,
+        glob,
+        grep,
+        list,
+        read,
+        todo,
+        write,
+    )
 
-    for mod in (bash, edit, glob, grep, list, read, write):
+    for mod in (bash, edit, glob, grep, list, read, todo, write):
         importlib.reload(mod)
 
     names = {s.name for s in all_specs()}
@@ -95,14 +104,24 @@ def test_package_import_registers_all_tools() -> None:
         "bash",
         "bash_output",
         "bash_kill",
+        "todo_write",
     }
 
 
 def test_all_definitions_match_openai_shape() -> None:
     # Re-populate by explicitly reloading each child module.
-    from vllama.agents.tools import bash, edit, glob, grep, list, read, write  # noqa: F401
+    from vllama.agents.tools import (  # noqa: F401
+        bash,
+        edit,
+        glob,
+        grep,
+        list,
+        read,
+        todo,
+        write,
+    )
 
-    for mod in (bash, edit, glob, grep, list, read, write):
+    for mod in (bash, edit, glob, grep, list, read, todo, write):
         importlib.reload(mod)
 
     for spec in all_specs():

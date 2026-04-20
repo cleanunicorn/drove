@@ -8,6 +8,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 from textual import work
@@ -31,7 +32,10 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from vllama.agents.bash_procs import BgProcs
+from vllama.agents.evaluator import check_done
+from vllama.agents.llm_call import call_chat_json
 from vllama.agents.permissions import AbortTurn, Policy, PromptDecision
+from vllama.agents.router import select_tools
 from vllama.agents.runtime import ToolRuntime
 from vllama.agents.tools import ToolContext, all_specs
 from vllama.config import load_config
@@ -398,6 +402,7 @@ class ChatApp(App[None]):
     ]
 
     is_generating: reactive[bool] = reactive(False)
+    iteration: reactive[int] = reactive(0)
 
     def __init__(
         self,
@@ -443,6 +448,9 @@ class ChatApp(App[None]):
             ctx=self._tool_ctx,
             prompt_hook=self._prompt_hook,
         )
+        self._max_iterations = cfg.agents.max_iterations
+        self._router_config = cfg.agents.router
+        self._evaluator_config = cfg.agents.evaluator
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -746,7 +754,21 @@ class ChatApp(App[None]):
         token_count = 0
 
         try:
-            while True:
+            for iter_idx in range(1, self._max_iterations + 1):
+                self.iteration = iter_idx
+                self._update_status()
+
+                # 1. Router — pick a tool subset for this iteration.
+                selected = await select_tools(
+                    history=self._history,
+                    all_specs=all_specs(),
+                    llm_call=self._llm_json_call,
+                    config=self._router_config,
+                    iteration=iter_idx,
+                )
+                tools_payload = [s.definition for s in selected]
+
+                # 2. Main stream.
                 assistant_bubble = Message("assistant")
                 await self.query_one("#messages").mount(assistant_bubble)
                 self._scroll_to_bottom()
@@ -756,7 +778,7 @@ class ChatApp(App[None]):
                 was_thinking = False
                 tool_calls: dict[int, dict] = {}
 
-                async for event in self._stream_chat(self._history):
+                async for event in self._stream_chat(self._history, tools_payload):
                     kind = event["kind"]
                     if t_first is None:
                         t_first = time.monotonic()
@@ -792,26 +814,39 @@ class ChatApp(App[None]):
                     assistant_bubble.finish_thinking()
 
                 if not tool_calls:
-                    # No tool calls — save the final assistant message and break
+                    # Save final assistant message first, then ask the evaluator.
                     if full_response or full_thinking:
-                        assistant_msg: dict = {
+                        assistant_msg_final: dict = {
                             "role": "assistant",
                             "content": full_response,
                         }
                         if full_thinking:
-                            assistant_msg["thinking"] = full_thinking
-                        self._history.append(assistant_msg)
+                            assistant_msg_final["thinking"] = full_thinking
+                        self._history.append(assistant_msg_final)
                         self._session.messages = self._history
                         save_session(self._sessions_dir, self._session)
-                    break
 
-                # Build the assistant message with tool_calls for history
-                assistant_msg: dict = {"role": "assistant"}
-                if full_response:
-                    assistant_msg["content"] = full_response
-                else:
-                    assistant_msg["content"] = None
-                assistant_msg["tool_calls"] = [
+                    verdict = await check_done(
+                        history=self._history,
+                        llm_call=self._llm_json_call,
+                        config=self._evaluator_config,
+                    )
+                    if verdict.done:
+                        break
+                    self._history.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                f"Task not yet complete: {verdict.reason}. Continue."
+                            ),
+                        }
+                    )
+                    continue
+
+                # Build the assistant message with tool_calls for history.
+                assistant_msg_tc: dict = {"role": "assistant"}
+                assistant_msg_tc["content"] = full_response if full_response else None
+                assistant_msg_tc["tool_calls"] = [
                     {
                         "id": tc["id"],
                         "type": "function",
@@ -822,15 +857,15 @@ class ChatApp(App[None]):
                     }
                     for tc in sorted(tool_calls.values(), key=lambda t: t["id"])
                 ]
-                self._history.append(assistant_msg)
+                self._history.append(assistant_msg_tc)
 
-                # Execute each tool call and show results
                 try:
                     for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
-                        tool_result = await self._runtime.dispatch(tc["name"], tc["arguments"])
+                        tool_result = await self._runtime.dispatch(
+                            tc["name"], tc["arguments"]
+                        )
                         result = tool_result.content
 
-                        # Append tool result to history
                         self._history.append(
                             {
                                 "role": "tool",
@@ -839,7 +874,6 @@ class ChatApp(App[None]):
                             }
                         )
 
-                        # Show as collapsible section
                         await assistant_bubble.append_tool_call(
                             tc["name"],
                             tc["arguments"],
@@ -851,7 +885,11 @@ class ChatApp(App[None]):
                     return
 
                 self._session.messages = self._history
-                # Loop back to get the model's next response
+            else:
+                # for/else: runs only when the loop completes without break.
+                await self._show_note(
+                    f"Max iterations ({self._max_iterations}) reached. Turn ended."
+                )
 
         except Exception as e:
             await self.query_one("#messages").mount(Message("error", str(e)))
@@ -867,17 +905,32 @@ class ChatApp(App[None]):
 
         self._update_status()
         self.is_generating = False
+        self.iteration = 0
+
+    async def _llm_json_call(self, messages: list[dict[str, Any]]) -> str:
+        """Router/evaluator JSON call — non-streaming, short-lived client."""
+        async with httpx.AsyncClient() as client:
+            return await call_chat_json(
+                client=client,
+                base_url=self._base_url,
+                model=self._model,
+                messages=messages,
+                api_key=self._api_key,
+                temperature=0.0,
+                timeout=30.0,
+            )
 
     async def _stream_chat(
         self,
-        messages: list[dict],
-    ) -> AsyncIterator[dict]:
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> AsyncIterator[dict[str, Any]]:
         """Yield event dicts: {kind: "thinking"/"content"/"tool_call", ...}."""
         payload = {
             "model": self._model,
             "messages": messages,
             "stream": True,
-            "tools": [s.definition for s in all_specs()],
+            "tools": tools,
         }
         headers: dict[str, str] = {}
         if self._api_key:
@@ -933,6 +986,8 @@ class ChatApp(App[None]):
             parts.append(f"TTFT {self._last_ttft:.2f}s")
         if self._queue:
             parts.append(f"{len(self._queue)} queued")
+        if self.iteration > 0:
+            parts.append(f"iter {self.iteration}/{self._max_iterations}")
         self.query_one("#status-label", Label).update("  •  ".join(parts))
 
     def _scroll_to_bottom(self, force: bool = False) -> None:

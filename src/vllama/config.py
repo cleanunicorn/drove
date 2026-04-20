@@ -35,10 +35,24 @@ class LlamaServerDefaults(BaseSettings):
 DecisionValue = Literal["auto", "prompt", "deny"]
 
 
+class RouterConfig(BaseModel):
+    enabled: bool = True
+    permissive: bool = True
+    skip_on_first_iteration: bool = True
+
+
+class EvaluatorConfig(BaseModel):
+    enabled: bool = True
+    skip_when_no_todos_and_long_reply: bool = True
+
+
 class AgentsConfig(BaseModel):
     """Configuration for the agents subsystem (Phase 2+)."""
 
     permissions: dict[str, DecisionValue] = {}
+    max_iterations: int = 50
+    router: RouterConfig = RouterConfig()
+    evaluator: EvaluatorConfig = EvaluatorConfig()
 
 
 class Config(BaseSettings):

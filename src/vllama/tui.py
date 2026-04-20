@@ -393,6 +393,18 @@ def render_bg_listing(bg_procs: BgProcs) -> str:
     return "\n".join(lines)
 
 
+def render_todos_summary(todos: list[dict[str, Any]]) -> str:
+    """Human-readable todo checklist, for /todos."""
+    if not todos:
+        return "No todos."
+    marks = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+    lines = ["Todos:"]
+    for t in todos:
+        mark = marks.get(t.get("status", ""), "[?]")
+        lines.append(f"  {mark} {t.get('id', '?')}: {t.get('content', '')}")
+    return "\n".join(lines)
+
+
 class ChatApp(App[None]):
     CSS = CSS
 
@@ -526,6 +538,7 @@ class ChatApp(App[None]):
         "/permits": "Show current permission policy and session permits",
         "/bg": "List background shells",
         "/kill": "/kill <shell_id> — terminate a background shell",
+        "/todos": "Show the current in-session todo list",
     }
 
     async def _dispatch_command(self, text: str) -> None:
@@ -586,6 +599,9 @@ class ChatApp(App[None]):
                     await self._show_note(f"Killed {arg}")
                 else:
                     await self._show_note(f"Could not kill {arg} (already exited?)")
+
+        elif cmd == "/todos":
+            await self._show_note(render_todos_summary(self._tool_ctx.todos))
 
         else:
             await self._show_note(f"Unknown command '{cmd}'. Try /help.")
@@ -830,6 +846,7 @@ class ChatApp(App[None]):
                         history=self._history,
                         llm_call=self._llm_json_call,
                         config=self._evaluator_config,
+                        todos=self._tool_ctx.todos,
                     )
                     if verdict.done:
                         break

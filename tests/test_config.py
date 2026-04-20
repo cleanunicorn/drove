@@ -159,3 +159,73 @@ def test_agents_router_toggle_via_toml(tmp_path: Path) -> None:
     )
     cfg = load_config(path)
     assert cfg.agents.router.enabled is False
+
+
+def test_agents_subagent_depth_default(tmp_path: Path) -> None:
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_text("", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.agents.subagent_depth == 3
+
+
+def test_agents_subagent_depth_from_toml(tmp_path: Path) -> None:
+    import tomli_w
+
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_bytes(
+        tomli_w.dumps({"agents": {"subagent_depth": 5}}).encode()
+    )
+    cfg = load_config(path)
+    assert cfg.agents.subagent_depth == 5
+
+
+def test_agents_compaction_defaults(tmp_path: Path) -> None:
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_text("", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.agents.compaction.enabled is True
+    assert cfg.agents.compaction.threshold == 0.7
+    assert cfg.agents.compaction.keep_tail_messages == 6
+
+
+def test_agents_rate_limit_default_empty(tmp_path: Path) -> None:
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_text("", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.agents.rate_limit == {}
+
+
+def test_agents_rate_limit_per_model(tmp_path: Path) -> None:
+    import tomli_w
+
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_bytes(
+        tomli_w.dumps(
+            {
+                "agents": {
+                    "rate_limit": {
+                        "free-model": {
+                            "base_delay_ms": 500,
+                            "requests_per_minute": 10,
+                        },
+                    },
+                },
+            }
+        ).encode()
+    )
+    cfg = load_config(path)
+    free = cfg.agents.rate_limit["free-model"]
+    assert free.base_delay_ms == 500
+    assert free.requests_per_minute == 10
+    assert free.requests_per_hour is None
+    assert free.max_retries == 5

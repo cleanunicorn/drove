@@ -37,6 +37,7 @@ from vllama.agents.llm_call import call_chat_json
 from vllama.agents.permissions import AbortTurn, Policy, PromptDecision
 from vllama.agents.router import select_tools
 from vllama.agents.runtime import ToolRuntime
+from vllama.agents.subagent import SubagentRunner
 from vllama.agents.tools import ToolContext, all_specs
 from vllama.config import load_config
 from vllama.sessions import Session, list_sessions, new_session, save_session
@@ -463,6 +464,15 @@ class ChatApp(App[None]):
         self._max_iterations = cfg.agents.max_iterations
         self._router_config = cfg.agents.router
         self._evaluator_config = cfg.agents.evaluator
+        self._subagent_runner = SubagentRunner(
+            base_url=self._base_url,
+            model=self._model,
+            api_key=self._api_key,
+            runtime=self._runtime,
+            max_iterations=cfg.agents.max_iterations,
+            depth_cap=cfg.agents.subagent_depth,
+        )
+        self._tool_ctx.subagent_runner = self._subagent_runner
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)

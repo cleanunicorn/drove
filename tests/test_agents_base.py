@@ -86,12 +86,13 @@ def test_package_import_registers_all_tools() -> None:
         grep,
         list,
         read,
+        task,
         todo,
         webfetch,
         write,
     )
 
-    for mod in (bash, edit, glob, grep, list, read, todo, webfetch, write):
+    for mod in (bash, edit, glob, grep, list, read, task, todo, webfetch, write):
         importlib.reload(mod)
 
     names = {s.name for s in all_specs()}
@@ -107,6 +108,7 @@ def test_package_import_registers_all_tools() -> None:
         "bash_kill",
         "todo_write",
         "web_fetch",
+        "task",
     }
 
 
@@ -119,12 +121,13 @@ def test_all_definitions_match_openai_shape() -> None:
         grep,
         list,
         read,
+        task,
         todo,
         webfetch,
         write,
     )
 
-    for mod in (bash, edit, glob, grep, list, read, todo, webfetch, write):
+    for mod in (bash, edit, glob, grep, list, read, task, todo, webfetch, write):
         importlib.reload(mod)
 
     for spec in all_specs():

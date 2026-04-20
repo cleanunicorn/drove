@@ -46,13 +46,30 @@ class EvaluatorConfig(BaseModel):
     skip_when_no_todos_and_long_reply: bool = True
 
 
+class CompactionConfig(BaseModel):
+    enabled: bool = True
+    threshold: float = 0.7  # fraction of ctx_size
+    keep_tail_messages: int = 6
+
+
+class RateLimitSettings(BaseModel):
+    base_delay_ms: int = 0
+    requests_per_minute: int | None = None
+    requests_per_hour: int | None = None
+    max_retries: int = 5
+    retry_max_backoff_s: int = 60
+
+
 class AgentsConfig(BaseModel):
     """Configuration for the agents subsystem (Phase 2+)."""
 
     permissions: dict[str, DecisionValue] = {}
     max_iterations: int = 50
+    subagent_depth: int = 3
     router: RouterConfig = RouterConfig()
     evaluator: EvaluatorConfig = EvaluatorConfig()
+    compaction: CompactionConfig = CompactionConfig()
+    rate_limit: dict[str, RateLimitSettings] = {}
 
 
 class Config(BaseSettings):

@@ -112,3 +112,22 @@ def test_all_definitions_match_openai_shape() -> None:
         assert fn.get("name") == spec.name
         assert "description" in fn
         assert "parameters" in fn
+
+
+def test_tool_context_todos_default_empty(tmp_path: Path) -> None:
+    ctx = ToolContext(cwd=tmp_path, cap_bytes=8192, cap_bytes_bash=32768)
+    assert ctx.todos == []
+
+
+def test_tool_context_todos_is_mutable(tmp_path: Path) -> None:
+    ctx = ToolContext(cwd=tmp_path, cap_bytes=8192, cap_bytes_bash=32768)
+    ctx.todos.append({"id": "1", "content": "x", "status": "pending"})
+    assert len(ctx.todos) == 1
+    assert ctx.todos[0]["id"] == "1"
+
+
+def test_tool_context_todos_isolated_per_instance(tmp_path: Path) -> None:
+    a = ToolContext(cwd=tmp_path, cap_bytes=8192, cap_bytes_bash=32768)
+    b = ToolContext(cwd=tmp_path, cap_bytes=8192, cap_bytes_bash=32768)
+    a.todos.append({"id": "1", "content": "x", "status": "pending"})
+    assert b.todos == []

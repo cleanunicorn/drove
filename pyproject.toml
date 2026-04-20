@@ -9,10 +9,12 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.135.2",
+    "html2text>=2025.4.15",
     "httpx[http2]>=0.28.1",
     "huggingface-hub>=1.7.2",
     "psutil>=7.0.0",
     "pydantic-settings>=2.13.1",
+    "readability-lxml>=0.8.4.1",
     "textual>=8.1.1",
     "tomli-w>=1.2.0",
     "typer>=0.24.1",
@@ -52,4 +54,8 @@ strict = true
 
 [[tool.mypy.overrides]]
 module = ["unidiff", "unidiff.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["readability", "readability.*", "html2text"]
 ignore_missing_imports = true

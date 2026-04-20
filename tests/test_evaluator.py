@@ -99,3 +99,69 @@ async def test_verdict_defaults() -> None:
     v = Verdict(done=True, reason="ok")
     assert v.done is True
     assert v.reason == "ok"
+
+
+async def test_pending_todos_bypass_long_reply_skip() -> None:
+    """Any non-completed todo forces the LLM call even with a long reply."""
+    cfg = EvaluatorConfig(enabled=True, skip_when_no_todos_and_long_reply=True)
+    called: list[int] = []
+
+    async def llm(_messages: list[dict[str, Any]]) -> str:
+        called.append(1)
+        return '{"done": false, "reason": "still pending"}'
+
+    v = await check_done(
+        history=[
+            {"role": "user", "content": "plan it"},
+            {"role": "assistant", "content": "A" * 300},
+        ],
+        llm_call=llm,
+        config=cfg,
+        todos=[{"id": "1", "content": "x", "status": "pending"}],
+    )
+    assert called == [1]
+    assert v.done is False
+
+
+async def test_completed_todos_preserve_long_reply_skip() -> None:
+    """All-completed todos behave the same as no todos."""
+    cfg = EvaluatorConfig(enabled=True, skip_when_no_todos_and_long_reply=True)
+    called: list[int] = []
+
+    async def llm(_messages: list[dict[str, Any]]) -> str:
+        called.append(1)
+        return '{"done": false, "reason": "x"}'
+
+    v = await check_done(
+        history=[
+            {"role": "user", "content": "plan it"},
+            {"role": "assistant", "content": "A" * 300},
+        ],
+        llm_call=llm,
+        config=cfg,
+        todos=[{"id": "1", "content": "x", "status": "completed"}],
+    )
+    assert called == []
+    assert v.done is True
+
+
+async def test_todos_appear_in_prompt() -> None:
+    cfg = EvaluatorConfig(enabled=True, skip_when_no_todos_and_long_reply=False)
+    seen: dict[str, Any] = {}
+
+    async def llm(messages: list[dict[str, Any]]) -> str:
+        seen["messages"] = messages
+        return '{"done": true, "reason": "ok"}'
+
+    await check_done(
+        history=[
+            {"role": "user", "content": "do stuff"},
+            {"role": "assistant", "content": "I did."},
+        ],
+        llm_call=llm,
+        config=cfg,
+        todos=[{"id": "1", "content": "write code", "status": "completed"}],
+    )
+    prompt_text = " ".join(m["content"] for m in seen["messages"])
+    assert "write code" in prompt_text
+    assert "completed" in prompt_text.lower()

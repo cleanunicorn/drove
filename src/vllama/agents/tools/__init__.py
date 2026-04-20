@@ -7,6 +7,7 @@ from vllama.agents.tools import glob as _glob  # noqa: F401
 from vllama.agents.tools import grep as _grep  # noqa: F401
 from vllama.agents.tools import list as _list  # noqa: F401
 from vllama.agents.tools import read as _read  # noqa: F401
+from vllama.agents.tools import task as _task  # noqa: F401
 from vllama.agents.tools import todo as _todo  # noqa: F401
 from vllama.agents.tools import webfetch as _webfetch  # noqa: F401
 from vllama.agents.tools import write as _write  # noqa: F401

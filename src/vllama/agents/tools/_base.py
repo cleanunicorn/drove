@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from vllama.agents.bash_procs import BgProcs
+    from vllama.agents.subagent import SubagentRunner
 
 TierValue = Literal["read", "mutate", "exec"]
 
@@ -32,6 +33,8 @@ class ToolContext:
     cap_bytes_bash: int
     bg_procs: BgProcs | None = None
     todos: list[dict[str, Any]] = field(default_factory=list)
+    subagent_runner: SubagentRunner | None = None
+    depth: int = 0
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[ToolResult]]

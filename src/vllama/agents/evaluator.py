@@ -18,6 +18,13 @@ from vllama.config import EvaluatorConfig
 LlmCall = Callable[[list[dict[str, Any]]], Awaitable[str]]
 
 _LONG_REPLY_THRESHOLD = 200  # chars of assistant content considered "long"
+_TODOS_PROMPT_CAP = 2000  # chars of serialized todos included in prompt
+
+
+def _has_pending_todos(todos: list[dict[str, Any]] | None) -> bool:
+    if not todos:
+        return False
+    return any(t.get("status") != "completed" for t in todos)
 
 
 @dataclass
@@ -44,7 +51,10 @@ def _last_assistant(history: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _build_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_messages(
+    history: list[dict[str, Any]],
+    todos: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
     user = _last_user(history)
     assistant = _last_assistant(history)
     system = (
@@ -52,14 +62,21 @@ def _build_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ' assistant\'s latest reply. Return JSON: {"done": bool, "reason": string}.'
         " Done criteria:\n"
         "- The user's last request is fulfilled.\n"
+        "- Any todos are all marked completed.\n"
         "Not-done signals:\n"
         "- Assistant promised an action without doing it.\n"
         "- Assistant answered a different question than asked.\n"
+        "- Todos remain in pending or in_progress state.\n"
         "Return JSON only, no prose."
     )
+    todos_block = ""
+    if todos:
+        todos_json = json.dumps(todos)[:_TODOS_PROMPT_CAP]
+        todos_block = f"\n\nTodos:\n{todos_json}"
     user_prompt = (
         f"User's last request:\n{user[:2000]}\n\n"
-        f"Assistant's latest reply:\n{assistant[:2000]}\n\n"
+        f"Assistant's latest reply:\n{assistant[:2000]}"
+        f"{todos_block}\n\n"
         'Return JSON only. Example: {"done": true, "reason": "answered"}'
     )
     return [
@@ -95,23 +112,28 @@ async def check_done(
     history: list[dict[str, Any]],
     llm_call: LlmCall,
     config: EvaluatorConfig,
+    todos: list[dict[str, Any]] | None = None,
 ) -> Verdict:
     """Evaluate whether the current turn is complete.
 
-    Fail-safe defaults: disabled → done=True; short-circuit on long reply +
-    no todos (Phase 4 has no todos yet, so short-circuit only depends on
-    reply length); any llm_call or parse failure → done=True.
+    Fail-safe defaults: disabled → done=True; any llm_call or parse failure →
+    done=True.
+
+    Todos: any non-completed entry bypasses the long-reply short-circuit
+    (so the model gets nudged back to work) and is serialized into the prompt
+    so the LLM can check them directly.
     """
     if not config.enabled:
         return Verdict(done=True, reason="evaluator disabled")
 
-    if config.skip_when_no_todos_and_long_reply:
+    pending = _has_pending_todos(todos)
+
+    if config.skip_when_no_todos_and_long_reply and not pending:
         assistant = _last_assistant(history)
-        # Phase 4 has no todos, so the "no todos" side is trivially satisfied.
         if len(assistant) >= _LONG_REPLY_THRESHOLD:
             return Verdict(done=True, reason="skip: no todos, long reply")
 
-    messages = _build_messages(history)
+    messages = _build_messages(history, todos)
     try:
         raw = await llm_call(messages)
     except Exception:  # noqa: BLE001 — fail-safe on network/decoding error

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from vllama.agents.subagent import SubagentDepthExceeded
 from vllama.agents.tools._base import ToolContext, ToolResult, ToolSpec, register
 
 _DEFINITION: dict[str, Any] = {
@@ -68,6 +67,8 @@ async def _handler(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             content="Error: subagent runner not available in this context",
             error=True,
         )
+
+    from vllama.agents.subagent import SubagentDepthExceeded  # lazy: breaks cycle
 
     try:
         reply = await runner.run(

@@ -1,5 +1,5 @@
 {
   "enabledPlugins": {
-    "code-review@claude-plugins-official": true
+    "code-review@claude-plugins-official": false
   }
 }

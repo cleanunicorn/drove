@@ -51,6 +51,7 @@ class AgentsConfig(BaseModel):
 
     permissions: dict[str, DecisionValue] = {}
     max_iterations: int = 50
+    subagent_depth: int = 3
     router: RouterConfig = RouterConfig()
     evaluator: EvaluatorConfig = EvaluatorConfig()
 

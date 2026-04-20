@@ -159,3 +159,25 @@ def test_agents_router_toggle_via_toml(tmp_path: Path) -> None:
     )
     cfg = load_config(path)
     assert cfg.agents.router.enabled is False
+
+
+def test_agents_subagent_depth_default(tmp_path: Path) -> None:
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_text("", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.agents.subagent_depth == 3
+
+
+def test_agents_subagent_depth_from_toml(tmp_path: Path) -> None:
+    import tomli_w
+
+    from vllama.config import load_config
+
+    path = tmp_path / "c.toml"
+    path.write_bytes(
+        tomli_w.dumps({"agents": {"subagent_depth": 5}}).encode()
+    )
+    cfg = load_config(path)
+    assert cfg.agents.subagent_depth == 5

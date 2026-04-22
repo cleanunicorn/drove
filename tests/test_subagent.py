@@ -25,10 +25,31 @@ def _make_runtime(tmp_path: Path) -> ToolRuntime:
 
 
 def _mock_responses(scripts: list[dict[str, Any]]) -> httpx.MockTransport:
-    """Return an httpx MockTransport that serves each scripted message in order."""
+    """Return an httpx MockTransport that serves each scripted message in order.
+    It returns a JSON array for router calls.
+    """
+    import json as _json
+
     idx = {"i": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json_internal
+
+        body = _json_internal.loads(request.read())
+        # Router call: requests json format and has system prompt mentioning tool names
+        is_router = body.get("response_format", {}).get("type") == "json_object"
+        if is_router:
+            # Return all tools mentioned in the system prompt
+            system_prompt = body["messages"][0]["content"]
+            # Extract tool names from "- name: desc" lines
+            import re
+
+            tool_names = re.findall(r"^- ([a-z_0-9]+):", system_prompt, re.MULTILINE)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": _json_internal.dumps(tool_names)}}]},
+            )
+
         msg = scripts[idx["i"]]
         idx["i"] += 1
         return httpx.Response(200, json={"choices": [{"message": msg}]})

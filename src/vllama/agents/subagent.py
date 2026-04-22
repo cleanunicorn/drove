@@ -12,14 +12,16 @@ hook is configured — use `allowed_tools` to restrict instead).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
-from vllama.agents.llm_call import call_chat_completion
+from vllama.agents.llm_call import call_chat_completion, call_chat_json
+from vllama.agents.router import select_tools
 from vllama.agents.runtime import ToolRuntime
 from vllama.agents.tools._base import ToolSpec, all_specs
+from vllama.config import RouterConfig
 
 
 class SubagentDepthExceeded(Exception):
@@ -32,6 +34,7 @@ class SubagentRunner:
     model: str
     api_key: str | None
     runtime: ToolRuntime
+    router_config: RouterConfig = field(default_factory=RouterConfig)
     max_iterations: int = 50
     depth_cap: int = 3
 
@@ -57,11 +60,32 @@ class SubagentRunner:
             {"role": "user", "content": prompt},
         ]
 
-        specs = _filter_specs(all_specs(), allowed_tools)
-        tools_payload = [s.definition for s in specs]
+        full_specs = _filter_specs(all_specs(), allowed_tools)
 
         async with httpx.AsyncClient() as client:
-            for _ in range(self.max_iterations):
+
+            async def _llm_json_call(messages: list[dict[str, Any]]) -> str:
+                return await call_chat_json(
+                    client=client,
+                    base_url=self.base_url,
+                    model=self.model,
+                    messages=messages,
+                    api_key=self.api_key,
+                    temperature=0.0,
+                    timeout=30.0,
+                )
+
+            for iter_idx in range(1, self.max_iterations + 1):
+                # Router — pick a tool subset for this iteration.
+                selected = await select_tools(
+                    history=history,
+                    all_specs=full_specs,
+                    llm_call=_llm_json_call,
+                    config=self.router_config,
+                    iteration=iter_idx,
+                )
+                tools_payload = [s.definition for s in selected]
+
                 try:
                     message = await call_chat_completion(
                         client=client,

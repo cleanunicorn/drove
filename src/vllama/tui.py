@@ -175,19 +175,17 @@ class ChatInput(TextArea):
 
     BINDINGS = [
         Binding("enter", "submit", "Send", priority=True),
+        Binding("shift+enter", "insert_newline", "Newline", show=False),
     ]
 
     def action_submit(self) -> None:
         self.post_message(self.Submitted(self))
 
+    def action_insert_newline(self) -> None:
+        self.insert("\n")
+
     class Submitted(TextArea.Changed):
         pass
-
-    def _on_key(self, event) -> None:
-        if event.key == "shift+enter":
-            self.insert("\n")
-            event.prevent_default()
-            event.stop()
 
 
 # ── Message widget ──────────────────────────────────────────────────────────────

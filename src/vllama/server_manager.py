@@ -430,9 +430,7 @@ class ServerManager:
 
         # Resolve relative mmproj paths against the model directory
         if merged.mmproj and not Path(merged.mmproj).is_absolute():
-            merged = merged.model_copy(
-                update={"mmproj": str(model_path.parent / merged.mmproj)}
-            )
+            merged = merged.model_copy(update={"mmproj": str(model_path.parent / merged.mmproj)})
 
         args = [
             "--model",

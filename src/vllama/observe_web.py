@@ -147,7 +147,7 @@ _INDEX_HTML = """\
   /* Markdown */
   .md-toggle { background: var(--bg3); color: var(--accent); border: 1px solid var(--border);
                 padding: 1px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;
-                margin-left: 8px; vertical-align: middle; }
+                margin-right: 8px; vertical-align: middle; }
   .md-toggle:hover { background: var(--border); }
   .md-render {
     margin-top: 6px; padding: 10px; background: var(--bg);
@@ -374,7 +374,7 @@ function mkLeaf(key, html, rawVal) {
     btn.className = 'md-toggle';
     btn.textContent = 'MD';
     btn.onclick = function() { toggleMd(btn, rawVal, content); };
-    content.appendChild(btn);
+    content.prepend(btn);
   }
   row.appendChild(content);
   return row;

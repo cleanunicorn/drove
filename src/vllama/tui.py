@@ -7,6 +7,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 from textual import work
@@ -17,6 +18,7 @@ from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
+    Button,
     Collapsible,
     DataTable,
     Footer,
@@ -131,6 +133,34 @@ LoadingIndicator {
 }
 
 LoadingIndicator.visible { display: block; }
+
+#tool-dialog {
+    width: 60;
+    height: auto;
+    background: $surface;
+    border: solid $accent;
+    padding: 1 2;
+}
+
+#tool-dialog Label.title {
+    text-style: bold;
+    margin-bottom: 1;
+    color: $accent;
+}
+
+#tool-dialog Label.message {
+    margin-bottom: 1;
+}
+
+#tool-dialog .buttons {
+    margin-top: 1;
+    height: auto;
+    align: center middle;
+}
+
+#tool-dialog Button {
+    margin: 0 1;
+}
 
 /* Session picker modal */
 SessionPicker {
@@ -255,6 +285,33 @@ class Message(Static):
 # ── Session picker modal ────────────────────────────────────────────────────────
 
 
+class ToolConfirmationModal(ModalScreen[str]):
+    """Modal to confirm tool execution."""
+
+    def __init__(self, tool_name: str, arguments: str) -> None:
+        super().__init__()
+        self._tool_name = tool_name
+        self._arguments = arguments
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="tool-dialog"):
+            yield Label("Tool Call Confirmation", classes="title")
+            yield Label(
+                f"The model wants to execute the tool: [bold]{self._tool_name}[/bold]",
+                classes="message",
+            )
+            yield Label(f"Arguments: {self._arguments}", classes="message")
+            with Horizontal(classes="buttons"):
+                yield Button("Allow Once", variant="primary", id="allow-once")
+                yield Button("Deny Once", variant="error", id="deny-once")
+            with Horizontal(classes="buttons"):
+                yield Button("Allow for Session", variant="default", id="allow-session")
+                yield Button("Allow Always", variant="default", id="allow-always")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id)
+
+
 class SessionPicker(ModalScreen[Session | None]):
     BINDINGS = [
         Binding("escape", "dismiss_none", "Cancel"),
@@ -298,6 +355,14 @@ class SessionPicker(ModalScreen[Session | None]):
 
 
 class ChatApp(App[None]):
+    async def push_screen_wait(self, screen: ModalScreen) -> Any:
+        """Push a screen and wait for it to dismiss, returning the result."""
+        from asyncio import Future
+
+        future: Future[Any] = Future()
+        self.push_screen(screen, callback=future.set_result)
+        return await future
+
     CSS = CSS
 
     BINDINGS = [
@@ -329,6 +394,7 @@ class ChatApp(App[None]):
         self._last_speed: float | None = None  # tok/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
         self.theme = theme
+        self._session_allowed_tools: set[str] = set()
 
         if resume_session:
             self._session = resume_session
@@ -675,7 +741,56 @@ class ChatApp(App[None]):
 
                 # Execute each tool call and show results
                 for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
-                    result = execute_tool(tc["name"], tc["arguments"])
+                    name = tc["name"]
+                    args_str = tc["arguments"]
+
+                    allowed = False
+                    sensitive_tools = {"write_file", "shell_execute", "fetch_url"}
+
+                    if name not in sensitive_tools:
+                        allowed = True
+                    else:
+                        # Check session permission
+                        if name in self._session_allowed_tools:
+                            allowed = True
+                        else:
+                            # Check persistent permission
+                            try:
+                                from vllama.config import load_config
+
+                                cfg = load_config(self._config_path)
+                                if name in cfg.allowed_tools:
+                                    allowed = True
+                            except Exception:
+                                pass
+
+                    if not allowed:
+                        res = await self.push_screen_wait(ToolConfirmationModal(name, args_str))
+                        if res == "allow-once":
+                            allowed = True
+                        elif res == "allow-session":
+                            allowed = True
+                            self._session_allowed_tools.add(name)
+                        elif res == "allow-always":
+                            allowed = True
+                            self._session_allowed_tools.add(name)
+                            # Persist to config
+                            try:
+                                from vllama.config import load_config
+
+                                cfg = load_config(self._config_path)
+                                if name not in cfg.allowed_tools:
+                                    cfg.allowed_tools.append(name)
+                                    cfg.save(self._config_path)
+                            except Exception:
+                                pass
+                        else:
+                            allowed = False
+
+                    if allowed:
+                        result = execute_tool(name, args_str)
+                    else:
+                        result = "Error: Tool execution denied by user."
 
                     # Append tool result to history
                     self._history.append(

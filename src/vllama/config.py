@@ -54,6 +54,7 @@ class Config(BaseSettings):
     observe_dir: Path = DEFAULT_OBSERVE_DIR
     listen_host: str = "0.0.0.0"
     listen_port: int = 8080
+    allowed_tools: list[str] = []
     llama_server_bin: str = "llama-server"
     startup_timeout_seconds: int = 300  # max wait for llama-server to become healthy
     idle_timeout_seconds: int = 1800  # 30 minutes
@@ -89,6 +90,7 @@ class Config(BaseSettings):
             "observe_dir": str(self.observe_dir),
             "listen_host": self.listen_host,
             "listen_port": self.listen_port,
+            "allowed_tools": self.allowed_tools,
             "llama_server_bin": self.llama_server_bin,
             "startup_timeout_seconds": self.startup_timeout_seconds,
             "idle_timeout_seconds": self.idle_timeout_seconds,

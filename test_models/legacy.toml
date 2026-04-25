@@ -1,0 +1,3 @@
+[download]
+repo_id = "legacy/org"
+files = ["legacy.gguf"]

@@ -17,6 +17,7 @@ dependencies = [
     "tomli-w>=1.2.0",
     "typer>=0.24.1",
     "uvicorn>=0.42.0",
+    "rich>=14.3.3",
 ]
 
 [project.scripts]

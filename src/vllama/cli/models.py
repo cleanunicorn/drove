@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
 if TYPE_CHECKING:
     from vllama.downloader import DownloadPlan
@@ -198,23 +200,31 @@ def list_models(
         typer.echo("No models found.")
         return
 
-    typer.echo(f"{'NAME':<45} {'SIZE':>10}  {'CAPS':<12}  LOCATION")
-    typer.echo("-" * 100)
-    for name, primary, total_bytes in models:
-        size_mb = total_bytes / 1_048_576
-        has_cfg = config_path_for_model(primary).exists()
-        cfg_marker = " [cfg]" if has_cfg else ""
-        location = primary.parent if primary.parent != models_dir else primary
-        caps = ",".join(_detect_capabilities(primary)) or "-"
-        typer.echo(f"{name:<45} {size_mb:>9.1f}M  {caps:<12}  {location}{cfg_marker}")
+    console = Console()
+    table = Table(box=None, header_style="bold magenta")
+    table.add_column("NAME", style="cyan")
+    table.add_column("SIZE", justify="right")
+    table.add_column("CAPS")
+    table.add_column("CONFIG", justify="center")
 
-        if verbose:
+    for name, primary, total_bytes in models:
+        has_cfg = config_path_for_model(primary).exists()
+        caps = ",".join(_detect_capabilities(primary)) or "-"
+        config_status = "[green]Yes[/]" if has_cfg else "-"
+
+        table.add_row(name, _fmt_size(total_bytes), caps, config_status)
+
+    console.print(table)
+
+    if verbose:
+        for name, primary, total_bytes in models:
             dl = load_download_info(primary)
             if dl:
+                console.print(f"\n[bold cyan]{name}[/]")
                 org, repo = dl.repo_id.split("/", 1)
-                typer.echo(f"  {'origin:':<10} {org}/{repo}")
+                console.print(f"  [dim]{'origin:':<10}[/] {org}/{repo}")
                 for fname in dl.files:
-                    typer.echo(f"  {'file:':<10} {fname}")
+                    console.print(f"  [dim]{'file:':<10}[/] {fname}")
 
 
 @models_app.command("info")

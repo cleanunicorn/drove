@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vllama observe</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="static/styles.css">
+</head>
+<body>
+<header>
+  <h1>vllama observe</h1>
+  <span class="filter">{{FILTER_LABEL}}</span>
+  <input id="search" class="search" type="text" placeholder="Search anything…" autocomplete="off">
+  <button id="refresh-btn">Refresh</button>
+</header>
+<div class="main">
+  <div class="list-pane" id="list"></div>
+  <div class="detail-pane" id="detail">
+    <div class="detail-placeholder">Select a request from the list to inspect.</div>
+  </div>
+</div>
+<script src="static/app.js"></script>
+</body>
+</html>

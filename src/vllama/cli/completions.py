@@ -19,7 +19,7 @@ _COMPLETION_DIRS: dict[str, Path] = {
 }
 
 _COMPLETION_FILES: dict[str, str] = {
-    "bash": "_vllama",
+    "bash": "vllama",
     "zsh": "_vllama",
     "fish": "vllama.fish",
     "powershell": "vllama.ps1",

@@ -41,10 +41,28 @@ def _root(
     ctx.obj["config_path"] = config_file or DEFAULT_CONFIG_PATH
 
 
+def _complete_config_key(ctx: typer.Context, incomplete: str) -> list[str]:
+    """Complete global config keys (including llama_server. nested keys)."""
+    from vllama.config import Config, LlamaServerDefaults
+
+    keys: list[str] = []
+    for field in Config.model_fields:
+        if field == "llama_server":
+            for subfield in LlamaServerDefaults.model_fields:
+                keys.append(f"llama_server.{subfield}")
+        else:
+            keys.append(field)
+
+    return [k for k in sorted(keys) if k.startswith(incomplete)]
+
+
 @app.command()
 def config(
     ctx: typer.Context,
-    key: Annotated[str | None, typer.Argument(help="Config key to get or set.")] = None,
+    key: Annotated[
+        str | None,
+        typer.Argument(help="Config key to get or set.", autocompletion=_complete_config_key),
+    ] = None,
     value: Annotated[str | None, typer.Argument(help="Value to set.")] = None,
 ) -> None:
     """Show or edit configuration values.

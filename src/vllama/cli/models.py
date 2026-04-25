@@ -61,6 +61,14 @@ def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
     return [n for n in names if n.lower().startswith(incomplete.lower())]
 
 
+def _complete_model_config_key(ctx: typer.Context, incomplete: str) -> list[str]:
+    """Complete model configuration keys."""
+    from vllama.model_config import ModelConfig
+
+    keys = sorted(ModelConfig.model_fields.keys())
+    return [k for k in keys if k.startswith(incomplete)]
+
+
 _MODEL_EXTS = {".gguf", ".safetensors", ".bin", ".pt"}
 
 
@@ -463,7 +471,10 @@ def model_config_cmd(
             autocompletion=_complete_model_name,
         ),
     ] = None,
-    key: Annotated[str | None, typer.Argument(help="Config key to get/set.")] = None,
+    key: Annotated[
+        str | None,
+        typer.Argument(help="Config key to get/set.", autocompletion=_complete_model_config_key),
+    ] = None,
     value: Annotated[str | None, typer.Argument(help="Value to set.")] = None,
     global_config: Annotated[
         bool,
@@ -475,7 +486,9 @@ def model_config_cmd(
     ] = False,
     unset: Annotated[
         str | None,
-        typer.Option("--unset", help="Remove a config key."),
+        typer.Option(
+            "--unset", help="Remove a config key.", autocompletion=_complete_model_config_key
+        ),
     ] = None,
 ) -> None:
     """Get or set model configuration parameters.

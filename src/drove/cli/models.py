@@ -10,9 +10,9 @@ from rich.console import Console
 from rich.table import Table
 
 if TYPE_CHECKING:
-    from vllama.downloader import DownloadPlan
+    from drove.downloader import DownloadPlan
 
-from vllama.model_config import (
+from drove.model_config import (
     DownloadInfo,
     ModelConfig,
     config_path_for_model,
@@ -25,7 +25,7 @@ from vllama.model_config import (
     set_global_model_config_key,
     set_model_config_key,
 )
-from vllama.model_store import ModelStore
+from drove.model_store import ModelStore
 
 models_app = typer.Typer(help="Manage models.", no_args_is_help=True)
 
@@ -36,7 +36,7 @@ def _models_dir(ctx: typer.Context) -> Path:
 
 def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
     """Shell completion callback: return model names matching the incomplete string."""
-    from vllama.config import DEFAULT_MODELS_DIR, load_config
+    from drove.config import DEFAULT_MODELS_DIR, load_config
 
     try:
         models_dir = ctx.obj["config"].models_dir if ctx.obj else load_config().models_dir
@@ -48,7 +48,7 @@ def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
 
 def _complete_model_config_key(ctx: typer.Context, incomplete: str) -> list[str]:
     """Complete model configuration keys."""
-    from vllama.model_config import ModelConfig
+    from drove.model_config import ModelConfig
 
     keys = sorted(ModelConfig.model_fields.keys())
     return [k for k in keys if k.startswith(incomplete)]
@@ -236,7 +236,7 @@ def _print_download_plan(
     models_dir: Path,
     statuses: dict[str, tuple[object, int]] | None = None,
 ) -> None:
-    from vllama.downloader import FileStatus
+    from drove.downloader import FileStatus
 
     dest = plan.destination(models_dir)
     col = 60
@@ -302,13 +302,13 @@ def download_model(
 
     Examples:
 
-        vllama models download unsloth/Qwen3-8B-GGUF
+        drove models download unsloth/Qwen3-8B-GGUF
 
-        vllama models download unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M
+        drove models download unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M
 
-        vllama models download unsloth/Qwen3-8B-GGUF:Q8_0 --name qwen3-8b-q8
+        drove models download unsloth/Qwen3-8B-GGUF:Q8_0 --name qwen3-8b-q8
     """
-    from vllama.downloader import resolve_download
+    from drove.downloader import resolve_download
 
     models_dir = _models_dir(ctx)
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -323,7 +323,7 @@ def download_model(
         typer.echo(f"Failed to resolve repo: {e}", err=True)
         raise typer.Exit(1)
 
-    from vllama.downloader import FileStatus
+    from drove.downloader import FileStatus
 
     statuses = plan.check_local_files(models_dir)
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
@@ -354,7 +354,7 @@ def download_model(
         raise typer.Exit(1)
 
     # Save download metadata to sidecar TOML
-    from vllama.downloader import parse_model_ref
+    from drove.downloader import parse_model_ref
 
     _, quant = parse_model_ref(model_ref)
     all_files = sorted(plan.file_names) + sorted(plan.mmproj_files.keys())
@@ -418,17 +418,17 @@ def model_config_cmd(
 
     Examples:
 
-        vllama models config mymodel                  # show model params
+        drove models config mymodel                  # show model params
 
-        vllama models config mymodel ctx_size 8192     # set a model param
+        drove models config mymodel ctx_size 8192     # set a model param
 
-        vllama models config ctx_size 16384            # set a global param
+        drove models config ctx_size 16384            # set a global param
 
-        vllama models config ctx_size                  # get a global param
+        drove models config ctx_size                  # get a global param
 
-        vllama models config --unset ctx_size          # remove a global param
+        drove models config --unset ctx_size          # remove a global param
 
-        vllama models config --global                  # show all global params
+        drove models config --global                  # show all global params
     """
     models_dir = _models_dir(ctx)
 

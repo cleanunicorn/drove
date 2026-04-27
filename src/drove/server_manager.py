@@ -15,16 +15,16 @@ import httpx
 import psutil
 
 if TYPE_CHECKING:
-    from vllama.model_config import ModelConfig
+    from drove.model_config import ModelConfig
 
-from vllama.config import Config
-from vllama.model_config import (
+from drove.config import Config
+from drove.model_config import (
     config_path_for_model,
     global_config_path,
     load_global_model_config,
     load_model_config,
 )
-from vllama.model_store import ModelStore
+from drove.model_store import ModelStore
 
 logger = logging.getLogger(__name__)
 
@@ -416,7 +416,7 @@ class ServerManager:
         raise TimeoutError(msg)
 
     def _build_args(self, model_path: Path, model_cfg: ModelConfig, port: int) -> list[str]:
-        from vllama.model_config import ModelConfig  # local import to avoid circular
+        from drove.model_config import ModelConfig  # local import to avoid circular
 
         # Start with global defaults from config.toml [llama_server]
         base_cfg = ModelConfig(

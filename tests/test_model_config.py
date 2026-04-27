@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from vllama.model_config import (
+from drove.model_config import (
     ModelConfig,
     load_model_config,
     save_model_config,

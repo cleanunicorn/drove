@@ -67,7 +67,7 @@ def convert_to_gguf(
 ) -> None:
     """Run convert_hf_to_gguf.py on model_dir, writing GGUF to output_path.
 
-    Uses the same Python interpreter that is running vllama. If dependencies
+    Uses the same Python interpreter that is running drove. If dependencies
     like ``transformers`` or ``gguf`` are missing you will see an ImportError
     from the script -- install them with:
 

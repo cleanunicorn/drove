@@ -19,10 +19,10 @@ _COMPLETION_DIRS: dict[str, Path] = {
 }
 
 _COMPLETION_FILES: dict[str, str] = {
-    "bash": "vllama",
-    "zsh": "_vllama",
-    "fish": "vllama.fish",
-    "powershell": "vllama.ps1",
+    "bash": "drove",
+    "zsh": "_drove",
+    "fish": "drove.fish",
+    "powershell": "drove.ps1",
 }
 
 # Lines that need to be present in shell config files to activate completions
@@ -32,11 +32,11 @@ _ACTIVATION: dict[str, list[str]] = {
         "autoload -Uz compinit && compinit",
     ],
     "bash": [
-        "source ~/.bash_completions/vllama",
+        "source ~/.bash_completions/drove",
     ],
     "fish": [],  # fish auto-loads from ~/.config/fish/completions/
     "powershell": [
-        ". ~/.config/powershell/vllama.ps1",
+        ". ~/.config/powershell/drove.ps1",
     ],
 }
 
@@ -52,10 +52,10 @@ def _generate_script(shell: str) -> str:
     from click.shell_completion import get_completion_class
     from typer.main import get_command
 
-    from vllama.cli.main import app as vllama_app  # avoid circular at import time
+    from drove.cli.main import app as drove_app  # avoid circular at import time
 
-    prog_name = "vllama"
-    cli = get_command(vllama_app)
+    prog_name = "drove"
+    cli = get_command(drove_app)
     complete_var = f"_{prog_name.upper()}_COMPLETE"
 
     complete_cls = get_completion_class(shell)
@@ -77,9 +77,9 @@ def generate(
 
     Pipe it wherever you need:
 
-        vllama completions generate zsh > ~/.zfunc/_vllama
+        drove completions generate zsh > ~/.zfunc/_drove
 
-        vllama completions generate bash | sudo tee /etc/bash_completion.d/vllama
+        drove completions generate bash | sudo tee /etc/bash_completion.d/drove
     """
     if not shell:
         detected = _detect_shell()
@@ -208,6 +208,6 @@ def _missing_activation_lines(rc: Path, lines: list[str]) -> list[str]:
 def _append_activation(rc: Path, lines: list[str]) -> None:
     rc.parent.mkdir(parents=True, exist_ok=True)
     with rc.open("a") as f:
-        f.write("\n# vllama shell completions\n")
+        f.write("\n# drove shell completions\n")
         for line in lines:
             f.write(line + "\n")

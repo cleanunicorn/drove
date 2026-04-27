@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 from fastapi.testclient import TestClient
 
-from vllama.config import Config
-from vllama.observe import list_records
-from vllama.proxy import create_app
+from drove.config import Config
+from drove.observe import list_records
+from drove.proxy import create_app
 
 
 def make_config(tmp_path: Path, observe: bool = False) -> Config:

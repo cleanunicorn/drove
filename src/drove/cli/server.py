@@ -12,7 +12,7 @@ import uvicorn
 from typer.core import TyperCommand
 
 server_app = typer.Typer(
-    help="Manage the vllama server.",
+    help="Manage the drove server.",
     invoke_without_command=True,
     no_args_is_help=False,
 )
@@ -24,11 +24,11 @@ def _server_default(
     host: Annotated[str | None, typer.Option(help="Listen host.")] = None,
     port: Annotated[int | None, typer.Option(help="Listen port.")] = None,
 ) -> None:
-    """Start the vllama proxy server (default when no subcommand is given)."""
+    """Start the drove proxy server (default when no subcommand is given)."""
     if ctx.invoked_subcommand is not None:
         return
 
-    from vllama.proxy import create_app
+    from drove.proxy import create_app
 
     config = ctx.obj["config"]
     if host:
@@ -40,7 +40,7 @@ def _server_default(
 
     cfg_path: Path = ctx.obj["config_path"]
 
-    typer.echo(f"Starting vllama on {config.listen_host}:{config.listen_port}")
+    typer.echo(f"Starting drove on {config.listen_host}:{config.listen_port}")
     typer.echo(f"Models directory: {config.models_dir}")
     typer.echo(f"Idle timeout: {config.idle_timeout_seconds}s")
     if cfg_path.exists():
@@ -56,7 +56,7 @@ def _server_default(
 
 
 def _base_url(ctx: typer.Context, host: str | None, port: int | None) -> str:
-    """Build the base URL for the running vllama server."""
+    """Build the base URL for the running drove server."""
     config = ctx.obj["config"]
     base = f"http://{host or config.listen_host}:{port or config.listen_port}"
     return base.replace("//0.0.0.0:", "//127.0.0.1:")
@@ -83,8 +83,8 @@ class _OptionalValueCommand(TyperCommand):
 @server_app.command(cls=_OptionalValueCommand)
 def status(
     ctx: typer.Context,
-    host: Annotated[str | None, typer.Option(help="vllama host (overrides config).")] = None,
-    port: Annotated[int | None, typer.Option(help="vllama port (overrides config).")] = None,
+    host: Annotated[str | None, typer.Option(help="drove host (overrides config).")] = None,
+    port: Annotated[int | None, typer.Option(help="drove port (overrides config).")] = None,
     watch: Annotated[
         float | None,
         typer.Option(
@@ -94,12 +94,12 @@ def status(
         ),
     ] = None,
 ) -> None:
-    """Show the status of the running vllama server.
+    """Show the status of the running drove server.
 
     Use --watch to continuously refresh. Examples:
 
-        vllama server status --watch        # refresh every 2s
-        vllama server status --watch 5      # refresh every 5s
+        drove server status --watch        # refresh every 2s
+        drove server status --watch 5      # refresh every 5s
     """
     base = _base_url(ctx, host, port)
 

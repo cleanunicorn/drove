@@ -95,3 +95,12 @@ context_size = 4096
 n_gpu_layers = -1
 # any llama-server flag as snake_case key
 ```
+
+## Changelog
+
+Every change to this repository **must** be recorded in `CHANGELOG.md` under the `## [Unreleased]` section before the work is committed. No exceptions — bug fixes, features, refactors, doc updates, and dependency bumps all get an entry.
+
+- Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Group entries under `### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`, or `### Security` (create the subsection if it doesn't exist yet under `[Unreleased]`).
+- Write one bullet per user-visible change, in past tense, describing the impact rather than the implementation. Reference the affected module or CLI command when useful.
+- Do **not** assign a version number or release date — the release automation moves `[Unreleased]` entries into a new versioned section when it cuts a release.
+- Versioning is driven by [Conventional Commits](https://www.conventionalcommits.org/) on merge to `main` (`fix:` → patch, `feat:` → minor, `feat!:` / `BREAKING CHANGE:` → major). The changelog entry must be consistent with the commit type.

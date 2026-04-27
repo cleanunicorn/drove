@@ -54,3 +54,26 @@ testpaths = ["tests"]
 [tool.mypy]
 python_version = "3.14"
 strict = true
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+tag_format = "v{version}"
+commit_message = "chore(release): v{version}\n\n[skip ci]"
+commit_parser = "conventional"
+
+[tool.semantic_release.branches.main]
+match = "(main|master)"
+prerelease = false
+
+[tool.semantic_release.changelog]
+exclude_commit_patterns = [
+    "^chore(\\(.*\\))?:",
+    "^ci(\\(.*\\))?:",
+    "^style(\\(.*\\))?:",
+    "^test(\\(.*\\))?:",
+]
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "style", "test"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]

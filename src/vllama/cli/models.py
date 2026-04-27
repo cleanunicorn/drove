@@ -19,13 +19,13 @@ from vllama.model_config import (
     load_download_info,
     load_global_model_config,
     load_model_config,
-    resolve_model_alias,
     save_download_info,
     save_global_model_config,
     save_model_config,
     set_global_model_config_key,
     set_model_config_key,
 )
+from vllama.model_store import ModelStore
 
 models_app = typer.Typer(help="Manage models.", no_args_is_help=True)
 
@@ -43,24 +43,7 @@ def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
     except Exception:
         models_dir = DEFAULT_MODELS_DIR
 
-    if not models_dir.exists():
-        return []
-
-    names: list[str] = []
-    for p in sorted(models_dir.iterdir()):
-        if p.is_dir() and not p.name.startswith("."):
-            if _has_model_files(p):
-                names.append(p.name)
-            else:
-                # Namespace directory — list models inside
-                for sub in sorted(p.iterdir()):
-                    if sub.is_dir() and not sub.name.startswith("."):
-                        names.append(f"{p.name}/{sub.name}")
-        elif p.suffix.lower() == ".gguf" and p.is_file():
-            # Legacy: single file without directory
-            names.append(p.stem)
-
-    return [n for n in names if n.lower().startswith(incomplete.lower())]
+    return ModelStore(models_dir).complete(incomplete)
 
 
 def _complete_model_config_key(ctx: typer.Context, incomplete: str) -> list[str]:
@@ -71,58 +54,18 @@ def _complete_model_config_key(ctx: typer.Context, incomplete: str) -> list[str]
     return [k for k in keys if k.startswith(incomplete)]
 
 
-_MODEL_EXTS = {".gguf", ".safetensors", ".bin", ".pt"}
-
-
-def _resolve_name(models_dir: Path, name: str) -> str:
-    """Resolve a model name or HuggingFace reference to a local name."""
-    if "/" in name:
-        local = resolve_model_alias(models_dir, name)
-        if local:
-            return local
-    return name
-
-
 def _model_root(models_dir: Path, name: str) -> Path | None:
-    """Return the model directory, or None if absent."""
-    name = _resolve_name(models_dir, name)
-    subdir = models_dir / name
-    if subdir.is_dir():
-        return subdir
-    # Legacy: single file without directory
-    candidate = models_dir / f"{name}.gguf"
-    if candidate.exists():
-        return candidate
-    return None
+    """Return the model directory (or legacy flat file), or None if absent."""
+    return ModelStore(models_dir).find_root(name)
 
 
 def _find_model(models_dir: Path, name: str) -> Path:
-    """Locate the primary model file by name or HuggingFace reference.
-
-    Returns the primary file path (first GGUF inside the model directory).
-    """
-    name = _resolve_name(models_dir, name)
-    subdir = models_dir / name
-    if subdir.is_dir():
-        shards = sorted(p for p in subdir.rglob("*.gguf"))
-        if shards:
-            return shards[0]
-        others = sorted(p for p in subdir.rglob("*") if p.suffix.lower() in _MODEL_EXTS)
-        if others:
-            return others[0]
-
-    # Legacy: single file without directory
-    candidate = models_dir / f"{name}.gguf"
-    if candidate.exists():
-        return candidate
-
-    typer.echo(f"Model '{name}' not found.", err=True)
-    raise typer.Exit(1)
-
-
-def _has_model_files(directory: Path) -> bool:
-    """True if a directory contains model files at its immediate level."""
-    return any(f.suffix.lower() in _MODEL_EXTS for f in directory.iterdir() if f.is_file())
+    """Locate the primary model file by name or HuggingFace reference."""
+    try:
+        return ModelStore(models_dir).resolve(name)
+    except FileNotFoundError:
+        typer.echo(f"Model '{name}' not found.", err=True)
+        raise typer.Exit(1)
 
 
 def _detect_capabilities(primary: Path) -> list[str]:
@@ -154,43 +97,9 @@ def _detect_capabilities(primary: Path) -> list[str]:
     return caps
 
 
-def _add_model_entry(directory: Path, name: str, results: list[tuple[str, Path, int]]) -> None:
-    """Add a model directory to the results list."""
-    files = [f for f in directory.rglob("*") if f.is_file()]
-    total = sum(f.stat().st_size for f in files)
-    primary = sorted(f for f in files if f.suffix.lower() == ".gguf")
-    if not primary:
-        primary = sorted(files)
-    if primary:
-        results.append((name, primary[0], total))
-
-
 def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
-    """Return (name, primary_path, total_bytes) for each model.
-
-    Supports both flat models and namespaced models (org/model).
-    A first-level directory with model files is a model dir; one without
-    is treated as a namespace and scanned one level deeper.
-    """
-    results: list[tuple[str, Path, int]] = []
-
-    if not models_dir.exists():
-        return results
-
-    for p in sorted(models_dir.iterdir()):
-        if p.is_dir() and not p.name.startswith("."):
-            if _has_model_files(p):
-                _add_model_entry(p, p.name, results)
-            else:
-                # Namespace directory — scan one level deeper
-                for sub in sorted(p.iterdir()):
-                    if sub.is_dir() and not sub.name.startswith("."):
-                        _add_model_entry(sub, f"{p.name}/{sub.name}", results)
-        elif p.suffix.lower() == ".gguf" and p.is_file():
-            # Legacy: single file without directory
-            results.append((p.stem, p, p.stat().st_size))
-
-    return results
+    """Return (name, primary_path, total_bytes) for each model."""
+    return [(e.name, e.primary, e.total_bytes) for e in ModelStore(models_dir).list()]
 
 
 @models_app.command("list")

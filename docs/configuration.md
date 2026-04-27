@@ -30,8 +30,11 @@ Each model can have a sidecar config file in the models directory:
 Example:
 
 ```toml
-context_size = 4096
+ctx_size = 4096
 n_gpu_layers = -1
 ```
 
-Any `llama-server` flag can be represented as a `snake_case` key.
+Only keys declared in `ModelConfig` are accepted; unknown keys are silently ignored.
+Supported keys: `ctx_size`, `n_gpu_layers`, `main_gpu`, `tensor_split`, `batch_size`,
+`ubatch_size`, `n_parallel`, `temp`, `top_p`, `top_k`, `threads`, `threads_batch`,
+`flash_attn`, `rope_freq_base`, `rope_freq_scale`, `cache_type_k`, `cache_type_v`, `mmproj`.

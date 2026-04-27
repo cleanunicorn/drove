@@ -57,7 +57,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="drove")
 
 resp = client.chat.completions.create(
-    model="Qwen3-8B-GGUF",
+    model="unsloth/Qwen3-8B-GGUF",
     messages=[{"role": "user", "content": "Write a haiku about inference latency."}],
 )
 

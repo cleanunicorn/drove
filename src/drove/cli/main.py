@@ -1,4 +1,4 @@
-"""vllama CLI — root app and subcommand registration."""
+"""drove CLI — root app and subcommand registration."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from typing import Annotated
 
 import typer
 
-from vllama.cli.completions import completions_app
-from vllama.cli.models import _complete_model_name, models_app
-from vllama.cli.server import server_app
-from vllama.config import DEFAULT_CONFIG_PATH, Config, load_config
+from drove.cli.completions import completions_app
+from drove.cli.models import _complete_model_name, models_app
+from drove.cli.server import server_app
+from drove.config import DEFAULT_CONFIG_PATH, Config, load_config
 
 app = typer.Typer(
-    name="vllama",
+    name="drove",
     help="llama.cpp server manager and proxy.",
     no_args_is_help=True,
 )
@@ -43,7 +43,7 @@ def _root(
 
 def _complete_config_key(ctx: typer.Context, incomplete: str) -> list[str]:
     """Complete global config keys (including llama_server. nested keys)."""
-    from vllama.config import Config, LlamaServerDefaults
+    from drove.config import Config, LlamaServerDefaults
 
     keys: list[str] = []
     for field in Config.model_fields:
@@ -69,11 +69,11 @@ def config(
 
     Examples:
 
-        vllama config                              # show all values
+        drove config                              # show all values
 
-        vllama config idle_timeout_seconds         # get one value
+        drove config idle_timeout_seconds         # get one value
 
-        vllama config idle_timeout_seconds 3600    # set a value
+        drove config idle_timeout_seconds 3600    # set a value
     """
     cfg_path = DEFAULT_CONFIG_PATH
     conf = ctx.obj["config"]
@@ -111,7 +111,7 @@ def config(
 
     if not cfg_path.exists():
         typer.echo(
-            f"Config file not found at {cfg_path}. Run 'vllama init' first or use --config.",
+            f"Config file not found at {cfg_path}. Run 'drove init' first or use --config.",
             err=True,
         )
         raise typer.Exit(1)
@@ -136,7 +136,7 @@ def _config_get(conf: Config, key: str) -> object:
 
 
 def _config_set(conf: Config, key: str, raw_value: str) -> Config:
-    from vllama.config import Config, LlamaServerDefaults
+    from drove.config import Config, LlamaServerDefaults
 
     parts = key.split(".", 1)
 
@@ -191,8 +191,8 @@ def chat(
         str | None,
         typer.Argument(help="Model name to chat with.", autocompletion=_complete_model_name),
     ] = None,
-    host: Annotated[str | None, typer.Option(help="vllama host (overrides config).")] = None,
-    port: Annotated[int | None, typer.Option(help="vllama port (overrides config).")] = None,
+    host: Annotated[str | None, typer.Option(help="drove host (overrides config).")] = None,
+    port: Annotated[int | None, typer.Option(help="drove port (overrides config).")] = None,
     endpoint: Annotated[
         str | None,
         typer.Option(
@@ -210,13 +210,13 @@ def chat(
 ) -> None:
     """Open an interactive TUI chat session.
 
-    By default connects to the local vllama server. Use --endpoint to connect
+    By default connects to the local drove server. Use --endpoint to connect
     to any OpenAI-compatible API (OpenAI, Anthropic, Groq, etc.).
 
     Use /help inside the chat to see available commands (/sessions, /theme, …).
     """
-    from vllama.sessions import latest_session
-    from vllama.tui import ChatApp
+    from drove.sessions import latest_session
+    from drove.tui import ChatApp
 
     config = ctx.obj["config"]
 
@@ -328,20 +328,20 @@ def _observe_default(
     """Browse logged API requests and responses.
 
     Enable observation logging by setting `observe = true` in config.
-    Logs are stored in the observe_dir (default ~/.local/share/vllama/observe/).
+    Logs are stored in the observe_dir (default ~/.local/share/drove/observe/).
 
-    Run with no subcommand to open the TUI browser, or use `vllama observe web`
+    Run with no subcommand to open the TUI browser, or use `drove observe web`
     to start a web interface.
 
     Examples:
 
-        vllama observe                    # TUI, all models
+        drove observe                    # TUI, all models
 
-        vllama observe -m mymodel         # TUI, filter by model
+        drove observe -m mymodel         # TUI, filter by model
 
-        vllama observe web                # web UI
+        drove observe web                # web UI
 
-        vllama observe web -m mymodel     # web UI, filter by model
+        drove observe web -m mymodel     # web UI, filter by model
     """
     ctx.ensure_object(dict)
     ctx.obj["observe_model"] = model
@@ -349,7 +349,7 @@ def _observe_default(
     if ctx.invoked_subcommand is not None:
         return
 
-    from vllama.observe_tui import ObserveApp
+    from drove.observe_tui import ObserveApp
 
     config = ctx.obj["config"]
     if not config.observe_dir.exists():
@@ -378,12 +378,12 @@ def web(
 
     Examples:
 
-        vllama observe web
-        vllama observe web --port 9090
+        drove observe web
+        drove observe web --port 9090
     """
     import uvicorn
 
-    from vllama.observe_web import create_observe_app
+    from drove.observe_web import create_observe_app
 
     config = ctx.obj["config"]
     model: str | None = ctx.obj.get("observe_model")
@@ -410,7 +410,7 @@ def init_config(
 ) -> None:
     """Create the config file at its default location with all default values.
 
-    Writes to ~/.config/vllama/config.toml (or the path from --config / VLLAMA_CONFIG).
+    Writes to ~/.config/drove/config.toml (or the path from --config / DROVE_CONFIG).
     """
     cfg_path = DEFAULT_CONFIG_PATH
     conf = ctx.obj["config"]

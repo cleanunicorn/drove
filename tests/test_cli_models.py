@@ -1,10 +1,10 @@
-"""Tests for the `vllama models` CLI helpers."""
+"""Tests for the `drove models` CLI helpers."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from vllama.cli.models import _detect_capabilities
+from drove.cli.models import _detect_capabilities
 
 
 def _make_model(models_dir: Path, name: str, *extra_files: str) -> Path:

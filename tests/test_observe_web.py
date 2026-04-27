@@ -6,8 +6,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from vllama.observe import ObserveRecord, save_record
-from vllama.observe_web import create_observe_app
+from drove.observe import ObserveRecord, save_record
+from drove.observe_web import create_observe_app
 
 
 def _make_record(
@@ -39,7 +39,7 @@ def test_index_returns_html(tmp_path: Path) -> None:
     with TestClient(app) as client:
         resp = client.get("/")
     assert resp.status_code == 200
-    assert "vllama observe" in resp.text
+    assert "drove observe" in resp.text
     assert "text/html" in resp.headers["content-type"]
 
 

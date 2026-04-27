@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from vllama.model_config import resolve_model_alias
+from drove.model_config import resolve_model_alias
 
 _MODEL_EXTS = frozenset({".gguf", ".safetensors", ".bin", ".pt"})
 
@@ -44,7 +44,7 @@ class ModelStore:
             return primary
         raise FileNotFoundError(
             f"Model '{name}' not found in {self._dir}. "
-            "Run 'vllama models list' to see available models."
+            "Run 'drove models list' to see available models."
         )
 
     def find_root(self, name: str) -> Path | None:

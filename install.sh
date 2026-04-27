@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="cleanunicorn/vllama"
+REPO="cleanunicorn/drove"
 GITHUB_URL="https://github.com/${REPO}"
 
 # Colors
@@ -11,13 +11,13 @@ YELLOW='\033[1;33m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-info()  { echo -e "${GREEN}[vllama]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[vllama] warning:${NC} $*"; }
-error() { echo -e "${RED}[vllama] error:${NC} $*" >&2; exit 1; }
+info()  { echo -e "${GREEN}[drove]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[drove] warning:${NC} $*"; }
+error() { echo -e "${RED}[drove] error:${NC} $*" >&2; exit 1; }
 bold()  { echo -e "${BOLD}$*${NC}"; }
 
 echo ""
-bold "  vllama installer"
+bold "  drove installer"
 echo "  llama.cpp server manager and proxy"
 echo ""
 
@@ -42,8 +42,8 @@ else
     info "uv found: $(uv --version)"
 fi
 
-# Install vllama via uv tool (uv will fetch Python 3.14 automatically if needed)
-info "Installing vllama from ${GITHUB_URL} ..."
+# Install drove via uv tool (uv will fetch Python 3.14 automatically if needed)
+info "Installing drove from ${GITHUB_URL} ..."
 uv tool install "git+${GITHUB_URL}"
 
 # Ensure uv tool bin dir is on PATH
@@ -52,29 +52,29 @@ if [[ ":${PATH}:" != *":${UV_TOOL_BIN}:"* ]]; then
     export PATH="${UV_TOOL_BIN}:${PATH}"
 fi
 
-if ! command -v vllama &>/dev/null; then
-    warn "vllama was installed but is not in your PATH."
+if ! command -v drove &>/dev/null; then
+    warn "drove was installed but is not in your PATH."
     warn "Add the following to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
     warn "  export PATH=\"${UV_TOOL_BIN}:\$PATH\""
 else
-    info "vllama installed: $(vllama --version 2>/dev/null || echo 'ok')"
+    info "drove installed: $(drove --version 2>/dev/null || echo 'ok')"
 fi
 
 echo ""
 bold "  Installation complete!"
 echo ""
 echo "  Quick start:"
-echo "    vllama init                                    # Create config file"
-echo "    vllama models download unsloth/Qwen3-8B-GGUF  # Download a model"
-echo "    vllama server                                  # Start the proxy"
-echo "    vllama chat                                    # Interactive chat"
+echo "    drove init                                    # Create config file"
+echo "    drove models download unsloth/Qwen3-8B-GGUF  # Download a model"
+echo "    drove server                                  # Start the proxy"
+echo "    drove chat                                    # Interactive chat"
 echo ""
 
 # Warn if llama-server is missing (required runtime dependency)
 if ! command -v llama-server &>/dev/null; then
     echo ""
     warn "llama-server not found in PATH."
-    warn "vllama requires llama.cpp — install it before running the server:"
+    warn "drove requires llama.cpp — install it before running the server:"
     case "$OS" in
         Darwin)
             warn "  brew install llama.cpp"

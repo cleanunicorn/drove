@@ -15,10 +15,10 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from vllama.config import Config, load_config
-from vllama.observe import ObserveContext, save_record
-from vllama.server_manager import ServerManager
-from vllama.stats import ProxyStats
+from drove.config import Config, load_config
+from drove.observe import ObserveContext, save_record
+from drove.server_manager import ServerManager
+from drove.stats import ProxyStats
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
 
     stats = ProxyStats()
 
-    app = FastAPI(title="vllama", lifespan=lifespan)
+    app = FastAPI(title="drove", lifespan=lifespan)
     app.state.manager = manager
     app.state.config = config
     app.state.stats = stats
@@ -141,7 +141,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     @app.get("/v1/models")
     async def list_models() -> JSONResponse:
         """OpenAI-compatible model listing."""
-        from vllama.cli.models import _iter_models
+        from drove.cli.models import _iter_models
 
         models = _iter_models(config.models_dir)
         model_objects = []

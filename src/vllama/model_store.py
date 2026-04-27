@@ -29,8 +29,17 @@ class ModelStore:
         self._dir = models_dir
 
     def resolve(self, name: str) -> Path:
-        """Return the primary GGUF path for *name*, or raise FileNotFoundError."""
-        primary = self._find_primary(self._canonical(name))
+        """Return the primary GGUF path for *name*, or raise FileNotFoundError.
+
+        Exact local path is always tried first; HuggingFace alias resolution
+        only runs as a fallback so an explicit org/repo directory is never
+        silently redirected to a different aliased model.
+        """
+        primary = self._find_primary(name)
+        if primary is None and "/" in name:
+            alias = resolve_model_alias(self._dir, name)
+            if alias:
+                primary = self._find_primary(alias)
         if primary is not None:
             return primary
         raise FileNotFoundError(
@@ -39,15 +48,16 @@ class ModelStore:
         )
 
     def find_root(self, name: str) -> Path | None:
-        """Return the model directory (or legacy .gguf file), or None if absent."""
-        cname = self._canonical(name)
-        subdir = self._dir / cname
-        if subdir.is_dir():
-            return subdir
-        candidate = self._dir / f"{cname}.gguf"
-        if candidate.exists():
-            return candidate
-        return None
+        """Return the model directory (or legacy .gguf file), or None if absent.
+
+        Exact local path is tried before alias resolution (mirrors resolve()).
+        """
+        root = self._direct_root(name)
+        if root is None and "/" in name:
+            alias = resolve_model_alias(self._dir, name)
+            if alias:
+                root = self._direct_root(alias)
+        return root
 
     def list(self) -> list[ModelEntry]:
         """Return all models with their primary path and total on-disk size."""
@@ -86,24 +96,28 @@ class ModelStore:
 
     # ── private helpers ──────────────────────────────────────────────────────
 
-    def _canonical(self, name: str) -> str:
-        """Resolve a HuggingFace alias (org/repo[:quant]) to a local name."""
-        if "/" in name:
-            local = resolve_model_alias(self._dir, name)
-            if local:
-                return local
-        return name
-
     def _find_primary(self, name: str) -> Path | None:
-        """Find the primary model file for a local (already-resolved) name."""
+        """Find the primary GGUF for a local name (no alias resolution).
+
+        GGUF-only: non-GGUF formats (.safetensors, .bin, .pt) are intentionally
+        excluded so callers such as ServerManager never receive a path that
+        llama-server cannot open.
+        """
         subdir = self._dir / name
         if subdir.is_dir():
             ggufs = sorted(subdir.rglob("*.gguf"))
             if ggufs:
                 return ggufs[0]
-            others = sorted(p for p in subdir.rglob("*") if p.suffix.lower() in _MODEL_EXTS)
-            if others:
-                return others[0]
+        candidate = self._dir / f"{name}.gguf"
+        if candidate.exists():
+            return candidate
+        return None
+
+    def _direct_root(self, name: str) -> Path | None:
+        """Return model directory or legacy flat file without alias resolution."""
+        subdir = self._dir / name
+        if subdir.is_dir():
+            return subdir
         candidate = self._dir / f"{name}.gguf"
         if candidate.exists():
             return candidate

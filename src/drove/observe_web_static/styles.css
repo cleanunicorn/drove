@@ -1,7 +1,7 @@
 :root {
-  --bg: #1e1e1e; --bg2: #252526; --bg3: #2d2d2d; --border: #3e3e3e;
-  --text: #d4d4d4; --text2: #888; --accent: #569cd6; --accent2: #4ec9b0;
-  --warn: #ce9178; --err: #f44747; --ok: #6a9955;
+  --bg: #1A1714; --bg2: #231f1b; --bg3: #2d2823; --border: #3f3831;
+  --text: #F4EFE3; --text2: #6E6862; --accent: #C45A3A; --accent2: #C45A3A;
+  --warn: #C45A3A; --err: #b84d4d; --ok: #5C7A55;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -41,7 +41,7 @@ header input.search:focus { outline: none; border-color: var(--accent); }
   transition: background 0.1s;
 }
 .record:hover { background: var(--bg3); }
-.record.selected { background: #264f78; }
+.record.selected { background: #3a241d; }
 .record .top { display: flex; justify-content: space-between; align-items: center; }
 .record .method { font-weight: 600; font-size: 12px; color: var(--accent2); }
 .record .time { font-size: 12px; color: var(--text2); }

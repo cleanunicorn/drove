@@ -22,7 +22,7 @@ from textual.widgets import (
 )
 from textual.widgets._tree import TreeNode
 
-from vllama.observe import ObserveRecord, list_records, load_record, record_matches
+from drove.observe import ObserveRecord, list_records, load_record, record_matches
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -331,7 +331,7 @@ class ObserveApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.title = "vllama observe"
+        self.title = "drove observe"
         if self._model:
             self.sub_title = f"model: {self._model}"
         self._load_records()

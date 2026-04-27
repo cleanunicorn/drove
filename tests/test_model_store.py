@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from vllama.model_store import ModelStore
+from drove.model_store import ModelStore
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

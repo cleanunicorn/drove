@@ -1,4 +1,4 @@
-"""Terminal UI for chatting with a running vllama server."""
+"""Terminal UI for chatting with a running drove server."""
 
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from vllama.sessions import Session, list_sessions, new_session, save_session
-from vllama.tools import TOOL_DEFINITIONS, execute_tool
+from drove.sessions import Session, list_sessions, new_session, save_session
+from drove.tools import TOOL_DEFINITIONS, execute_tool
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -415,7 +415,7 @@ class ChatApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.title = "vllama chat"
+        self.title = "drove chat"
         self.sub_title = self._model
         self._update_status()
         self.query_one("#user-input", ChatInput).focus()
@@ -527,7 +527,7 @@ class ChatApp(App[None]):
         if self._config_path is None:
             return
         try:
-            from vllama.config import load_config
+            from drove.config import load_config
 
             cfg = load_config(self._config_path)
             cfg = cfg.model_copy(update={"tui_theme": theme})
@@ -756,7 +756,7 @@ class ChatApp(App[None]):
                         else:
                             # Check persistent permission
                             try:
-                                from vllama.config import load_config
+                                from drove.config import load_config
 
                                 cfg = load_config(self._config_path)
                                 if name in cfg.allowed_tools:
@@ -776,7 +776,7 @@ class ChatApp(App[None]):
                             self._session_allowed_tools.add(name)
                             # Persist to config
                             try:
-                                from vllama.config import load_config
+                                from drove.config import load_config
 
                                 cfg = load_config(self._config_path)
                                 if name not in cfg.allowed_tools:

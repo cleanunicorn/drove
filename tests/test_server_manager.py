@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from vllama.config import Config
-from vllama.server_manager import ServerManager, _ModelInstance
+from drove.config import Config
+from drove.server_manager import ServerManager, _ModelInstance
 
 
 def make_config(tmp_path: Path) -> Config:
@@ -201,7 +201,7 @@ async def test_ensure_running_claim_prevents_eviction_race(tmp_path: Path) -> No
         )
 
     with (
-        patch("vllama.server_manager.asyncio.sleep", side_effect=fake_sleep),
+        patch("drove.server_manager.asyncio.sleep", side_effect=fake_sleep),
         patch.object(manager, "_start", new_callable=AsyncMock, side_effect=fake_start_b),
         patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
     ):
@@ -230,7 +230,7 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
     with patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop:
         # Run one iteration of the idle watcher by calling it with a short sleep
-        with patch("vllama.server_manager.asyncio.sleep", new_callable=AsyncMock):
+        with patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock):
             # _idle_watcher loops; after stopping it returns, so this will finish
             await manager._idle_watcher("testmodel")
 

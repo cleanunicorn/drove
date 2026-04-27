@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from vllama.observe import _record_to_dict, list_records, load_record, record_matches
+from drove.observe import _record_to_dict, list_records, load_record, record_matches
 
 
 def create_observe_app(observe_dir: Path, model: str | None = None) -> FastAPI:

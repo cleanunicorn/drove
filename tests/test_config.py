@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from vllama.config import load_config
+from drove.config import load_config
 
 
 def test_defaults(tmp_path: Path) -> None:
@@ -30,7 +30,7 @@ def test_env_var_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_bytes(tomli_w.dumps({"listen_port": 9090}).encode())
-    monkeypatch.setenv("VLLAMA_LISTEN_PORT", "7777")
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "7777")
     cfg = load_config(cfg_file)
     assert cfg.listen_port == 7777
 

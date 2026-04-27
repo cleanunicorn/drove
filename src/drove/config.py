@@ -14,10 +14,11 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "vllama" / "config.toml"
-DEFAULT_MODELS_DIR = Path.home() / ".local" / "share" / "vllama" / "models"
-DEFAULT_SESSIONS_DIR = Path.home() / ".local" / "share" / "vllama" / "sessions"
-DEFAULT_OBSERVE_DIR = Path.home() / ".local" / "share" / "vllama" / "observe"
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "drove" / "config.toml"
+LEGACY_CONFIG_PATH = Path.home() / ".config" / "vllama" / "config.toml"
+DEFAULT_MODELS_DIR = Path.home() / ".local" / "share" / "drove" / "models"
+DEFAULT_SESSIONS_DIR = Path.home() / ".local" / "share" / "drove" / "sessions"
+DEFAULT_OBSERVE_DIR = Path.home() / ".local" / "share" / "drove" / "observe"
 
 # Module-level mutable so load_config() can point to a custom path
 _config_path: Path = DEFAULT_CONFIG_PATH
@@ -26,23 +27,23 @@ _config_path: Path = DEFAULT_CONFIG_PATH
 class LlamaServerDefaults(BaseSettings):
     """Default llama-server args applied to all models (overridable per-model)."""
 
-    model_config = SettingsConfigDict(env_prefix="VLLAMA_LLAMA_")
+    model_config = SettingsConfigDict(env_prefix="DROVE_LLAMA_")
 
     n_gpu_layers: int = -1
     threads: int | None = None
 
 
 class Config(BaseSettings):
-    """Global vllama configuration.
+    """Global drove configuration.
 
     Source priority (highest → lowest):
-      1. Environment variables (VLLAMA_*)
+      1. Environment variables (DROVE_*)
       2. TOML config file
       3. Field defaults
     """
 
     model_config = SettingsConfigDict(
-        env_prefix="VLLAMA_",
+        env_prefix="DROVE_",
         env_nested_delimiter="__",
         extra="ignore",
         toml_file=str(DEFAULT_CONFIG_PATH),
@@ -107,6 +108,19 @@ class Config(BaseSettings):
 def load_config(path: Path | None = None) -> Config:
     """Load config from TOML file (if it exists), then apply env var overrides."""
     config_path = path or DEFAULT_CONFIG_PATH
+    _migrate_legacy_config(config_path)
     # Point the TOML source at the requested file by temporarily updating model_config
     Config.model_config["toml_file"] = str(config_path)  # type: ignore[index]
     return Config()
+
+
+def _migrate_legacy_config(config_path: Path) -> None:
+    """Move ~/.config/vllama/config.toml to ~/.config/drove/config.toml on first run."""
+    if config_path != DEFAULT_CONFIG_PATH:
+        return
+    if config_path.exists() or not LEGACY_CONFIG_PATH.exists():
+        return
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(LEGACY_CONFIG_PATH.read_text())
+    print(f"[drove] migrated config from {LEGACY_CONFIG_PATH} to {config_path}")

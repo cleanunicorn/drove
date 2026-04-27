@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from vllama.observe import _record_to_dict, list_records, load_record, record_matches
+from drove.observe import _record_to_dict, list_records, load_record, record_matches
 
 _STATIC_DIR = Path(__file__).parent / "observe_web_static"
 _INDEX_PATH = _STATIC_DIR / "index.html"
@@ -33,7 +33,7 @@ def _summarize(record: object) -> dict[str, object]:
 
 
 def create_observe_app(observe_dir: Path, model: str | None = None) -> FastAPI:
-    app = FastAPI(title="vllama observe")
+    app = FastAPI(title="drove observe")
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
     @app.get("/api/records")

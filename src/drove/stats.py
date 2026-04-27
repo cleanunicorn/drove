@@ -1,4 +1,4 @@
-"""Runtime statistics for the vllama proxy."""
+"""Runtime statistics for the drove proxy."""
 
 from __future__ import annotations
 

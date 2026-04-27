@@ -1,5 +1,5 @@
 [project]
-name = "vllama"
+name = "drove"
 version = "0.1.0"
 description = "llama.cpp server manager and proxy"
 readme = "README.md"
@@ -20,8 +20,13 @@ dependencies = [
     "rich>=14.3.3",
 ]
 
+[project.urls]
+Homepage = "https://drove.dev"
+Repository = "https://github.com/cleanunicorn/drove"
+Documentation = "https://drove.dev/docs"
+
 [project.scripts]
-vllama = "vllama.cli:app"
+drove = "drove.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.10.2,<0.11.0"]

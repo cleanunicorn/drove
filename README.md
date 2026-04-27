@@ -1,7 +1,5 @@
 # drove
 
-> drove was previously known as **vllama**.
-
 **drove — local LLMs on demand.**
 
 A llama.cpp server manager that wakes models when you need them and shuts them down when you don't. It proxies an OpenAI-compatible API, lazily starts `llama-server`, and keeps configuration transparent.

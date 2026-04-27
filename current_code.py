@@ -11,7 +11,7 @@ from drove.observe import _record_to_dict, list_records, load_record, record_mat
 
 
 def create_observe_app(observe_dir: Path, model: str | None = None) -> FastAPI:
-    app = FastAPI(title="vllama observe")
+    app = FastAPI(title="drove observe")
 
     @app.get("/api/records")
     async def get_records(search: str = "") -> JSONResponse:
@@ -63,7 +63,7 @@ _INDEX_HTML = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vllama observe</title>
+<title>drove observe</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   :root {
@@ -170,7 +170,7 @@ _INDEX_HTML = """\
 </head>
 <body>
 <header>
-  <h1>vllama observe</h1>
+  <h1>drove observe</h1>
   <span class="filter">{{FILTER_LABEL}}</span>
   <input id="search" class="search" type="text" placeholder="Search anything…"
          oninput="onSearchInput()" autocomplete="off">

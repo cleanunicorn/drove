@@ -47,8 +47,8 @@ drove chat
 
 ## Documentation
 
-- Docs: `drove.dev/docs` (planned)
-- CLI reference currently lives in `--help` output and inline command help.
+- In-repo docs: [`docs/`](./docs/README.md)
+- Hosted docs target: `https://drove.dev/docs`
 
 ## Development
 

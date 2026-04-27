@@ -61,9 +61,33 @@ def _fetch_files_with_sizes(
 
 
 def filter_by_quant(files: dict[str, int], quant: str) -> dict[str, int]:
-    """Filter files by case-insensitive quantization tag match."""
-    q = quant.lower()
-    return {f: s for f, s in files.items() if q in Path(f).name.lower()}
+    """Filter files by exact quantization tag match (case-insensitive)."""
+    q = quant.upper()
+    return {f: s for f, s in files.items() if quant_tag(f) == q}
+
+
+_QUANT_RE = re.compile(r"(IQ\w+|Q\d+_\w+|Q\d+|BF\d+|F\d+)", re.IGNORECASE)
+
+
+def quant_tag(filename: str) -> str | None:
+    """Extract the quantization tag from a filename, or None if absent."""
+    m = _QUANT_RE.search(Path(filename).name)
+    return m.group(0).upper() if m else None
+
+
+def available_quants(files: dict[str, int]) -> dict[str, int]:
+    """Return {QUANT_TAG: total_bytes} for each detectable quant in *files*.
+
+    Files without a recognisable quant tag are skipped. Insertion order is
+    the order in which each quant is first encountered.
+    """
+    out: dict[str, int] = {}
+    for fname, size in files.items():
+        tag = quant_tag(fname)
+        if tag is None:
+            continue
+        out[tag] = out.get(tag, 0) + size
+    return out
 
 
 # Preferred mmproj variants, best first.

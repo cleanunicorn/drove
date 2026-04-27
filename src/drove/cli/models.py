@@ -231,6 +231,30 @@ def _fmt_size(b: int) -> str:
     return f"{b / 1_048_576:.1f} MB"
 
 
+def _prompt_quant_choice(quants: dict[str, int]) -> str | None:
+    """Show a numbered menu of quants and return the chosen tag, or None for 'all'."""
+    tags = list(quants.keys())
+    typer.echo("Multiple quantizations available:")
+    typer.echo("")
+    width = max(len(t) for t in tags)
+    for i, tag in enumerate(tags, start=1):
+        typer.echo(f"  {i:>2}) {tag:<{width}}  {_fmt_size(quants[tag]):>10}")
+    total = sum(quants.values())
+    typer.echo(f"   a) {'all':<{width}}  {_fmt_size(total):>10}")
+    typer.echo("")
+
+    valid = {str(i) for i in range(1, len(tags) + 1)} | {"a"}
+    while True:
+        raw = typer.prompt(f"Select quantization [1-{len(tags)}/a]").strip().lower()
+        if raw in valid:
+            break
+        typer.echo(f"Invalid choice '{raw}'.")
+
+    if raw == "a":
+        return None
+    return tags[int(raw) - 1]
+
+
 def _print_download_plan(
     plan: DownloadPlan,
     models_dir: Path,
@@ -308,7 +332,15 @@ def download_model(
 
         drove models download unsloth/Qwen3-8B-GGUF:Q8_0 --name qwen3-8b-q8
     """
-    from drove.downloader import resolve_download
+    from drove.downloader import (
+        FileStatus,
+        available_quants,
+        filter_by_quant,
+        infer_local_name,
+        is_sharded,
+        parse_model_ref,
+        resolve_download,
+    )
 
     models_dir = _models_dir(ctx)
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -323,7 +355,21 @@ def download_model(
         typer.echo(f"Failed to resolve repo: {e}", err=True)
         raise typer.Exit(1)
 
-    from drove.downloader import FileStatus
+    _, quant = parse_model_ref(model_ref)
+    if quant is None and not yes:
+        quants = available_quants(plan.files)
+        if len(quants) > 1:
+            chosen = _prompt_quant_choice(quants)
+            if chosen is not None:
+                filtered = filter_by_quant(plan.files, chosen)
+                if filtered:
+                    plan.files = filtered
+                    plan.sharded = is_sharded(list(filtered.keys()))
+                    quant = chosen
+                    if name is None:
+                        plan.local_name = infer_local_name(
+                            plan.repo_id, list(filtered.keys()), quant
+                        )
 
     statuses = plan.check_local_files(models_dir)
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
@@ -354,9 +400,6 @@ def download_model(
         raise typer.Exit(1)
 
     # Save download metadata to sidecar TOML
-    from drove.downloader import parse_model_ref
-
-    _, quant = parse_model_ref(model_ref)
     all_files = sorted(plan.file_names) + sorted(plan.mmproj_files.keys())
     save_download_info(
         primary,

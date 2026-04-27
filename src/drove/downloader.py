@@ -61,9 +61,9 @@ def _fetch_files_with_sizes(
 
 
 def filter_by_quant(files: dict[str, int], quant: str) -> dict[str, int]:
-    """Filter files by case-insensitive quantization tag match."""
-    q = quant.lower()
-    return {f: s for f, s in files.items() if q in Path(f).name.lower()}
+    """Filter files by exact quantization tag match (case-insensitive)."""
+    q = quant.upper()
+    return {f: s for f, s in files.items() if quant_tag(f) == q}
 
 
 _QUANT_RE = re.compile(r"(IQ\w+|Q\d+_\w+|Q\d+|BF\d+|F\d+)", re.IGNORECASE)

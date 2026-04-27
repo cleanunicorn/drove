@@ -36,3 +36,10 @@ def test_available_quants_skips_files_without_tag() -> None:
 def test_filter_by_quant_is_case_insensitive() -> None:
     files = {"m-Q4_K_M.gguf": 1, "m-Q8_0.gguf": 2}
     assert filter_by_quant(files, "q4_k_m") == {"m-Q4_K_M.gguf": 1}
+
+
+def test_filter_by_quant_exact_match_no_overlap() -> None:
+    """Selecting F16 must not also match BF16 files (substring collision)."""
+    files = {"m-F16.gguf": 100, "m-BF16.gguf": 200}
+    assert filter_by_quant(files, "F16") == {"m-F16.gguf": 100}
+    assert filter_by_quant(files, "BF16") == {"m-BF16.gguf": 200}

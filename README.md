@@ -50,6 +50,13 @@ drove chat
 - In-repo docs: [`docs/`](./docs/README.md)
 - Hosted docs target: `https://drove.dev/docs`
 
+## Reporting issues
+
+When opening a new issue, please use the repository issue templates:
+
+- [Bug report](./.github/ISSUE_TEMPLATE/bug_report.md)
+- [Feature request](./.github/ISSUE_TEMPLATE/feature_request.md)
+
 ## Development
 
 ```bash

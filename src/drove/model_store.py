@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from drove.model_config import resolve_model_alias
 
 _MODEL_EXTS = frozenset({".gguf", ".safetensors", ".bin", ".pt"})
+_PRIMARY_PRIORITY = (".gguf", ".safetensors", ".bin", ".pt")
+
+
+class ModelBackend(StrEnum):
+    LLAMA_CPP = "llama.cpp"
+    MLX = "mlx"
 
 
 @dataclass(frozen=True)
@@ -29,7 +36,7 @@ class ModelStore:
         self._dir = models_dir
 
     def resolve(self, name: str) -> Path:
-        """Return the primary GGUF path for *name*, or raise FileNotFoundError.
+        """Return the primary model path for *name*, or raise FileNotFoundError.
 
         Exact local path is always tried first; HuggingFace alias resolution
         only runs as a fallback so an explicit org/repo directory is never
@@ -96,21 +103,30 @@ class ModelStore:
 
     # ── private helpers ──────────────────────────────────────────────────────
 
-    def _find_primary(self, name: str) -> Path | None:
-        """Find the primary GGUF for a local name (no alias resolution).
+    def resolve_backend(self, name: str) -> ModelBackend:
+        """Return backend type for *name*, or raise FileNotFoundError."""
+        primary = self.resolve(name)
+        return self.backend_for_path(primary)
 
-        GGUF-only: non-GGUF formats (.safetensors, .bin, .pt) are intentionally
-        excluded so callers such as ServerManager never receive a path that
-        llama-server cannot open.
-        """
+    @staticmethod
+    def backend_for_path(model_path: Path) -> ModelBackend:
+        """Return backend inferred from model file extension."""
+        if model_path.suffix.lower() == ".gguf":
+            return ModelBackend.LLAMA_CPP
+        return ModelBackend.MLX
+
+    def _find_primary(self, name: str) -> Path | None:
+        """Find the primary model file for a local name (no alias resolution)."""
         subdir = self._dir / name
         if subdir.is_dir():
-            ggufs = sorted(subdir.rglob("*.gguf"))
-            if ggufs:
-                return ggufs[0]
-        candidate = self._dir / f"{name}.gguf"
-        if candidate.exists():
-            return candidate
+            for ext in _PRIMARY_PRIORITY:
+                matches = sorted(subdir.rglob(f"*{ext}"))
+                if matches:
+                    return matches[0]
+        for ext in _PRIMARY_PRIORITY:
+            candidate = self._dir / f"{name}{ext}"
+            if candidate.exists():
+                return candidate
         return None
 
     def _direct_root(self, name: str) -> Path | None:
@@ -118,9 +134,10 @@ class ModelStore:
         subdir = self._dir / name
         if subdir.is_dir():
             return subdir
-        candidate = self._dir / f"{name}.gguf"
-        if candidate.exists():
-            return candidate
+        for ext in _PRIMARY_PRIORITY:
+            candidate = self._dir / f"{name}{ext}"
+            if candidate.exists():
+                return candidate
         return None
 
     @staticmethod
@@ -130,7 +147,13 @@ class ModelStore:
     def _add_entry(self, directory: Path, name: str, results: list[ModelEntry]) -> None:
         files = [f for f in directory.rglob("*") if f.is_file()]
         total = sum(f.stat().st_size for f in files)
-        ggufs = sorted(f for f in files if f.suffix.lower() == ".gguf")
-        primary = ggufs[0] if ggufs else (sorted(files)[0] if files else None)
+        primary = None
+        for ext in _PRIMARY_PRIORITY:
+            matches = sorted(f for f in files if f.suffix.lower() == ext)
+            if matches:
+                primary = matches[0]
+                break
+        if primary is None:
+            primary = sorted(files)[0] if files else None
         if primary:
             results.append(ModelEntry(name, primary, total))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import shutil
 import signal
 import socket
@@ -24,7 +25,7 @@ from drove.model_config import (
     load_global_model_config,
     load_model_config,
 )
-from drove.model_store import ModelStore
+from drove.model_store import ModelBackend, ModelStore
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ _STDERR_MAX_BYTES = 256 * 1024  # keep last 256 KB of stderr
 
 
 class _ModelInstance:
-    """State for a single running llama-server process."""
+    """State for a single running model-server process."""
 
     def __init__(
         self,
@@ -43,12 +44,14 @@ class _ModelInstance:
         process: asyncio.subprocess.Process,
         port: int,
         model_path: Path,
+        backend: ModelBackend,
         config_mtimes: tuple[float, float],
     ) -> None:
         self.model_name = model_name
         self.process = process
         self.port = port
         self.model_path = model_path
+        self.backend = backend
         self.config_mtimes = config_mtimes  # (per-model mtime, global mtime) at startup
         self.needs_restart: bool = False
         self.loaded_at: float = time.time()
@@ -106,9 +109,9 @@ class _ModelInstance:
 
 
 class ServerManager:
-    """Manages multiple llama-server subprocesses, one per model.
+    """Manages multiple model-server subprocesses, one per model.
 
-    Each model gets its own llama-server on a dynamically assigned port.
+    Each model gets its own backend server on a dynamically assigned port.
     Models are started lazily on first request and stopped after idle timeout.
     """
 
@@ -221,7 +224,7 @@ class ServerManager:
             inst.last_request_time = time.monotonic()
 
     async def ensure_running(self, model_name: str, *, claim: bool = False) -> None:
-        """Ensure llama-server is running for the requested model.
+        """Ensure model backend server is running for the requested model.
 
         If the model is already loaded with an up-to-date config, this is a no-op.
         When the per-model or global config file has been modified since startup,
@@ -316,53 +319,57 @@ class ServerManager:
         await self._stop_instance(victim_name)
 
     async def stop(self) -> None:
-        """Gracefully stop all running llama-server processes."""
+        """Gracefully stop all running model backend processes."""
         async with self._lock:
             names = list(self._instances.keys())
             for name in names:
                 await self._stop_instance(name)
 
     async def stop_model(self, model_name: str) -> None:
-        """Gracefully stop a specific model's llama-server."""
+        """Gracefully stop a specific model backend process."""
         async with self._lock:
             await self._stop_instance(model_name)
 
     async def _start(self, model_name: str) -> None:
-        binary = self._config.llama_server_bin
+        model_path = self._resolve_model(model_name)
+        backend = ModelStore(self._config.models_dir).backend_for_path(model_path)
+        cmd = self._backend_command(backend)
+        binary = cmd[0]
         if not shutil.which(binary):
             raise FileNotFoundError(
-                f"llama-server binary '{binary}' not found on PATH. "
-                "Install llama.cpp or set 'llama_server_bin' in config."
+                f"Backend binary '{binary}' not found on PATH for model '{model_name}'. "
+                "Install the required backend or adjust config."
             )
-
-        model_path = self._resolve_model(model_name)
         model_cfg = load_model_config(model_path)
 
         port = _find_free_port()
-        args = self._build_args(model_path, model_cfg, port)
+        args = self._build_args(model_path, model_cfg, port, backend)
 
-        logger.info("Starting llama-server: %s %s", binary, " ".join(args))
+        logger.info("Starting model backend (%s): %s %s", backend, binary, " ".join(args))
         process = await asyncio.create_subprocess_exec(
             binary,
+            *cmd[1:],
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
         config_mtimes = self._get_config_mtimes(model_path)
-        inst = _ModelInstance(model_name, process, port, model_path, config_mtimes)
+        inst = _ModelInstance(model_name, process, port, model_path, backend, config_mtimes)
         inst.start_stderr_reader()
         self._instances[model_name] = inst
 
         try:
             await self._wait_for_health(inst)
         except (RuntimeError, TimeoutError) as e:
-            logger.error("llama-server failed to start for model=%s: %s", model_name, e)
+            logger.error("Model backend failed to start for model=%s: %s", model_name, e)
             await self._stop_instance(model_name)
             raise
 
         self._start_idle_watcher(model_name)
-        logger.info("llama-server ready (model=%s, port=%d)", model_name, port)
+        logger.info(
+            "Model backend ready (model=%s, backend=%s, port=%d)", model_name, backend, port
+        )
 
     async def _stop_instance(self, model_name: str) -> None:
         task = self._idle_tasks.pop(model_name, None)
@@ -376,46 +383,54 @@ class ServerManager:
         if not inst.is_running:
             return
 
-        logger.info("Stopping llama-server (model=%s, pid=%d)", model_name, inst.process.pid)
+        logger.info("Stopping model backend (model=%s, pid=%d)", model_name, inst.process.pid)
         try:
             inst.process.send_signal(signal.SIGTERM)
             try:
                 await asyncio.wait_for(inst.process.wait(), timeout=10.0)
             except TimeoutError:
-                logger.warning("llama-server did not stop in time, sending SIGKILL")
+                logger.warning("Model backend did not stop in time, sending SIGKILL")
                 inst.process.kill()
                 await inst.process.wait()
         except ProcessLookupError:
             pass  # already gone
 
     async def _wait_for_health(self, inst: _ModelInstance) -> None:
-        url = f"http://{self._config.llama_server_host}:{inst.port}/health"
         timeout = self._config.startup_timeout_seconds
         deadline = time.monotonic() + timeout
+        health_paths = ["/health", "/v1/models"]
         async with httpx.AsyncClient() as client:
             while time.monotonic() < deadline:
                 if not inst.is_running:
                     # Give the stderr reader a moment to finish draining
                     await asyncio.sleep(0.2)
-                    msg = "llama-server exited unexpectedly during startup"
+                    msg = "Model backend exited unexpectedly during startup"
                     stderr = inst.stderr_text
                     if stderr:
                         msg += f"\nstderr: {stderr}"
                     raise RuntimeError(msg)
-                try:
-                    resp = await client.get(url, timeout=2.0)
-                    if resp.status_code == 200:
-                        return
-                except httpx.TransportError:
-                    pass
+                for path in health_paths:
+                    try:
+                        url = f"http://{self._config.llama_server_host}:{inst.port}{path}"
+                        resp = await client.get(url, timeout=2.0)
+                        if resp.status_code == 200:
+                            return
+                    except httpx.TransportError:
+                        continue
                 await asyncio.sleep(HEALTH_CHECK_INTERVAL)
         stderr = inst.stderr_text
-        msg = f"llama-server did not become healthy within {timeout}s"
+        msg = f"Model backend did not become healthy within {timeout}s"
         if stderr:
             msg += f"\nstderr (last lines):\n{_tail(stderr, 30)}"
         raise TimeoutError(msg)
 
-    def _build_args(self, model_path: Path, model_cfg: ModelConfig, port: int) -> list[str]:
+    def _build_args(
+        self,
+        model_path: Path,
+        model_cfg: ModelConfig,
+        port: int,
+        backend: ModelBackend,
+    ) -> list[str]:
         from drove.model_config import ModelConfig  # local import to avoid circular
 
         # Start with global defaults from config.toml [llama_server]
@@ -433,9 +448,10 @@ class ServerManager:
         if merged.mmproj and not Path(merged.mmproj).is_absolute():
             merged = merged.model_copy(update={"mmproj": str(model_path.parent / merged.mmproj)})
 
+        model_arg = str(model_path if backend is ModelBackend.LLAMA_CPP else model_path.parent)
         args = [
             "--model",
-            str(model_path),
+            model_arg,
             "--host",
             self._config.llama_server_host,
             "--port",
@@ -446,6 +462,11 @@ class ServerManager:
 
     def _resolve_model(self, model_name: str) -> Path:
         return ModelStore(self._config.models_dir).resolve(model_name)
+
+    def _backend_command(self, backend: ModelBackend) -> list[str]:
+        if backend is ModelBackend.LLAMA_CPP:
+            return shlex.split(self._config.llama_server_bin)
+        return shlex.split(self._config.mlx_server_bin)
 
     def _start_idle_watcher(self, model_name: str) -> None:
         self._idle_tasks[model_name] = asyncio.create_task(self._idle_watcher(model_name))

@@ -27,7 +27,13 @@ logger = logging.getLogger(__name__)
 _CONFIG_POLL_SECONDS = 5
 
 # Settings that cannot be changed without restarting the proxy process
-_RESTART_REQUIRED = {"listen_host", "listen_port"}
+_RESTART_REQUIRED = {
+    "listen_host",
+    "listen_port",
+    "listen_port_https",
+    "ssl_certfile",
+    "ssl_keyfile",
+}
 
 # Strong references to fire-and-forget tasks so they are not garbage-collected.
 _background_tasks: set[asyncio.Task[None]] = set()

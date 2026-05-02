@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Annotated
@@ -22,7 +23,18 @@ server_app = typer.Typer(
 def _server_default(
     ctx: typer.Context,
     host: Annotated[str | None, typer.Option(help="Listen host.")] = None,
-    port: Annotated[int | None, typer.Option(help="Listen port.")] = None,
+    port: Annotated[int | None, typer.Option(help="Listen port (HTTP).")] = None,
+    https_port: Annotated[
+        int | None, typer.Option("--https-port", help="Listen port (HTTPS).")
+    ] = None,
+    ssl_certfile: Annotated[
+        Path | None,
+        typer.Option("--ssl-certfile", help="TLS certificate file (enables HTTPS)."),
+    ] = None,
+    ssl_keyfile: Annotated[
+        Path | None,
+        typer.Option("--ssl-keyfile", help="TLS private key file (enables HTTPS)."),
+    ] = None,
 ) -> None:
     """Start the drove proxy server (default when no subcommand is given)."""
     if ctx.invoked_subcommand is not None:
@@ -35,24 +47,78 @@ def _server_default(
         config = config.model_copy(update={"listen_host": host})
     if port:
         config = config.model_copy(update={"listen_port": port})
+    if https_port:
+        config = config.model_copy(update={"listen_port_https": https_port})
+    if ssl_certfile:
+        config = config.model_copy(update={"ssl_certfile": ssl_certfile.expanduser()})
+    if ssl_keyfile:
+        config = config.model_copy(update={"ssl_keyfile": ssl_keyfile.expanduser()})
 
     config.models_dir.mkdir(parents=True, exist_ok=True)
 
     cfg_path: Path = ctx.obj["config_path"]
 
-    typer.echo(f"Starting drove on {config.listen_host}:{config.listen_port}")
+    https_enabled = bool(config.ssl_certfile and config.ssl_keyfile)
+    if (config.ssl_certfile and not config.ssl_keyfile) or (
+        config.ssl_keyfile and not config.ssl_certfile
+    ):
+        typer.echo(
+            "Both --ssl-certfile and --ssl-keyfile must be set to enable HTTPS.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if https_enabled:
+        for label, p in (
+            ("ssl_certfile", config.ssl_certfile),
+            ("ssl_keyfile", config.ssl_keyfile),
+        ):
+            assert p is not None
+            if not p.exists():
+                typer.echo(f"{label} not found: {p}", err=True)
+                raise typer.Exit(2)
+
+    typer.echo(f"Starting drove on {config.listen_host}:{config.listen_port} (HTTP)")
+    if https_enabled:
+        typer.echo(
+            f"            and {config.listen_host}:{config.listen_port_https} (HTTPS)"
+        )
     typer.echo(f"Models directory: {config.models_dir}")
     typer.echo(f"Idle timeout: {config.idle_timeout_seconds}s")
     if cfg_path.exists():
         typer.echo(f"Config file: {cfg_path} (watching for changes)")
 
     fastapi_app = create_app(config, config_path=cfg_path if cfg_path.exists() else None)
-    uvicorn.run(
+
+    if not https_enabled:
+        uvicorn.run(
+            fastapi_app,
+            host=config.listen_host,
+            port=config.listen_port,
+            log_level="warning",
+        )
+        return
+
+    http_cfg = uvicorn.Config(
         fastapi_app,
         host=config.listen_host,
         port=config.listen_port,
         log_level="warning",
     )
+    https_cfg = uvicorn.Config(
+        fastapi_app,
+        host=config.listen_host,
+        port=config.listen_port_https,
+        log_level="warning",
+        ssl_certfile=str(config.ssl_certfile),
+        ssl_keyfile=str(config.ssl_keyfile),
+    )
+    http_server = uvicorn.Server(http_cfg)
+    https_server = uvicorn.Server(https_cfg)
+
+    async def _serve() -> None:
+        await asyncio.gather(http_server.serve(), https_server.serve())
+
+    asyncio.run(_serve())
 
 
 def _base_url(ctx: typer.Context, host: str | None, port: int | None) -> str:

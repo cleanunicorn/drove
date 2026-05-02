@@ -55,6 +55,9 @@ class Config(BaseSettings):
     observe_dir: Path = DEFAULT_OBSERVE_DIR
     listen_host: str = "0.0.0.0"
     listen_port: int = 8080
+    listen_port_https: int = 8443
+    ssl_certfile: Path | None = None
+    ssl_keyfile: Path | None = None
     allowed_tools: list[str] = []
     llama_server_bin: str = "llama-server"
     startup_timeout_seconds: int = 300  # max wait for llama-server to become healthy
@@ -82,6 +85,13 @@ class Config(BaseSettings):
     def expand_path(cls, v: Any) -> Path:
         return Path(v).expanduser()
 
+    @field_validator("ssl_certfile", "ssl_keyfile", mode="before")
+    @classmethod
+    def expand_optional_path(cls, v: Any) -> Path | None:
+        if v is None or v == "":
+            return None
+        return Path(v).expanduser()
+
     def save(self, path: Path = DEFAULT_CONFIG_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {
@@ -91,6 +101,9 @@ class Config(BaseSettings):
             "observe_dir": str(self.observe_dir),
             "listen_host": self.listen_host,
             "listen_port": self.listen_port,
+            "listen_port_https": self.listen_port_https,
+            "ssl_certfile": str(self.ssl_certfile) if self.ssl_certfile else "",
+            "ssl_keyfile": str(self.ssl_keyfile) if self.ssl_keyfile else "",
             "allowed_tools": self.allowed_tools,
             "llama_server_bin": self.llama_server_bin,
             "startup_timeout_seconds": self.startup_timeout_seconds,

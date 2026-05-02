@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -34,6 +35,12 @@ def _summarize(record: object) -> dict[str, object]:
 
 def create_observe_app(observe_dir: Path, model: str | None = None) -> FastAPI:
     app = FastAPI(title="drove observe")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
     @app.get("/api/records")

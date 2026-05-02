@@ -13,6 +13,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from drove.config import Config, load_config
@@ -74,6 +75,12 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     stats = ProxyStats()
 
     app = FastAPI(title="drove", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.manager = manager
     app.state.config = config
     app.state.stats = stats

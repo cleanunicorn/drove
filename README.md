@@ -6,14 +6,9 @@ A llama.cpp server manager that wakes models when you need them and shuts them d
 
 ## Install
 
+Clone repo
 ```bash
-curl -LsSf drove.sh | sh
-```
-
-Or with uv:
-
-```bash
-uv tool install git+https://github.com/cleanunicorn/drove
+make install
 ```
 
 ## Quick start

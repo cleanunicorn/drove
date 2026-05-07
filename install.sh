@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="cleanunicorn/drove"
+REPO="${DROVE_REPO:-cleanunicorn/drove}"
 GITHUB_URL="https://github.com/${REPO}"
+DEFAULT_INSTALL_SOURCE="git+${GITHUB_URL}"
+INSTALL_SOURCE="${1:-${DROVE_INSTALL_SOURCE:-${DEFAULT_INSTALL_SOURCE}}}"
+PYTHON_REQUEST="${DROVE_PYTHON:-3.14}"
 
 # Colors
 RED='\033[0;31m'
@@ -11,10 +14,18 @@ YELLOW='\033[1;33m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-info()  { echo -e "${GREEN}[drove]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[drove] warning:${NC} $*"; }
+info() { echo -e "${GREEN}[drove]${NC} $*"; }
+warn() { echo -e "${YELLOW}[drove] warning:${NC} $*"; }
 error() { echo -e "${RED}[drove] error:${NC} $*" >&2; exit 1; }
-bold()  { echo -e "${BOLD}$*${NC}"; }
+bold() { echo -e "${BOLD}$*${NC}"; }
+
+require_command() {
+    local cmd="$1"
+    local message="$2"
+    if ! command -v "${cmd}" &>/dev/null; then
+        error "${message}"
+    fi
+}
 
 echo ""
 bold "  drove installer"
@@ -23,16 +34,17 @@ echo ""
 
 # Check OS
 OS="$(uname -s)"
-case "$OS" in
+case "${OS}" in
     Linux|Darwin) ;;
-    *) error "Unsupported OS: $OS. Only Linux and macOS are supported." ;;
+    *) error "Unsupported OS: ${OS}. Only Linux and macOS are supported." ;;
 esac
 
 # Install uv if not present
 if ! command -v uv &>/dev/null; then
     info "uv not found — installing uv..."
+    require_command curl "curl is required to install uv. Install curl, then re-run this script."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    # Add uv to PATH for this session
+    # Add uv to PATH for this session.
     export PATH="${HOME}/.local/bin:${PATH}"
     if ! command -v uv &>/dev/null; then
         error "uv installation failed. Install uv manually and re-run this script: https://docs.astral.sh/uv/getting-started/installation/"
@@ -42,11 +54,13 @@ else
     info "uv found: $(uv --version)"
 fi
 
-# Install drove via uv tool (uv will fetch Python 3.14 automatically if needed)
-info "Installing drove from ${GITHUB_URL} ..."
-uv tool install "git+${GITHUB_URL}"
+# Install drove via uv tool. By default this installs from GitHub, but CI and
+# contributors can pass a local checkout path as the first argument or via
+# DROVE_INSTALL_SOURCE.
+info "Installing drove from ${INSTALL_SOURCE} with Python ${PYTHON_REQUEST} ..."
+uv tool install --force --python "${PYTHON_REQUEST}" "${INSTALL_SOURCE}"
 
-# Ensure uv tool bin dir is on PATH
+# Ensure uv tool bin dir is on PATH for post-install checks in this session.
 UV_TOOL_BIN="$(uv tool dir --bin 2>/dev/null || echo "${HOME}/.local/bin")"
 if [[ ":${PATH}:" != *":${UV_TOOL_BIN}:"* ]]; then
     export PATH="${UV_TOOL_BIN}:${PATH}"
@@ -66,16 +80,16 @@ echo ""
 echo "  Quick start:"
 echo "    drove init                                    # Create config file"
 echo "    drove models download unsloth/Qwen3-8B-GGUF  # Download a model"
-echo "    drove server                                  # Start the proxy"
+echo "    drove serve                                   # Start the proxy"
 echo "    drove chat                                    # Interactive chat"
 echo ""
 
-# Warn if llama-server is missing (required runtime dependency)
+# Warn if llama-server is missing (required runtime dependency).
 if ! command -v llama-server &>/dev/null; then
     echo ""
     warn "llama-server not found in PATH."
     warn "drove requires llama.cpp — install it before running the server:"
-    case "$OS" in
+    case "${OS}" in
         Darwin)
             warn "  brew install llama.cpp"
             ;;

@@ -8,7 +8,6 @@ import pytest
 
 from drove.model_store import ModelStore
 
-
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -60,7 +59,7 @@ def test_resolve_exact_local_path_takes_priority_over_alias(tmp_path: Path) -> N
     # Explicit local directory: org/repo/model.gguf
     primary = _make_gguf(tmp_path, "org", "repo", "model.gguf")
     # A sidecar TOML that maps the same "org/repo" repo_id to a different local name
-    other = _make_gguf(tmp_path, "other-model", "other.gguf")
+    _make_gguf(tmp_path, "other-model", "other.gguf")
     (tmp_path / "other-model" / "other.toml").write_bytes(
         b'[download]\nrepo_id = "org/repo"\n'
     )

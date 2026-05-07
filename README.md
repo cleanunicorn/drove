@@ -6,10 +6,23 @@ A llama.cpp server manager that wakes models when you need them and shuts them d
 
 ## Install
 
-Clone repo
+### Install script
+
+Install `drove` with the repository install script. It installs [`uv`](https://docs.astral.sh/uv/) if needed, then installs the `drove` CLI as a `uv` tool.
+
 ```bash
-make install
+curl -fsSL https://raw.githubusercontent.com/cleanunicorn/drove/main/install.sh | bash
 ```
+
+Or run the same script from a local checkout:
+
+```bash
+git clone https://github.com/cleanunicorn/drove.git
+cd drove
+./install.sh
+```
+
+After installation, make sure the `uv` tool bin directory is on your `PATH` if the installer prints a PATH warning. `drove` also requires `llama-server` from llama.cpp before you start the proxy.
 
 ## Quick start
 

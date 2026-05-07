@@ -4,7 +4,7 @@ This document describes how a new version of `drove` is cut. The process is **fu
 
 ## TL;DR
 
-1. Author a PR. Pick a Conventional Commit type for the **PR title**.
+1. Author a PR. Pick a [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/) type for the **PR title**.
 2. Add a bullet to `CHANGELOG.md` under `## [Unreleased]`.
 3. **Squash-merge** to `main`.
 4. The `Release` workflow bumps the version, rewrites the changelog, tags `vX.Y.Z`, and creates a GitHub Release.

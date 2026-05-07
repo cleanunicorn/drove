@@ -57,6 +57,7 @@ class Config(BaseSettings):
     listen_port: int = 8080
     allowed_tools: list[str] = []
     llama_server_bin: str = "llama-server"
+    mlx_server_bin: str = "mlx_lm.server"
     startup_timeout_seconds: int = 300  # max wait for llama-server to become healthy
     idle_timeout_seconds: int = 1800  # 30 minutes
     max_loaded_models: int = 1
@@ -93,6 +94,7 @@ class Config(BaseSettings):
             "listen_port": self.listen_port,
             "allowed_tools": self.allowed_tools,
             "llama_server_bin": self.llama_server_bin,
+            "mlx_server_bin": self.mlx_server_bin,
             "startup_timeout_seconds": self.startup_timeout_seconds,
             "idle_timeout_seconds": self.idle_timeout_seconds,
             "max_loaded_models": self.max_loaded_models,

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from drove.config import Config
+from drove.model_store import ModelBackend
 from drove.server_manager import ServerManager, _ModelInstance
 
 
@@ -33,7 +34,9 @@ def make_fake_instance(
     process.returncode = None  # process is running
     process.pid = 12345
     process.wait = AsyncMock(return_value=0)
-    inst = _ModelInstance(model_name, process, 9999, model_path, config_mtimes)
+    inst = _ModelInstance(
+        model_name, process, 9999, model_path, ModelBackend.LLAMA_CPP, config_mtimes
+    )
     inst.active_requests = active_requests
     return inst
 
@@ -236,3 +239,14 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+def test_backend_command_selection(tmp_path: Path) -> None:
+    config = Config(
+        models_dir=tmp_path / "models", listen_port=8080, mlx_server_bin="python -m mlx_lm.server"
+    )
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+
+    assert manager._backend_command(ModelBackend.LLAMA_CPP) == ["llama-server"]
+    assert manager._backend_command(ModelBackend.MLX) == ["python", "-m", "mlx_lm.server"]

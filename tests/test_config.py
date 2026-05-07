@@ -16,6 +16,7 @@ def test_defaults(tmp_path: Path) -> None:
     assert cfg.listen_port == 8080
     assert cfg.idle_timeout_seconds == 1800
     assert cfg.llama_server_bin == "llama-server"
+    assert cfg.mlx_server_bin == "mlx_lm.server"
 
 
 def test_toml_overrides_defaults(tmp_path: Path) -> None:

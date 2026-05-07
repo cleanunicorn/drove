@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from drove.model_store import ModelStore
-
+from drove.model_store import ModelBackend, ModelStore
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -60,21 +59,25 @@ def test_resolve_exact_local_path_takes_priority_over_alias(tmp_path: Path) -> N
     # Explicit local directory: org/repo/model.gguf
     primary = _make_gguf(tmp_path, "org", "repo", "model.gguf")
     # A sidecar TOML that maps the same "org/repo" repo_id to a different local name
-    other = _make_gguf(tmp_path, "other-model", "other.gguf")
-    (tmp_path / "other-model" / "other.toml").write_bytes(
-        b'[download]\nrepo_id = "org/repo"\n'
-    )
+    _make_gguf(tmp_path, "other-model", "other.gguf")
+    (tmp_path / "other-model" / "other.toml").write_bytes(b'[download]\nrepo_id = "org/repo"\n')
     # resolve() must return the explicit directory, not redirect via alias
     assert ModelStore(tmp_path).resolve("org/repo") == primary
 
 
-def test_resolve_non_gguf_formats_not_returned(tmp_path: Path) -> None:
-    """resolve() must return None (→ FileNotFoundError) for non-GGUF-only dirs."""
+def test_resolve_safetensors_returns_primary(tmp_path: Path) -> None:
     model_dir = tmp_path / "unconverted"
     model_dir.mkdir()
-    (model_dir / "model.safetensors").write_bytes(b"")
-    with pytest.raises(FileNotFoundError):
-        ModelStore(tmp_path).resolve("unconverted")
+    primary = model_dir / "model.safetensors"
+    primary.write_bytes(b"")
+    assert ModelStore(tmp_path).resolve("unconverted") == primary
+
+
+def test_resolve_backend_detects_mlx_for_safetensors(tmp_path: Path) -> None:
+    model_dir = tmp_path / "mlx-model"
+    model_dir.mkdir()
+    (model_dir / "weights.safetensors").write_bytes(b"")
+    assert ModelStore(tmp_path).resolve_backend("mlx-model") is ModelBackend.MLX
 
 
 # ── find_root ────────────────────────────────────────────────────────────────

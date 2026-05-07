@@ -8,6 +8,7 @@ This directory contains the in-repo documentation for `drove`.
 - [Configuration](./configuration.md)
 - [CLI reference](./cli.md)
 - [Architecture](./architecture.md)
+- [Release process](./deploy.md)
 
 ## Documentation status
 

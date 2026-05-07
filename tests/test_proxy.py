@@ -59,7 +59,7 @@ def test_proxy_forwards_when_server_running(tmp_path: Path) -> None:
     fake_response = MagicMock(spec=httpx.Response)
     fake_response.status_code = 200
     fake_response.headers = httpx.Headers({"content-type": "application/json"})
-    fake_response.aiter_raw = AsyncMock(return_value=aiter([b'{"ok": true}']))
+    fake_response.aiter_raw = lambda: aiter([b'{"ok": true}'])
 
     async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
         pass

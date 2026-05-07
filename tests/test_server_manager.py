@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
 
@@ -236,3 +238,48 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+async def test_wait_for_health_timeout(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    config.startup_timeout_seconds = 1.0
+    manager = ServerManager(config)
+    model_path = make_model(config)
+
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    # Mock httpx to always return 503
+    mock_resp = MagicMock()
+    mock_resp.status_code = 503
+
+    # We need to mock time.monotonic to simulate time passing
+    # and asyncio.sleep to avoid waiting.
+    side_effects = [100.0, 102.0]  # Initial time, then after one loop iteration it's past deadline
+
+    with (
+        patch(
+            "drove.server_manager.httpx.AsyncClient.get",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ),
+        patch("drove.server_manager.time.monotonic", side_effect=side_effects),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        with pytest.raises(TimeoutError, match="did not become healthy"):
+            await manager._wait_for_health(inst)
+
+
+async def test_wait_for_health_process_exit(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst.process.returncode = 1  # Simulate process exit
+    inst._stderr_buf = bytearray(b"some error message")
+
+    with (
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        with pytest.raises(RuntimeError, match=r"exited unexpectedly[\s\S]*some error message"):
+            await manager._wait_for_health(inst)

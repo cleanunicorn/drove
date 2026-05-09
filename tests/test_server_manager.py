@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
 
@@ -236,3 +239,63 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+async def test_wait_for_health_success(tmp_path: Path) -> None:
+    """_wait_for_health returns when /health returns 200."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 200
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=resp):
+        await manager._wait_for_health(inst)
+    # Success returns None
+
+
+async def test_wait_for_health_timeout(tmp_path: Path) -> None:
+    """_wait_for_health raises TimeoutError if health check never succeeds."""
+    config = make_config(tmp_path)
+    config.startup_timeout_seconds = 0.1
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst._stderr_buf.extend(b"error: something went wrong")
+
+    # Mock get to always fail with transport error
+    with (
+        patch("httpx.AsyncClient.get", side_effect=httpx.TransportError("failed")),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+    ):
+        with pytest.raises(TimeoutError) as exc:
+            await manager._wait_for_health(inst)
+
+    assert "did not become healthy" in str(exc.value)
+    assert "error: something went wrong" in str(exc.value)
+    assert mock_sleep.called
+
+
+async def test_wait_for_health_unexpected_exit(tmp_path: Path) -> None:
+    """_wait_for_health raises RuntimeError if the process exits during startup."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst._stderr_buf.extend(b"CRASH: out of memory")
+
+    # Mock get to fail initially
+    with (
+        patch("httpx.AsyncClient.get", side_effect=httpx.TransportError("failed")),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        # Simulate process exit after one loop
+        inst.process.returncode = 1
+
+        with pytest.raises(RuntimeError) as exc:
+            await manager._wait_for_health(inst)
+
+    assert "exited unexpectedly" in str(exc.value)
+    assert "CRASH: out of memory" in str(exc.value)

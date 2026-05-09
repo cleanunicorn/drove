@@ -16,7 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PR-title lint (`.github/workflows/pr-title.yml`) enforcing Conventional Commits so that the squash-merged title drives the correct semver bump.
 - `docs/deploy.md` documenting the end-to-end release process for repository maintainers, with worked example and maintainer checklist.
 
+### Added
+- Added test coverage for `llama-server` health check timeouts and unexpected exits during startup.
+
 ### Fixed
+- Fixed a `RuntimeWarning` in proxy tests caused by incorrect async mocking.
 - Fixed model-store test lint issues so full-repository Ruff checks pass.
 
 ## [0.1.0]

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
 
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
@@ -185,7 +189,7 @@ async def test_ensure_running_claim_prevents_eviction_race(tmp_path: Path) -> No
     # has an in-flight request and wait (we patch the wait loop to observe this).
     wait_count = 0
 
-    original_sleep = __import__("asyncio").sleep
+    original_sleep = asyncio.sleep
 
     async def fake_sleep(seconds: float) -> None:
         nonlocal wait_count
@@ -236,3 +240,41 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+async def test_wait_for_health_timeout(tmp_path: Path) -> None:
+    """_wait_for_health must raise TimeoutError if the server never becomes healthy."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, startup_timeout_seconds=1)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+    model_path = make_model(config)
+
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    # Keep it running so it doesn't trigger the RuntimeError path
+    inst.process.returncode = None
+
+    # httpx.AsyncClient.get will be called. We want it to always fail.
+    # Also patch asyncio.sleep to speed up the test
+    with (
+        patch("httpx.AsyncClient.get", side_effect=httpx.TransportError("connection refused")),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        with pytest.raises(TimeoutError, match="did not become healthy"):
+            await manager._wait_for_health(inst)
+
+
+async def test_wait_for_health_unexpected_exit(tmp_path: Path) -> None:
+    """_wait_for_health must raise RuntimeError if the process exits during startup."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst.process.returncode = 1
+    # Mock stderr buffer
+    inst._stderr_buf = bytearray(b"error: invalid model file")
+
+    with pytest.raises(RuntimeError, match="exited unexpectedly during startup") as excinfo:
+        await manager._wait_for_health(inst)
+
+    assert "error: invalid model file" in str(excinfo.value)

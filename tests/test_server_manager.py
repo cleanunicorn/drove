@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
 
@@ -236,3 +239,38 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+async def test_wait_for_health_timeout(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    config.startup_timeout_seconds = 1.0
+    manager = ServerManager(config)
+    model_path = make_model(config)
+
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    # Mock httpx to always fail
+    with (
+        patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("failed")),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock),
+        patch("drove.server_manager.time.monotonic") as mock_time,
+    ):
+        # First call: t=0, second call: t=2.0 (exceeds 1.0s timeout)
+        mock_time.side_effect = [0.0, 2.0]
+
+        with pytest.raises(TimeoutError, match="did not become healthy"):
+            await manager._wait_for_health(inst)
+
+
+async def test_wait_for_health_process_exit(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst.process.returncode = 1
+    inst._stderr_buf = bytearray(b"some error on stderr")
+
+    with patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock):
+        with pytest.raises(RuntimeError, match=r"(?s)exited unexpectedly.*some error on stderr"):
+            await manager._wait_for_health(inst)

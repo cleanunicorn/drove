@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+
+import pytest
 
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
@@ -236,3 +238,54 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+async def test_wait_for_health_timeout(tmp_path: Path) -> None:
+    """_wait_for_health should raise TimeoutError if the server never becomes healthy."""
+    config = make_config(tmp_path)
+    config.startup_timeout_seconds = 1.0
+    manager = ServerManager(config)
+
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst._stderr_buf.extend(b"some error logs")
+
+    # Mock time and sleep to speed up the test
+    now = 0.0
+
+    def fake_monotonic() -> float:
+        nonlocal now
+        return now
+
+    async def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    with (
+        patch("time.monotonic", side_effect=fake_monotonic),
+        patch("drove.server_manager.asyncio.sleep", side_effect=fake_sleep),
+        patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get,
+    ):
+        # Always return 503
+        mock_get.return_value = MagicMock(status_code=503)
+
+        with pytest.raises(TimeoutError, match="did not become healthy within 1.0s") as excinfo:
+            await manager._wait_for_health(inst)
+
+        assert "some error logs" in str(excinfo.value)
+
+
+async def test_wait_for_health_unexpected_exit(tmp_path: Path) -> None:
+    """_wait_for_health should raise RuntimeError if the process exits during startup."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst._stderr_buf.extend(b"crash on startup")
+
+    # Mock process as NOT running
+    with patch.object(_ModelInstance, "is_running", new_callable=PropertyMock(return_value=False)):
+        with pytest.raises(RuntimeError, match="exited unexpectedly during startup") as excinfo:
+            await manager._wait_for_health(inst)
+        assert "crash on startup" in str(excinfo.value)

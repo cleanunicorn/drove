@@ -273,6 +273,7 @@ async def test_ensure_running_fails_on_health_timeout(tmp_path: Path) -> None:
             await manager.ensure_running("testmodel")
 
     mock_stop.assert_awaited_once_with("testmodel")
+# End of tests
 
 
 async def test_ensure_running_fails_on_unexpected_exit(tmp_path: Path) -> None:

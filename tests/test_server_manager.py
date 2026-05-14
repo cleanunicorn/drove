@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+
+import httpx
+import pytest
 
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
@@ -236,3 +240,60 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+async def test_ensure_running_fails_when_binary_not_found(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    make_model(config, "testmodel")
+
+    with patch("shutil.which", return_value=None):
+        with pytest.raises(FileNotFoundError, match="llama-server binary 'llama-server' not found"):
+            await manager.ensure_running("testmodel")
+
+
+async def test_ensure_running_fails_on_health_timeout(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    config.startup_timeout_seconds = 0.1
+    manager = ServerManager(config)
+    make_model(config, "testmodel")
+
+    process = MagicMock(spec=asyncio.subprocess.Process)
+    type(process).returncode = PropertyMock(return_value=None)
+    process.stderr = MagicMock()
+    process.stderr.read = AsyncMock(return_value=b"")
+
+    with (
+        patch("shutil.which", return_value="/bin/llama-server"),
+        patch("drove.server_manager.asyncio.create_subprocess_exec", return_value=process),
+        patch("httpx.AsyncClient.get", side_effect=httpx.TransportError("failed")),
+        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
+    ):
+        with pytest.raises(TimeoutError, match="llama-server did not become healthy"):
+            await manager.ensure_running("testmodel")
+
+    mock_stop.assert_awaited_once_with("testmodel")
+
+
+async def test_ensure_running_fails_on_unexpected_exit(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    make_model(config, "testmodel")
+
+    process = MagicMock(spec=asyncio.subprocess.Process)
+    type(process).returncode = PropertyMock(side_effect=[None, 1])
+    process.stderr = MagicMock()
+    # Mock stderr to return some error text
+    process.stderr.read = AsyncMock(side_effect=[b"error during startup", b""])
+
+    with (
+        patch("shutil.which", return_value="/bin/llama-server"),
+        patch("drove.server_manager.asyncio.create_subprocess_exec", return_value=process),
+        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
+    ):
+        with pytest.raises(
+            RuntimeError, match=r"(?s)exited unexpectedly.*error during startup"
+        ):
+            await manager.ensure_running("testmodel")
+
+    mock_stop.assert_awaited_once_with("testmodel")

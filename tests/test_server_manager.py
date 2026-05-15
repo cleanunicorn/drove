@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
 
@@ -236,3 +239,66 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+async def test_wait_for_health_success(tmp_path: Path) -> None:
+    """_wait_for_health returns successfully when /health returns 200."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200))
+
+    with (
+        patch("drove.server_manager.httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        await manager._wait_for_health(inst)
+
+
+async def test_wait_for_health_timeout(tmp_path: Path) -> None:
+    """_wait_for_health raises TimeoutError and includes stderr when deadline is reached."""
+    config = make_config(tmp_path)
+    config.startup_timeout_seconds = 1.0
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst._stderr_buf.extend(b"some startup logs\nmore logs")
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(503))
+
+    # Mock time.monotonic to simulate time passing beyond the deadline
+    # 1. deadline calculation: time.monotonic() -> 0
+    # 2. loop check: time.monotonic() -> 0 (0 < 1.0 is true)
+    # 3. loop check after sleep/fail: time.monotonic() -> 2.0 (2.0 < 1.0 is false)
+    with (
+        patch("drove.server_manager.httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock),
+        patch("drove.server_manager.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
+    ):
+        with pytest.raises(TimeoutError) as exc_info:
+            await manager._wait_for_health(inst)
+
+    assert "did not become healthy" in str(exc_info.value)
+    assert "some startup logs" in str(exc_info.value)
+    assert "more logs" in str(exc_info.value)
+
+
+async def test_wait_for_health_process_exit(tmp_path: Path) -> None:
+    """_wait_for_health raises RuntimeError immediately if the process exits."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst._stderr_buf.extend(b"FATAL: could not load model")
+
+    # Simulate process exit
+    inst.process.returncode = 1
+
+    with patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock):
+        with pytest.raises(RuntimeError) as exc_info:
+            await manager._wait_for_health(inst)
+
+    assert "exited unexpectedly" in str(exc_info.value)
+    assert "FATAL: could not load model" in str(exc_info.value)

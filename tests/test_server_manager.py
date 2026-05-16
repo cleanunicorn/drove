@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+
+import httpx
+import pytest
 
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
@@ -236,3 +239,48 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+@pytest.mark.asyncio
+async def test_wait_for_health_success(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
+        await manager._wait_for_health(inst)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_health_unexpected_exit(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    inst.process.returncode = 1
+    with patch.object(
+        _ModelInstance, "stderr_text", new_callable=PropertyMock, return_value="crash log"
+    ):
+        with pytest.raises(RuntimeError, match=r"(?s)exited unexpectedly.*crash log"):
+            await manager._wait_for_health(inst)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_health_timeout(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    config.startup_timeout_seconds = 1
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    # Mock time to traverse the deadline
+    with patch("drove.server_manager.time.monotonic", side_effect=[100.0, 102.0]):
+        # Mock httpx to avoid real network calls
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock, side_effect=Exception("fail")):
+            with pytest.raises(TimeoutError, match="did not become healthy"):
+                await manager._wait_for_health(inst)

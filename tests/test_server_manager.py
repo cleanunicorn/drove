@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
 
@@ -236,3 +239,70 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+
+@pytest.mark.asyncio
+async def test_wait_for_health_success(tmp_path: Path) -> None:
+    """Verifies _wait_for_health returns when the /health endpoint returns 200."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+
+    with (
+        patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        await manager._wait_for_health(inst)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_health_timeout(tmp_path: Path) -> None:
+    """Verifies _wait_for_health raises TimeoutError after the deadline."""
+    config = make_config(tmp_path)
+    config.startup_timeout_seconds = 10.0
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+    inst._stderr_buf.extend(b"some error")
+
+    # Mock time to traverse the deadline:
+    # 1. deadline = time.monotonic() (0) + 10.0
+    # 2. while time.monotonic() (5.0) < 10.0: (one iteration)
+    # 3. while time.monotonic() (11.0) < 10.0: (exit)
+    with (
+        patch("drove.server_manager.time.monotonic", side_effect=[0.0, 5.0, 11.0]),
+        patch(
+            "httpx.AsyncClient.get",
+            new_callable=AsyncMock,
+            side_effect=httpx.TransportError(""),
+        ),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+    ):
+        with pytest.raises(TimeoutError, match="did not become healthy within 10.0s"):
+            await manager._wait_for_health(inst)
+        # Verify it actually waited inside the loop
+        mock_sleep.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_health_unexpected_exit(tmp_path: Path) -> None:
+    """Verifies _wait_for_health raises RuntimeError when the process dies."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    # Simulate process exit without class-level property mutation
+    inst.process.returncode = 1
+    inst._stderr_buf.extend(b"segmentation fault")
+
+    with patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock):
+        with pytest.raises(RuntimeError) as exc:
+            await manager._wait_for_health(inst)
+
+    assert "llama-server exited unexpectedly during startup" in str(exc.value)
+    assert "stderr: segmentation fault" in str(exc.value)

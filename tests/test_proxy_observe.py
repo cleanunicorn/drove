@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,12 +27,9 @@ def make_config(tmp_path: Path, observe: bool = False) -> Config:
     )
 
 
-async def aiter(items: list[bytes]):  # type: ignore[return]
-    for item in items:
-        yield item
-
-
-def test_observe_enabled_writes_log(tmp_path: Path) -> None:
+def test_observe_enabled_writes_log(
+    tmp_path: Path, aiter: Callable[[list[bytes]], AsyncIterator[bytes]]
+) -> None:
     config = make_config(tmp_path, observe=True)
     (config.models_dir / "testmodel").mkdir(parents=True, exist_ok=True)
     (config.models_dir / "testmodel" / "testmodel.gguf").write_bytes(b"")
@@ -75,7 +73,9 @@ def test_observe_enabled_writes_log(tmp_path: Path) -> None:
     assert record.tokens_completion == 5
 
 
-def test_observe_disabled_writes_nothing(tmp_path: Path) -> None:
+def test_observe_disabled_writes_nothing(
+    tmp_path: Path, aiter: Callable[[list[bytes]], AsyncIterator[bytes]]
+) -> None:
     config = make_config(tmp_path, observe=False)
     (config.models_dir / "testmodel").mkdir(parents=True, exist_ok=True)
     (config.models_dir / "testmodel" / "testmodel.gguf").write_bytes(b"")
@@ -104,7 +104,9 @@ def test_observe_disabled_writes_nothing(tmp_path: Path) -> None:
     assert not config.observe_dir.exists() or list_records(config.observe_dir) == []
 
 
-def test_observe_record_contains_request_body(tmp_path: Path) -> None:
+def test_observe_record_contains_request_body(
+    tmp_path: Path, aiter: Callable[[list[bytes]], AsyncIterator[bytes]]
+) -> None:
     config = make_config(tmp_path, observe=True)
     (config.models_dir / "testmodel").mkdir(parents=True, exist_ok=True)
     (config.models_dir / "testmodel" / "testmodel.gguf").write_bytes(b"")

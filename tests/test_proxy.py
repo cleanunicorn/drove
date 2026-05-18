@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,7 +47,9 @@ def test_proxy_unknown_model_returns_404(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
-def test_proxy_forwards_when_server_running(tmp_path: Path) -> None:
+def test_proxy_forwards_when_server_running(
+    tmp_path: Path, aiter: Callable[[list[bytes]], AsyncIterator[bytes]]
+) -> None:
     config = make_config(tmp_path)
 
     # Create a fake model directory
@@ -59,7 +62,7 @@ def test_proxy_forwards_when_server_running(tmp_path: Path) -> None:
     fake_response = MagicMock(spec=httpx.Response)
     fake_response.status_code = 200
     fake_response.headers = httpx.Headers({"content-type": "application/json"})
-    fake_response.aiter_raw = AsyncMock(return_value=aiter([b'{"ok": true}']))
+    fake_response.aiter_raw = lambda: aiter([b'{"ok": true}'])
 
     async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
         pass
@@ -75,6 +78,7 @@ def test_proxy_forwards_when_server_running(tmp_path: Path) -> None:
             )
 
     assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
 
 
 def test_health_endpoint_no_model(tmp_path: Path) -> None:
@@ -106,7 +110,9 @@ def test_status_endpoint_no_model(tmp_path: Path) -> None:
     assert "uptime_seconds" in body["server"]
 
 
-def test_status_tracks_requests(tmp_path: Path) -> None:
+def test_status_tracks_requests(
+    tmp_path: Path, aiter: Callable[[list[bytes]], AsyncIterator[bytes]]
+) -> None:
     config = make_config(tmp_path)
     (config.models_dir / "testmodel").mkdir(parents=True, exist_ok=True)
     (config.models_dir / "testmodel" / "testmodel.gguf").write_bytes(b"")
@@ -142,9 +148,3 @@ def test_status_tracks_requests(tmp_path: Path) -> None:
     assert body["tokens"]["prompt"] == 10
     assert body["tokens"]["completion"] == 5
     assert body["tokens"]["total"] == 15
-
-
-# Helper for async generator mock
-async def aiter(items: list[bytes]):  # type: ignore[return]
-    for item in items:
-        yield item

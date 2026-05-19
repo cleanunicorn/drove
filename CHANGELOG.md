@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added test coverage for `ServerManager` startup health checks (success, unexpected exit, and timeout scenarios).
 - Documented the repository install script in the README install instructions.
 - Added an install workflow that runs the installer from a checkout and smoke tests the installed CLI.
 - Allowed `install.sh` to install from an explicit source path and request Python 3.14 for `uv tool install`.

@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
 from drove.config import Config
 from drove.server_manager import ServerManager, _ModelInstance
 
@@ -236,3 +239,60 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
 
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
+
+async def test_wait_for_health_success(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
+        await manager._wait_for_health(inst)
+
+
+async def test_wait_for_health_unexpected_exit(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    # Simulate process exit
+    inst.process.returncode = 1
+    inst._stderr_buf.extend(b"error: failed to load model")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await manager._wait_for_health(inst)
+
+    assert "llama-server exited unexpectedly during startup" in str(excinfo.value)
+    assert "error: failed to load model" in str(excinfo.value)
+
+
+async def test_wait_for_health_timeout(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    config.startup_timeout_seconds = 1.0
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    inst = make_fake_instance("testmodel", model_path, (0.0, 0.0))
+
+    # Simulate always failing health check
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 503
+
+    inst._stderr_buf.extend(b"some warning on stderr")
+
+    # Mock time to traverse the deadline
+    # _wait_for_health uses time.monotonic()
+    # Initial call + loop call + loop exit
+    with (
+        patch("drove.server_manager.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
+        patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp),
+        patch("drove.server_manager.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        with pytest.raises(TimeoutError) as excinfo:
+            await manager._wait_for_health(inst)
+
+    assert "did not become healthy within 1.0s" in str(excinfo.value)
+    assert "some warning on stderr" in str(excinfo.value)

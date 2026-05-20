@@ -14,12 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an install workflow that runs the installer from a checkout and smoke tests the installed CLI.
 - Allowed `install.sh` to install from an explicit source path and request Python 3.14 for `uv tool install`.
 - `CHANGELOG.md` tracking notable changes per release.
-- Automated release pipeline via `python-semantic-release`: merges to `main` bump the version in `pyproject.toml`, move `[Unreleased]` entries into a versioned section in `CHANGELOG.md`, tag (`vX.Y.Z`), and create a GitHub Release.
+- Automated release pipeline via `python-semantic-release`: merges to `master` bump the version in `pyproject.toml`, move `[Unreleased]` entries into a versioned section in `CHANGELOG.md`, tag (`vX.Y.Z`), and create a GitHub Release.
 - PR-title lint (`.github/workflows/pr-title.yml`) enforcing Conventional Commits so that the squash-merged title drives the correct semver bump.
 - `docs/deploy.md` documenting the end-to-end release process for repository maintainers, with worked example and maintainer checklist.
 
 ### Fixed
 - Fixed model-store test lint issues so full-repository Ruff checks pass.
+- Fixed the release workflow trigger to run on pushes to `master` (the repository's default branch) instead of the non-existent `main` branch, so automated releases actually fire.
 
 ### Changed
 - Updated `drove observe web` to paginate request history and expose a **Load more** button so initial page loads stay fast with large logs.

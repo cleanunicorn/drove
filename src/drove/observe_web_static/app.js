@@ -5,6 +5,7 @@ const state = {
   total: 0,
   offset: 0,
   pageSize: 100,
+  isLoadingMore: false,
   selectedId: null,
   searchDebounce: null,
   sectionCounter: 0,
@@ -62,12 +63,20 @@ async function loadRecords() {
 }
 
 async function loadMoreRecords() {
+  if (state.isLoadingMore) return;
+  state.isLoadingMore = true;
+  renderLoadMoreState();
   const q = (document.getElementById("search") || {}).value || "";
-  const nextOffset = state.records.length;
-  const data = await api.list(q, nextOffset, state.pageSize);
-  state.records = state.records.concat(data.items);
-  state.total = data.total;
-  renderList();
+  try {
+    const nextOffset = state.records.length;
+    const data = await api.list(q, nextOffset, state.pageSize);
+    state.records = state.records.concat(data.items);
+    state.total = data.total;
+    renderList();
+  } finally {
+    state.isLoadingMore = false;
+    renderLoadMoreState();
+  }
 }
 
 function onSearchInput() {
@@ -107,6 +116,13 @@ function renderList() {
   });
   const loadMoreBtn = document.getElementById("load-more-btn");
   loadMoreBtn.style.display = state.records.length < state.total ? "inline-block" : "none";
+  renderLoadMoreState();
+}
+
+function renderLoadMoreState() {
+  const loadMoreBtn = document.getElementById("load-more-btn");
+  if (!loadMoreBtn) return;
+  loadMoreBtn.disabled = state.isLoadingMore;
 }
 
 async function selectRecord(id) {

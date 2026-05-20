@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Updated `drove observe web` to paginate request history and expose a **Load more** button so initial page loads stay fast with large logs.
+- Updated the observe web **Load more** control to disable during pagination requests so rapid repeated clicks no longer append duplicate records.
 
 
 ## [0.1.0]

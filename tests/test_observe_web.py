@@ -48,7 +48,7 @@ def test_api_records_empty(tmp_path: Path) -> None:
     with TestClient(app) as client:
         resp = client.get("/api/records")
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json() == {"items": [], "total": 0}
 
 
 def test_api_records_lists_records(tmp_path: Path) -> None:
@@ -59,10 +59,11 @@ def test_api_records_lists_records(tmp_path: Path) -> None:
     with TestClient(app) as client:
         resp = client.get("/api/records")
     data = resp.json()
-    assert len(data) == 1
-    assert data[0]["id"] == record.id
-    assert data[0]["model"] == "testmodel"
-    assert data[0]["tokens_prompt"] == 10
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["id"] == record.id
+    assert data["items"][0]["model"] == "testmodel"
+    assert data["items"][0]["tokens_prompt"] == 10
 
 
 def test_api_records_filters_by_model(tmp_path: Path) -> None:
@@ -73,8 +74,27 @@ def test_api_records_filters_by_model(tmp_path: Path) -> None:
     with TestClient(app) as client:
         resp = client.get("/api/records")
     data = resp.json()
-    assert len(data) == 1
-    assert data[0]["model"] == "modelA"
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["model"] == "modelA"
+
+
+def test_api_records_paginates(tmp_path: Path) -> None:
+    save_record(tmp_path, _make_record(record_id="20260408-100000-aaaa0001"))
+    save_record(tmp_path, _make_record(record_id="20260408-100100-aaaa0002"))
+    save_record(tmp_path, _make_record(record_id="20260408-100200-aaaa0003"))
+
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        resp = client.get("/api/records?limit=2")
+        data = resp.json()
+        assert data["total"] == 3
+        assert len(data["items"]) == 2
+
+        resp2 = client.get("/api/records?offset=2&limit=2")
+        data2 = resp2.json()
+        assert data2["total"] == 3
+        assert len(data2["items"]) == 1
 
 
 def test_api_record_detail(tmp_path: Path) -> None:

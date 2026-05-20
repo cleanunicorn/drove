@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Fixed model-store test lint issues so full-repository Ruff checks pass.
 
+### Changed
+- Updated `drove observe web` to paginate request history and expose a **Load more** button so initial page loads stay fast with large logs.
+
+
 ## [0.1.0]
 
 ### Added

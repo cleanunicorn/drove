@@ -15,7 +15,12 @@
   <button id="refresh-btn">Refresh</button>
 </header>
 <div class="main">
-  <div class="list-pane" id="list"></div>
+  <div class="list-pane">
+    <div id="list"></div>
+    <div class="list-footer">
+      <button id="load-more-btn" style="display:none;">Load more</button>
+    </div>
+  </div>
   <div class="detail-pane" id="detail">
     <div class="detail-placeholder">Select a request from the list to inspect.</div>
   </div>

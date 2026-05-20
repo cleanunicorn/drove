@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -44,14 +44,20 @@ def create_observe_app(observe_dir: Path, model: str | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
     @app.get("/api/records")
-    async def get_records(search: str = "") -> JSONResponse:
+    async def get_records(
+        search: str = "",
+        offset: int = Query(0, ge=0),
+        limit: int = Query(100, ge=1, le=500),
+    ) -> JSONResponse:
         records = list_records(observe_dir, model)
         items = [
             _summarize(record)
             for _, record in records
             if not search or record_matches(record, search)
         ]
-        return JSONResponse(items)
+        total = len(items)
+        page = items[offset : offset + limit]
+        return JSONResponse({"items": page, "total": total})
 
     @app.get("/api/records/{record_id}")
     async def get_record(record_id: str) -> JSONResponse:

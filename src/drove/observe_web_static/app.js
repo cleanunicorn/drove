@@ -2,16 +2,21 @@
 
 const state = {
   records: [],
+  total: 0,
+  offset: 0,
+  pageSize: 100,
   selectedId: null,
   searchDebounce: null,
   sectionCounter: 0,
 };
 
 const api = {
-  async list(query) {
-    const url = query
-      ? "/api/records?search=" + encodeURIComponent(query)
-      : "/api/records";
+  async list(query, offset, limit) {
+    const params = new URLSearchParams();
+    if (query) params.set("search", query);
+    params.set("offset", String(offset));
+    params.set("limit", String(limit));
+    const url = "/api/records?" + params.toString();
     const resp = await fetch(url);
     return resp.json();
   },
@@ -49,7 +54,19 @@ function el(tag, attrs, children) {
 
 async function loadRecords() {
   const q = (document.getElementById("search") || {}).value || "";
-  state.records = await api.list(q);
+  state.offset = 0;
+  const data = await api.list(q, 0, state.pageSize);
+  state.records = data.items;
+  state.total = data.total;
+  renderList();
+}
+
+async function loadMoreRecords() {
+  const q = (document.getElementById("search") || {}).value || "";
+  const nextOffset = state.records.length;
+  const data = await api.list(q, nextOffset, state.pageSize);
+  state.records = state.records.concat(data.items);
+  state.total = data.total;
   renderList();
 }
 
@@ -88,6 +105,8 @@ function renderList() {
   list.querySelectorAll(".record").forEach((node) => {
     node.addEventListener("click", () => selectRecord(node.dataset.id));
   });
+  const loadMoreBtn = document.getElementById("load-more-btn");
+  loadMoreBtn.style.display = state.records.length < state.total ? "inline-block" : "none";
 }
 
 async function selectRecord(id) {
@@ -305,4 +324,5 @@ function appendComma(frag) {
 
 document.getElementById("search").addEventListener("input", onSearchInput);
 document.getElementById("refresh-btn").addEventListener("click", loadRecords);
+document.getElementById("load-more-btn").addEventListener("click", loadMoreRecords);
 loadRecords();

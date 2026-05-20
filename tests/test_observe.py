@@ -9,6 +9,7 @@ from drove.observe import (
     ObserveContext,
     ObserveRecord,
     list_records,
+    list_records_page,
     load_record,
     save_record,
 )
@@ -109,6 +110,37 @@ def test_list_records_filters_by_model(tmp_path: Path) -> None:
 
     records_all = list_records(tmp_path)
     assert len(records_all) == 2
+
+
+def test_list_records_page_paginates(tmp_path: Path) -> None:
+    for i in range(1, 6):
+        save_record(tmp_path, _make_record(record_id=f"20260408-10000{i}-aaaa000{i}"))
+
+    page, total = list_records_page(tmp_path, offset=0, limit=2)
+    assert total == 5
+    assert [p[1].id for p in page] == [
+        "20260408-100005-aaaa0005",
+        "20260408-100004-aaaa0004",
+    ]
+
+    last, total = list_records_page(tmp_path, offset=4, limit=2)
+    assert total == 5
+    assert len(last) == 1
+    assert last[0][1].id == "20260408-100001-aaaa0001"
+
+
+def test_list_records_page_offset_past_end(tmp_path: Path) -> None:
+    save_record(tmp_path, _make_record(record_id="20260408-100001-aaaa0001"))
+
+    page, total = list_records_page(tmp_path, offset=10, limit=2)
+    assert total == 1
+    assert page == []
+
+
+def test_list_records_page_nonexistent_dir(tmp_path: Path) -> None:
+    page, total = list_records_page(tmp_path / "nonexistent")
+    assert page == []
+    assert total == 0
 
 
 def test_list_records_finds_namespaced_models(tmp_path: Path) -> None:

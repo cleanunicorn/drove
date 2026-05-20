@@ -279,42 +279,82 @@ def load_record(path: Path) -> ObserveRecord:
     return _record_from_dict(data)
 
 
+def _record_dirs(observe_dir: Path, model: str | None) -> list[Path]:
+    """Resolve the directories that hold record JSON files.
+
+    If model is None, walks two levels deep so namespaced models
+    (``org/repo:quant``) are found alongside legacy flat model dirs.
+    """
+    if model:
+        return [observe_dir / model]
+
+    dirs: list[Path] = []
+    for d in observe_dir.iterdir():
+        if not d.is_dir():
+            continue
+        if any(d.glob("*.json")):
+            dirs.append(d)
+        else:
+            # Treat as namespace — scan one level deeper
+            for sub in d.iterdir():
+                if sub.is_dir():
+                    dirs.append(sub)
+    return dirs
+
+
+def _record_paths(observe_dir: Path, model: str | None) -> list[Path]:
+    """All record file paths, newest first.
+
+    Sorted by filename, which begins with the record id's timestamp prefix
+    (``YYYYMMDD-HHMMSS``), so the order matches a timestamp sort without
+    reading any files.
+    """
+    if not observe_dir.exists():
+        return []
+
+    paths: list[Path] = []
+    for d in _record_dirs(observe_dir, model):
+        if not d.exists():
+            continue
+        paths.extend(d.glob("*.json"))
+    paths.sort(key=lambda p: p.name, reverse=True)
+    return paths
+
+
 def list_records(observe_dir: Path, model: str | None = None) -> list[tuple[Path, ObserveRecord]]:
     """List observe records, newest first.
 
     If model is None, lists across all model subdirectories (including
     namespaced dirs like ``org/repo:quant/``).  Returns (path, record) tuples.
     """
-    if not observe_dir.exists():
-        return []
-
-    if model:
-        dirs = [observe_dir / model]
-    else:
-        # Walk two levels deep so namespaced models (org/repo:quant) are found
-        # alongside legacy flat model dirs.
-        dirs = []
-        for d in observe_dir.iterdir():
-            if not d.is_dir():
-                continue
-            if any(d.glob("*.json")):
-                dirs.append(d)
-            else:
-                # Treat as namespace — scan one level deeper
-                for sub in d.iterdir():
-                    if sub.is_dir():
-                        dirs.append(sub)
-
     results: list[tuple[Path, ObserveRecord]] = []
-    for d in dirs:
-        if not d.exists():
+    for p in _record_paths(observe_dir, model):
+        try:
+            results.append((p, load_record(p)))
+        except json.JSONDecodeError, KeyError, ValueError:
             continue
-        for p in d.glob("*.json"):
-            try:
-                record = load_record(p)
-                results.append((p, record))
-            except json.JSONDecodeError, KeyError, ValueError:
-                continue
-
-    results.sort(key=lambda x: x[1].timestamp, reverse=True)
     return results
+
+
+def list_records_page(
+    observe_dir: Path,
+    model: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> tuple[list[tuple[Path, ObserveRecord]], int]:
+    """Return one page of records (newest first) plus the total record count.
+
+    Only the files within the requested window are read from disk; the rest
+    are ordered by filename alone, so large logs do not pay the cost of
+    parsing every record on each call.  Files that fail to load are skipped
+    in the page but still counted in the total.
+    """
+    paths = _record_paths(observe_dir, model)
+    total = len(paths)
+    page: list[tuple[Path, ObserveRecord]] = []
+    for p in paths[offset : offset + limit]:
+        try:
+            page.append((p, load_record(p)))
+        except json.JSONDecodeError, KeyError, ValueError:
+            continue
+    return page, total

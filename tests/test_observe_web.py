@@ -97,6 +97,20 @@ def test_api_records_paginates(tmp_path: Path) -> None:
         assert len(data2["items"]) == 1
 
 
+def test_api_records_search_paginates(tmp_path: Path) -> None:
+    save_record(tmp_path, _make_record(model="alpha", record_id="20260408-100000-aaaa0001"))
+    save_record(tmp_path, _make_record(model="alpha", record_id="20260408-100100-aaaa0002"))
+    save_record(tmp_path, _make_record(model="beta", record_id="20260408-100200-aaaa0003"))
+
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        resp = client.get("/api/records?search=alpha&limit=1")
+    data = resp.json()
+    assert data["total"] == 2
+    assert len(data["items"]) == 1
+    assert data["items"][0]["model"] == "alpha"
+
+
 def test_api_record_detail(tmp_path: Path) -> None:
     record = _make_record()
     save_record(tmp_path, record)

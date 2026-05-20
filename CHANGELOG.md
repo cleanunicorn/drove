@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fixed model-store test lint issues so full-repository Ruff checks pass.
+- Fixed the release workflow trigger to run on pushes to `master` (the repository's default branch) instead of the non-existent `main` branch, so automated releases actually fire.
 
 ### Changed
 - Updated `drove observe web` to paginate request history and expose a **Load more** button so initial page loads stay fast with large logs.

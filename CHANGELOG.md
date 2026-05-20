@@ -11,6 +11,10 @@
 - Chat wraps lines to display long lines
   ([`89e8f93`](https://github.com/cleanunicorn/drove/commit/89e8f938f2ebfabfcf1c3c381cf24c49013c297f))
 
+### Changed
+- Updated `drove observe web` to paginate request history and expose a **Load more** button so initial page loads stay fast with large logs.
+- Updated the observe web **Load more** control to disable during pagination requests so rapid repeated clicks no longer append duplicate records.
+- Updated the observe web request API to read only the requested page from disk (via `list_records_page`) when no search is active, so large logs no longer parse every record on each call.
 - Correct exception handling in model selection
   ([`0e2e183`](https://github.com/cleanunicorn/drove/commit/0e2e18396bcd601d5b4dd1cef315449ac3b40b79))
 

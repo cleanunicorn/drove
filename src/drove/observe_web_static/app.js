@@ -5,6 +5,7 @@ const state = {
   total: 0,
   offset: 0,
   pageSize: 100,
+  query: "",
   isLoadingMore: false,
   selectedId: null,
   searchDebounce: null,
@@ -55,6 +56,7 @@ function el(tag, attrs, children) {
 
 async function loadRecords() {
   const q = (document.getElementById("search") || {}).value || "";
+  state.query = q;
   state.offset = 0;
   const data = await api.list(q, 0, state.pageSize);
   state.records = data.items;
@@ -66,11 +68,12 @@ async function loadMoreRecords() {
   if (state.isLoadingMore) return;
   state.isLoadingMore = true;
   renderLoadMoreState();
-  const q = (document.getElementById("search") || {}).value || "";
   try {
     const nextOffset = state.records.length;
-    const data = await api.list(q, nextOffset, state.pageSize);
-    state.records = state.records.concat(data.items);
+    const data = await api.list(state.query, nextOffset, state.pageSize);
+    const seen = new Set(state.records.map((r) => r.id));
+    const fresh = data.items.filter((r) => !seen.has(r.id));
+    state.records = state.records.concat(fresh);
     state.total = data.total;
     renderList();
   } finally {
@@ -115,7 +118,10 @@ function renderList() {
     node.addEventListener("click", () => selectRecord(node.dataset.id));
   });
   const loadMoreBtn = document.getElementById("load-more-btn");
-  loadMoreBtn.style.display = state.records.length < state.total ? "inline-block" : "none";
+  if (loadMoreBtn) {
+    loadMoreBtn.style.display =
+      state.records.length < state.total ? "inline-block" : "none";
+  }
   renderLoadMoreState();
 }
 

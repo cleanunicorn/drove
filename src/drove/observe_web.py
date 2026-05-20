@@ -9,7 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from drove.observe import _record_to_dict, list_records, load_record, record_matches
+from drove.observe import (
+    _record_to_dict,
+    list_records,
+    list_records_page,
+    load_record,
+    record_matches,
+)
 
 _STATIC_DIR = Path(__file__).parent / "observe_web_static"
 _INDEX_PATH = _STATIC_DIR / "index.html"
@@ -49,14 +55,20 @@ def create_observe_app(observe_dir: Path, model: str | None = None) -> FastAPI:
         offset: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=500),
     ) -> JSONResponse:
-        records = list_records(observe_dir, model)
-        items = [
-            _summarize(record)
-            for _, record in records
-            if not search or record_matches(record, search)
-        ]
-        total = len(items)
-        page = items[offset : offset + limit]
+        if search:
+            # Search must scan every record to filter, so the full set is
+            # loaded and then paginated in memory.
+            items = [
+                _summarize(record)
+                for _, record in list_records(observe_dir, model)
+                if record_matches(record, search)
+            ]
+            total = len(items)
+            page = items[offset : offset + limit]
+        else:
+            # No search: only the requested page is read from disk.
+            records, total = list_records_page(observe_dir, model, offset, limit)
+            page = [_summarize(record) for _, record in records]
         return JSONResponse({"items": page, "total": total})
 
     @app.get("/api/records/{record_id}")

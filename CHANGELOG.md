@@ -1,6 +1,9 @@
 # CHANGELOG
 
 
+## v0.1.1 (2026-05-20)
+
+
 ## v0.1.0 (2026-05-20)
 
 ### Bug Fixes
@@ -11,10 +14,6 @@
 - Chat wraps lines to display long lines
   ([`89e8f93`](https://github.com/cleanunicorn/drove/commit/89e8f938f2ebfabfcf1c3c381cf24c49013c297f))
 
-### Changed
-- Updated `drove observe web` to paginate request history and expose a **Load more** button so initial page loads stay fast with large logs.
-- Updated the observe web **Load more** control to disable during pagination requests so rapid repeated clicks no longer append duplicate records.
-- Updated the observe web request API to read only the requested page from disk (via `list_records_page`) when no search is active, so large logs no longer parse every record on each call.
 - Correct exception handling in model selection
   ([`0e2e183`](https://github.com/cleanunicorn/drove/commit/0e2e18396bcd601d5b4dd1cef315449ac3b40b79))
 
@@ -64,6 +63,16 @@ Co-authored-by: Daniel Luca <cleanunicorn@users.noreply.github.com>
 
 - **download**: Getting image model only selects one variant
   ([`b59a962`](https://github.com/cleanunicorn/drove/commit/b59a962220bf0e68a3a14fc3b98893a0f7ea2255))
+
+- **observe**: Harden observe web load-more pagination
+  ([`eb4cf33`](https://github.com/cleanunicorn/drove/commit/eb4cf3301be64dd233a863c230304d2f4711761d))
+
+- Dedup records by id when appending a page so a record landing between loads cannot be inserted
+  twice. - Capture the active search query in state at load time and reuse it for load-more, instead
+  of re-reading the live input (avoids fetching a new query at a stale offset before the search
+  debounce fires). - Guard `load-more-btn` lookup in renderList to match renderLoadMoreState.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - **server**: Reload model reload if config changed
   ([`cd38bbd`](https://github.com/cleanunicorn/drove/commit/cd38bbdfad52a21dc1f7a31e4fe3cec87485dc4f))
@@ -317,6 +326,23 @@ fix(model_config): update alias resolution to scan TOML files recursively
 
 - **tests**: Add test for list_records to find namespaced models
   ([`9cec944`](https://github.com/cleanunicorn/drove/commit/9cec94417042c7daf6df7f07f7b6741768965704))
+
+### Performance Improvements
+
+- **observe**: Page records from disk instead of parsing all
+  ([`2bf0f79`](https://github.com/cleanunicorn/drove/commit/2bf0f791fa00d4e10bfa74357f2c274e543b3280))
+
+`list_records` loaded and JSON-parsed every record on disk per /api/records call, so large logs paid
+  a full scan just to show one page.
+
+- Add `list_records_page(observe_dir, model, offset, limit)` which sorts record files by name (the
+  id timestamp prefix encodes chronological order) and reads only the requested window, returning
+  the page plus the total count. - Extract dir resolution into `_record_dirs` and path collection
+  into `_record_paths`, shared by `list_records` and `list_records_page`. - `/api/records` uses
+  `list_records_page` when no search is active; search still loads the full set since filtering
+  needs every record.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ### Refactoring
 

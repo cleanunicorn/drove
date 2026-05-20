@@ -1,6 +1,6 @@
 [project]
 name = "drove"
-version = "0.1.0"
+version = "0.1.1"
 description = "llama.cpp server manager and proxy"
 readme = "README.md"
 authors = [
@@ -27,6 +27,7 @@ Documentation = "https://drove.dev/docs"
 
 [project.scripts]
 drove = "drove.cli:app"
+
 
 
 [build-system]

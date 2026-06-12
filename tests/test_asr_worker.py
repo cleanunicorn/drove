@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import array
 import io
 import subprocess
 import wave
@@ -193,6 +194,31 @@ def test_normalize_audio_corrupt_wav_without_ffmpeg_raises_415(
     with pytest.raises(HTTPException) as excinfo:
         normalize_audio(make_wav()[:12], tmp_path)
     assert excinfo.value.status_code == 415
+
+
+def test_normalize_audio_averages_multichannel_wav(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Downmixing >2 channels averages the samples of each frame."""
+    monkeypatch.setattr("drove.workers.asr.shutil.which", lambda _: None)
+    n_frames = 400
+    frames = array.array("h", [100, 200, 300] * n_frames)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(3)
+        w.setsampwidth(2)
+        w.setframerate(TARGET_RATE)
+        w.writeframes(frames.tobytes())
+
+    out, duration = normalize_audio(buf.getvalue(), tmp_path)
+
+    with wave.open(str(out)) as w:
+        assert w.getnchannels() == 1
+        samples: array.array[int] = array.array("h")
+        samples.frombytes(w.readframes(w.getnframes()))
+    assert len(samples) == n_frames
+    assert all(s == 200 for s in samples)
+    assert duration == pytest.approx(n_frames / TARGET_RATE, abs=0.01)
 
 
 def test_normalize_audio_8bit_wav_treated_as_non_conforming(

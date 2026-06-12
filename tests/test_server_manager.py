@@ -240,6 +240,7 @@ async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
         mock_stop.assert_awaited_once_with("testmodel")
     assert inst.needs_restart
 
+
 async def test_wait_for_health_success(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     manager = ServerManager(config)
@@ -266,7 +267,7 @@ async def test_wait_for_health_unexpected_exit(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError) as excinfo:
         await manager._wait_for_health(inst)
 
-    assert "llama-server exited unexpectedly during startup" in str(excinfo.value)
+    assert "Model server exited unexpectedly during startup" in str(excinfo.value)
     assert "error: failed to load model" in str(excinfo.value)
 
 
@@ -296,3 +297,77 @@ async def test_wait_for_health_timeout(tmp_path: Path) -> None:
 
     assert "did not become healthy within 1.0s" in str(excinfo.value)
     assert "some warning on stderr" in str(excinfo.value)
+
+
+# ── ASR backend ──────────────────────────────────────────────────────────────
+
+
+def make_asr_model(config: Config, name: str = "parakeet") -> Path:
+    model_dir = config.models_dir / name
+    model_dir.mkdir(parents=True)
+    (model_dir / "encoder-model.onnx").write_bytes(b"")
+    (model_dir / "decoder_joint-model.onnx").write_bytes(b"")
+    primary = sorted(model_dir.glob("*.onnx"))[0]
+    return primary
+
+
+def test_build_asr_command(tmp_path: Path) -> None:
+    from drove.model_config import ModelConfig
+
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    primary = make_asr_model(config)
+    cfg = ModelConfig(asr_model="nemo-parakeet-tdt-0.6b-v3", asr_quantization="int8")
+
+    with patch("drove.server_manager._onnx_asr_available", return_value=True):
+        cmd = manager._build_asr_command("parakeet", primary, cfg, 9000)
+
+    assert cmd[1:3] == ["-m", "drove.workers.asr"]
+    assert str(primary.parent) in cmd
+    assert "nemo-parakeet-tdt-0.6b-v3" in cmd
+    assert "9000" in cmd
+    assert "--quantization" in cmd
+    assert "int8" in cmd
+
+
+def test_build_asr_command_requires_onnx_asr(tmp_path: Path) -> None:
+    from drove.model_config import ModelConfig
+
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    primary = make_asr_model(config)
+
+    with patch("drove.server_manager._onnx_asr_available", return_value=False):
+        with pytest.raises(RuntimeError, match="onnx-asr"):
+            manager._build_asr_command("parakeet", primary, ModelConfig(), 9000)
+
+
+def test_infer_asr_model_type_from_download_info(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    primary = make_asr_model(config)
+    primary.with_suffix(".toml").write_text(
+        '[download]\nrepo_id = "istupakov/parakeet-tdt-0.6b-v3-onnx"\nfiles = []\n'
+    )
+
+    assert manager._infer_asr_model_type("parakeet", primary) == "nemo-parakeet-tdt-0.6b-v3"
+
+
+def test_infer_asr_model_type_falls_back_to_model_name(tmp_path: Path) -> None:
+    """Without download metadata, a recognised model name alone resolves the type."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    primary = make_asr_model(config, name="parakeet-tdt-0.6b-v3")
+
+    inferred = manager._infer_asr_model_type("parakeet-tdt-0.6b-v3", primary)
+
+    assert inferred == "nemo-parakeet-tdt-0.6b-v3"
+
+
+def test_infer_asr_model_type_unknown_raises(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    primary = make_asr_model(config, name="mystery-model")
+
+    with pytest.raises(RuntimeError, match="asr_model"):
+        manager._infer_asr_model_type("mystery-model", primary)

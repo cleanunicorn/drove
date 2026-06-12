@@ -1,5 +1,77 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Security
+
+- The ASR worker's `/v1/audio/transcriptions` endpoint now rejects uploads
+  over 100 MB with HTTP 413 instead of reading arbitrarily large bodies
+  into memory.
+- ffmpeg's error output is no longer echoed in the ASR worker's decode
+  error responses; clients get a generic message and the detail goes to
+  the server log.
+
+### Fixed
+
+- The ASR worker no longer crashes with an internal error on WAV uploads
+  with malformed chunk sizes; such files now fall back to ffmpeg decoding
+  like other non-conforming input.
+
+### Added
+
+- Speech-to-text models (e.g. NVIDIA Parakeet TDT) served through a new built-in
+  ASR worker (`drove.workers.asr`) with an OpenAI-compatible
+  `/v1/audio/transcriptions` endpoint, managed with the same lazy-start /
+  idle-shutdown lifecycle as llama-server. Requires the optional `drove[asr]`
+  extra (onnx-asr).
+- ONNX model support across model management: `drove models download` resolves
+  ONNX repos (including int8 variants via `org/repo:int8` and support files such
+  as `vocab.txt`), and `models list`/`info`/`delete`/`config` handle ASR models
+  like any other, with a new `stt` capability tag.
+- Per-model `backend`, `asr_model`, and `asr_quantization` config keys; the
+  backend is auto-detected from the model files (`.onnx` → ASR worker) and the
+  ASR model type is auto-configured at download time for known repos.
+- The proxy now extracts the `model` field from multipart form bodies, so
+  OpenAI-style audio requests route to the right model on the same listen port.
+- `drove models download` now prompts for the quantization variant of ONNX
+  speech-to-text repos (e.g. default vs int8), matching the existing choice
+  menu for GGUF models; previously the unquantized variant was selected
+  silently.
+- `drove models config` now validates `backend` against the known backends
+  and rejects malformed `asr_model` / `asr_quantization` values when they
+  are set, instead of failing later at backend startup.
+- The download command now echoes the chosen quantization (or "all") after
+  the selection menu, so picks that don't change the model name still get
+  visible confirmation.
+- Expanded ASR test coverage: ffmpeg decode-failure and conversion happy
+  paths, non-16-bit and corrupt WAV handling, multi-channel downmix, the
+  worker CLI entry point, the ASR model-type inference fallback in
+  `server_manager`, and the download command's quantization-variant
+  selection for both ONNX and GGUF repos.
+
+### Changed
+
+- Documented ONNX quantization references (`org/repo:int8`) in the
+  download command's help and docstring, and the `CAPS` column tags
+  (`vision`, `stt`) in the CLI reference.
+- Extracted the downloader's repeated ONNX-extension check into a shared
+  helper; no behavior change.
+- Consolidated the download command's quantization-choice handling into a
+  shared helper covering both GGUF tags and ONNX variants; no behavior
+  change.
+- Clarified the quantization-filtering logic in the downloader
+  (`filter_onnx_quant`) by checking the explicit-quant case first; no
+  behavior change.
+- Updated `docs/architecture.md` to describe the backend-per-model design
+  (llama-server for GGUF, the built-in ASR worker for ONNX speech-to-text)
+  instead of llama-server only.
+- The install script and `make install` now include the `asr` extra by
+  default, so speech-to-text models work out of the box; set `DROVE_EXTRAS=""`
+  on the install script for a minimal text-generation-only install.
+- Reworked the README around the two model classes drove serves: text
+  generation (Gemma example via llama-server) and speech-to-text (Parakeet
+  example via the built-in ONNX worker), with curl examples for both.
+
 
 ## v0.1.2 (2026-06-12)
 

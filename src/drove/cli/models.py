@@ -95,6 +95,16 @@ def _detect_capabilities(primary: Path) -> list[str]:
     if has_mmproj_file or has_mmproj_cfg:
         caps.append("vision")
 
+    # Speech-to-text: ONNX primary (built-in ASR worker) or explicit backend
+    if primary.suffix.lower() == ".onnx":
+        caps.append("stt")
+    else:
+        try:
+            if load_model_config(primary).backend == "asr":
+                caps.append("stt")
+        except Exception:
+            pass
+
     return caps
 
 
@@ -256,6 +266,66 @@ def _prompt_quant_choice(quants: dict[str, int]) -> str | None:
     return tags[int(raw) - 1]
 
 
+def _apply_quant_selection(
+    plan: DownloadPlan, chosen: str, filtered: dict[str, int], name_override: str | None
+) -> str | None:
+    """Narrow *plan* to the files of the chosen quant variant, in place.
+
+    Returns *chosen* on success, or None when no files matched (the plan is
+    left untouched).
+    """
+    from drove.downloader import infer_local_name, is_sharded
+
+    if not filtered:
+        return None
+    plan.files = filtered
+    plan.sharded = is_sharded(list(filtered.keys()))
+    if name_override is None:
+        plan.local_name = infer_local_name(plan.repo_id, list(filtered.keys()), chosen)
+    return chosen
+
+
+def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str | None:
+    """Offer the quant-variant menu for *plan* and apply the choice in place.
+
+    ONNX (ASR) repos carry variants as filename infixes (model.int8.onnx) and
+    resolve to the default variant, so choices come from the full pre-filter
+    set kept on ``plan.onnx_files``; GGUF repos carry tags in filenames and
+    resolve unfiltered. Returns the chosen quant tag, or None when the user
+    keeps the default / all files (or only one variant exists).
+    """
+    from drove.downloader import (
+        available_onnx_quants,
+        available_quants,
+        filter_by_quant,
+        filter_onnx_quant,
+    )
+
+    if plan.is_asr:
+        variants = available_onnx_quants(plan.onnx_files)
+        if len(variants) < 2:
+            return None
+        chosen = _prompt_quant_choice(variants)
+        typer.echo(f"Selected: {chosen or 'all variants'}")
+        if chosen is None:
+            plan.files = dict(plan.onnx_files)
+            return None
+        if chosen == "default":
+            return None
+        return _apply_quant_selection(
+            plan, chosen, filter_onnx_quant(plan.onnx_files, chosen), name_override
+        )
+
+    quants = available_quants(plan.files)
+    if len(quants) < 2:
+        return None
+    chosen = _prompt_quant_choice(quants)
+    typer.echo(f"Selected: {chosen or 'all quantizations'}")
+    if chosen is None:
+        return None
+    return _apply_quant_selection(plan, chosen, filter_by_quant(plan.files, chosen), name_override)
+
+
 def _print_download_plan(
     plan: DownloadPlan,
     models_dir: Path,
@@ -265,7 +335,7 @@ def _print_download_plan(
 
     dest = plan.destination(models_dir)
     col = 60
-    total_files = len(plan.files) + len(plan.mmproj_files)
+    total_files = len(plan.files) + len(plan.mmproj_files) + len(plan.extra_files)
 
     typer.echo("")
     typer.echo(f"  Repo        {plan.repo_id}")
@@ -296,6 +366,13 @@ def _print_download_plan(
             label = _status_label(fname, size)
             typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}{label}")
 
+    if plan.extra_files:
+        typer.echo("")
+        typer.echo("  Support files:")
+        for fname, size in plan.extra_files.items():
+            label = _status_label(fname, size)
+            typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}{label}")
+
     typer.echo("")
 
 
@@ -309,7 +386,8 @@ def download_model(
                 "HuggingFace repo reference. "
                 "Format: 'org/repo' or 'org/repo:QUANT'. "
                 "Examples: unsloth/Qwen3-8B-GGUF  "
-                "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M"
+                "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M  "
+                "istupakov/parakeet-tdt-0.6b-v3-onnx:int8"
             )
         ),
     ],
@@ -322,8 +400,10 @@ def download_model(
     """Download a model from HuggingFace Hub.
 
     Automatically discovers files in the repo. If a quantization tag is
-    provided (e.g. :Q4_K_M), only matching files are downloaded. Sharded
-    models (multiple files) are stored in a named subdirectory.
+    provided (:Q4_K_M for GGUF, :int8 for ONNX speech-to-text), only
+    matching files are downloaded; otherwise a repo with several variants
+    prompts for a choice. Sharded models (multiple files) are stored in a
+    named subdirectory.
 
     Examples:
 
@@ -332,13 +412,11 @@ def download_model(
         drove models download unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M
 
         drove models download unsloth/Qwen3-8B-GGUF:Q8_0 --name qwen3-8b-q8
+
+        drove models download istupakov/parakeet-tdt-0.6b-v3-onnx:int8  (speech-to-text)
     """
     from drove.downloader import (
         FileStatus,
-        available_quants,
-        filter_by_quant,
-        infer_local_name,
-        is_sharded,
         parse_model_ref,
         resolve_download,
     )
@@ -358,19 +436,7 @@ def download_model(
 
     _, quant = parse_model_ref(model_ref)
     if quant is None and not yes:
-        quants = available_quants(plan.files)
-        if len(quants) > 1:
-            chosen = _prompt_quant_choice(quants)
-            if chosen is not None:
-                filtered = filter_by_quant(plan.files, chosen)
-                if filtered:
-                    plan.files = filtered
-                    plan.sharded = is_sharded(list(filtered.keys()))
-                    quant = chosen
-                    if name is None:
-                        plan.local_name = infer_local_name(
-                            plan.repo_id, list(filtered.keys()), quant
-                        )
+        quant = _select_quant_variant(plan, name)
 
     statuses = plan.check_local_files(models_dir)
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
@@ -401,7 +467,9 @@ def download_model(
         raise typer.Exit(1)
 
     # Save download metadata to sidecar TOML
-    all_files = sorted(plan.file_names) + sorted(plan.mmproj_files.keys())
+    all_files = (
+        sorted(plan.file_names) + sorted(plan.mmproj_files.keys()) + sorted(plan.extra_files.keys())
+    )
     save_download_info(
         primary,
         DownloadInfo(
@@ -410,6 +478,27 @@ def download_model(
             quant=quant,
         ),
     )
+
+    # Auto-configure speech-to-text models for the built-in ASR worker
+    if plan.is_asr:
+        from drove.backend import infer_asr_model_type
+
+        updates: dict[str, str] = {}
+        inferred = infer_asr_model_type(plan.repo_id)
+        if inferred:
+            updates["asr_model"] = inferred
+        if quant:
+            updates["asr_quantization"] = quant.lower()
+        if updates:
+            model_cfg = load_model_config(primary)
+            save_model_config(primary, model_cfg.model_copy(update=updates))
+            for k, v in updates.items():
+                typer.echo(f"  {k} auto-configured: {v}")
+        if not inferred:
+            typer.echo(
+                "  Could not infer the ASR model type. Set it with: "
+                f"drove models config '{plan.local_name}' asr_model <type>"
+            )
 
     # Auto-configure mmproj if a multimodal projection file was downloaded
     # Store just the filename — resolved to an absolute path at server startup.

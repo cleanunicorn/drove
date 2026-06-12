@@ -29,6 +29,9 @@ drove models info <name>
 drove models config <name>
 ```
 
+The `CAPS` column in `drove models list` shows model capabilities:
+`vision` (multimodal projection) and `stt` (speech-to-text).
+
 ## Shell completions
 
 ```bash

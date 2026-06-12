@@ -144,6 +144,64 @@ def test_status_tracks_requests(tmp_path: Path) -> None:
     assert body["tokens"]["total"] == 15
 
 
+# ── multipart model extraction (audio endpoints) ────────────────────────────
+
+
+def test_proxy_extracts_model_from_multipart_form(tmp_path: Path) -> None:
+    """Audio requests carry 'model' as a multipart form field, not JSON."""
+    config = make_config(tmp_path)
+    app = create_app(config)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("audio.wav", b"RIFFxxxx", "audio/wav")},
+            data={"model": "ghost-asr-model"},
+        )
+    # 404 (model not found) proves the model name was extracted from the
+    # multipart body — otherwise the proxy would answer 400 "no model loaded".
+    assert resp.status_code == 404
+
+
+def test_proxy_forwards_multipart_body_intact(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    (config.models_dir / "asrmodel").mkdir(parents=True, exist_ok=True)
+    (config.models_dir / "asrmodel" / "encoder-model.onnx").write_bytes(b"")
+
+    app = create_app(config)
+    manager = app.state.manager
+
+    fake_response = MagicMock(spec=httpx.Response)
+    fake_response.status_code = 200
+    fake_response.headers = httpx.Headers({"content-type": "application/json"})
+    fake_response.aiter_raw = AsyncMock(return_value=aiter([b'{"text": "hi"}']))
+
+    async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
+        pass
+
+    sent_requests: list[httpx.Request] = []
+
+    async def fake_send(request: httpx.Request, **kwargs: object) -> httpx.Response:
+        sent_requests.append(request)
+        return fake_response
+
+    with (
+        patch.object(manager, "ensure_running", side_effect=fake_ensure_running),
+        patch("httpx.AsyncClient.send", side_effect=fake_send),
+    ):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/v1/audio/transcriptions",
+                files={"file": ("audio.wav", b"RIFF-audio-bytes", "audio/wav")},
+                data={"model": "asrmodel"},
+            )
+
+    assert resp.status_code == 200
+    # The original multipart body (including the audio) reached the upstream
+    assert len(sent_requests) == 1
+    assert b"RIFF-audio-bytes" in sent_requests[0].content
+
+
 # Helper for async generator mock
 async def aiter(items: list[bytes]):  # type: ignore[return]
     for item in items:

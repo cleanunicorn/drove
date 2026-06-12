@@ -8,7 +8,7 @@ SERVICE_FILE := $(SERVICE_DIR)/drove.service
 # ── Development ────────────────────────────────────────────────────────────────
 
 install:
-	uv tool install . --force --reinstall-package drove
+	uv tool install '.[asr]' --force --reinstall-package drove
 
 completions: install
 	drove completions install

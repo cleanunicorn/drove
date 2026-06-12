@@ -346,15 +346,29 @@ def _mtime(path: Path) -> float:
 
 
 async def _extract_model(request: Request) -> str | None:
-    """Try to read the 'model' field from a JSON body without consuming the stream."""
+    """Try to read the 'model' field from the request body without consuming the stream.
+
+    Supports JSON bodies (chat/completions) and multipart form bodies
+    (OpenAI-style audio endpoints, where 'model' is a form field).
+    """
     content_type = request.headers.get("content-type", "")
-    if "application/json" not in content_type:
-        return None
-    try:
-        body = await request.json()
-        return body.get("model") if isinstance(body, dict) else None
-    except Exception:
-        return None
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            return body.get("model") if isinstance(body, dict) else None
+        except Exception:
+            return None
+    if "multipart/form-data" in content_type:
+        try:
+            # Cache the raw body first so the multipart parser consumes the
+            # cached copy and the proxy can still forward the original bytes.
+            await request.body()
+            form = await request.form()
+            value = form.get("model")
+            return value if isinstance(value, str) and value else None
+        except Exception:
+            return None
+    return None
 
 
 async def _counting_stream(

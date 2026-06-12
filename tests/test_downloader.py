@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from drove.downloader import available_quants, filter_by_quant, quant_tag
+from drove.downloader import (
+    DownloadPlan,
+    available_onnx_quants,
+    available_quants,
+    filter_by_quant,
+    filter_onnx_quant,
+    is_onnx_files,
+    quant_tag,
+)
 
 
 def test_quant_tag_extracts_common_tags() -> None:
@@ -43,3 +51,89 @@ def test_filter_by_quant_exact_match_no_overlap() -> None:
     files = {"m-F16.gguf": 100, "m-BF16.gguf": 200}
     assert filter_by_quant(files, "F16") == {"m-F16.gguf": 100}
     assert filter_by_quant(files, "BF16") == {"m-BF16.gguf": 200}
+
+
+# ── ONNX (ASR) repos ─────────────────────────────────────────────────────────
+
+_ONNX_FILES = {
+    "encoder-model.onnx": 2_400,
+    "encoder-model.int8.onnx": 600,
+    "decoder_joint-model.onnx": 80,
+    "decoder_joint-model.int8.onnx": 20,
+}
+
+
+def test_is_onnx_files() -> None:
+    assert is_onnx_files(_ONNX_FILES)
+    assert not is_onnx_files({"model-Q4_K_M.gguf": 1})
+
+
+def test_filter_onnx_quant_default_excludes_quant_variants() -> None:
+    assert filter_onnx_quant(_ONNX_FILES, None) == {
+        "encoder-model.onnx": 2_400,
+        "decoder_joint-model.onnx": 80,
+    }
+
+
+def test_filter_onnx_quant_int8_selects_only_int8() -> None:
+    assert filter_onnx_quant(_ONNX_FILES, "int8") == {
+        "encoder-model.int8.onnx": 600,
+        "decoder_joint-model.int8.onnx": 20,
+    }
+
+
+def test_filter_onnx_quant_unknown_tag_returns_empty() -> None:
+    assert filter_onnx_quant(_ONNX_FILES, "int4") == {}
+
+
+def test_available_onnx_quants_groups_default_and_variants() -> None:
+    assert available_onnx_quants(_ONNX_FILES) == {"default": 2_480, "int8": 620}
+
+
+def test_available_onnx_quants_single_variant() -> None:
+    files = {"encoder-model.onnx": 100, "decoder_joint-model.onnx": 50}
+    assert available_onnx_quants(files) == {"default": 150}
+
+
+def test_download_plan_keeps_full_onnx_file_set() -> None:
+    """The plan retains all ONNX variants so the CLI can offer a quant choice."""
+    plan = DownloadPlan(
+        repo_id="istupakov/parakeet-tdt-0.6b-v3-onnx",
+        files=filter_onnx_quant(_ONNX_FILES, None),
+        local_name="istupakov/parakeet-tdt-0.6b-v3-onnx",
+        sharded=False,
+        onnx_files=_ONNX_FILES,
+    )
+    assert available_onnx_quants(plan.onnx_files) == {"default": 2_480, "int8": 620}
+    assert filter_onnx_quant(plan.onnx_files, "int8") == {
+        "encoder-model.int8.onnx": 600,
+        "decoder_joint-model.int8.onnx": 20,
+    }
+
+
+def test_download_plan_includes_extra_files() -> None:
+    plan = DownloadPlan(
+        repo_id="istupakov/parakeet-tdt-0.6b-v3-onnx",
+        files={"encoder-model.onnx": 2_400, "decoder_joint-model.onnx": 80},
+        local_name="istupakov/parakeet-tdt-0.6b-v3-onnx",
+        sharded=False,
+        extra_files={"vocab.txt": 10, "config.json": 1},
+    )
+    assert plan.is_asr
+    assert plan.total_bytes == 2_491
+    assert set(plan._all_remote_files()) == {
+        "encoder-model.onnx",
+        "decoder_joint-model.onnx",
+        "vocab.txt",
+        "config.json",
+    }
+
+
+def test_download_plan_gguf_is_not_asr() -> None:
+    plan = DownloadPlan(
+        repo_id="unsloth/Qwen3-8B-GGUF",
+        files={"Qwen3-8B-Q8_0.gguf": 100},
+        local_name="unsloth/Qwen3-8B-GGUF:Q8_0",
+        sharded=False,
+    )
+    assert not plan.is_asr

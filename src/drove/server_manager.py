@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import shutil
 import signal
 import socket
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,10 +19,12 @@ import psutil
 if TYPE_CHECKING:
     from drove.model_config import ModelConfig
 
+from drove.backend import BACKEND_ASR, detect_backend, infer_asr_model_type
 from drove.config import Config
 from drove.model_config import (
     config_path_for_model,
     global_config_path,
+    load_download_info,
     load_global_model_config,
     load_model_config,
 )
@@ -328,23 +332,25 @@ class ServerManager:
             await self._stop_instance(model_name)
 
     async def _start(self, model_name: str) -> None:
-        binary = self._config.llama_server_bin
-        if not shutil.which(binary):
-            raise FileNotFoundError(
-                f"llama-server binary '{binary}' not found on PATH. "
-                "Install llama.cpp or set 'llama_server_bin' in config."
-            )
-
         model_path = self._resolve_model(model_name)
         model_cfg = load_model_config(model_path)
+        backend = detect_backend(model_path, model_cfg)
 
         port = _find_free_port()
-        args = self._build_args(model_path, model_cfg, port)
+        if backend == BACKEND_ASR:
+            cmd = self._build_asr_command(model_name, model_path, model_cfg, port)
+        else:
+            binary = self._config.llama_server_bin
+            if not shutil.which(binary):
+                raise FileNotFoundError(
+                    f"llama-server binary '{binary}' not found on PATH. "
+                    "Install llama.cpp or set 'llama_server_bin' in config."
+                )
+            cmd = [binary, *self._build_args(model_path, model_cfg, port)]
 
-        logger.info("Starting llama-server: %s %s", binary, " ".join(args))
+        logger.info("Starting %s backend: %s", backend, " ".join(cmd))
         process = await asyncio.create_subprocess_exec(
-            binary,
-            *args,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -357,12 +363,12 @@ class ServerManager:
         try:
             await self._wait_for_health(inst)
         except (RuntimeError, TimeoutError) as e:
-            logger.error("llama-server failed to start for model=%s: %s", model_name, e)
+            logger.error("Backend failed to start for model=%s: %s", model_name, e)
             await self._stop_instance(model_name)
             raise
 
         self._start_idle_watcher(model_name)
-        logger.info("llama-server ready (model=%s, port=%d)", model_name, port)
+        logger.info("Backend ready (model=%s, backend=%s, port=%d)", model_name, backend, port)
 
     async def _stop_instance(self, model_name: str) -> None:
         task = self._idle_tasks.pop(model_name, None)
@@ -397,7 +403,7 @@ class ServerManager:
                 if not inst.is_running:
                     # Give the stderr reader a moment to finish draining
                     await asyncio.sleep(0.2)
-                    msg = "llama-server exited unexpectedly during startup"
+                    msg = "Model server exited unexpectedly during startup"
                     stderr = inst.stderr_text
                     if stderr:
                         msg += f"\nstderr: {stderr}"
@@ -410,7 +416,7 @@ class ServerManager:
                     pass
                 await asyncio.sleep(HEALTH_CHECK_INTERVAL)
         stderr = inst.stderr_text
-        msg = f"llama-server did not become healthy within {timeout}s"
+        msg = f"Model server did not become healthy within {timeout}s"
         if stderr:
             msg += f"\nstderr (last lines):\n{_tail(stderr, 30)}"
         raise TimeoutError(msg)
@@ -443,6 +449,51 @@ class ServerManager:
         ]
         args.extend(merged.to_llama_args())
         return args
+
+    def _build_asr_command(
+        self, model_name: str, model_path: Path, model_cfg: ModelConfig, port: int
+    ) -> list[str]:
+        """Build the command for the built-in ASR worker subprocess."""
+        if not _onnx_asr_available():
+            raise RuntimeError(
+                f"Model '{model_name}' is a speech-to-text model, but the 'onnx-asr' "
+                "package is not installed. Install drove with the asr extra: "
+                "pip install 'drove[asr]'"
+            )
+
+        model_type = model_cfg.asr_model or self._infer_asr_model_type(model_name, model_path)
+        cmd = [
+            sys.executable,
+            "-m",
+            "drove.workers.asr",
+            "--model-dir",
+            str(model_path.parent),
+            "--model-type",
+            model_type,
+            "--host",
+            self._config.llama_server_host,
+            "--port",
+            str(port),
+        ]
+        if model_cfg.asr_quantization:
+            cmd.extend(["--quantization", model_cfg.asr_quantization])
+        return cmd
+
+    def _infer_asr_model_type(self, model_name: str, model_path: Path) -> str:
+        """Infer the onnx-asr model type from download metadata or the model name."""
+        download = load_download_info(model_path)
+        candidates = [model_name]
+        if download is not None:
+            candidates.insert(0, download.repo_id)
+        for ref in candidates:
+            inferred = infer_asr_model_type(ref)
+            if inferred:
+                return inferred
+        raise RuntimeError(
+            f"Cannot determine the ASR model type for '{model_name}'. "
+            f"Set it explicitly with: drove models config '{model_name}' asr_model <type> "
+            "(e.g. nemo-parakeet-tdt-0.6b-v3)"
+        )
 
     def _resolve_model(self, model_name: str) -> Path:
         return ModelStore(self._config.models_dir).resolve(model_name)
@@ -477,6 +528,10 @@ class ServerManager:
                 async with self._lock:
                     await self._stop_instance(model_name)
                 return
+
+
+def _onnx_asr_available() -> bool:
+    return importlib.util.find_spec("onnx_asr") is not None
 
 
 def _find_free_port() -> int:

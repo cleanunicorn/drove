@@ -97,10 +97,11 @@ def filter_onnx_quant(files: dict[str, int], quant: str | None) -> dict[str, int
     With *quant* set (e.g. "int8"), keep only files carrying that infix.
     Without it, keep only the unquantized variants.
     """
-    if quant is None:
-        return {f: s for f, s in files.items() if not _ONNX_QUANT_RE.search(Path(f).name)}
-    needle = f".{quant.lower()}."
-    return {f: s for f, s in files.items() if needle in Path(f).name.lower()}
+    if quant is not None:
+        needle = f".{quant.lower()}."
+        return {f: s for f, s in files.items() if needle in Path(f).name.lower()}
+    # No quant requested: drop quantized variants, keeping the full-precision files.
+    return {f: s for f, s in files.items() if not _ONNX_QUANT_RE.search(Path(f).name)}
 
 
 def filter_by_quant(files: dict[str, int], quant: str) -> dict[str, int]:

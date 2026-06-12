@@ -21,6 +21,9 @@
 
 ### Changed
 
+- Clarified the quantization-filtering logic in the downloader
+  (`filter_onnx_quant`) by checking the explicit-quant case first; no
+  behavior change.
 - Updated `docs/architecture.md` to describe the backend-per-model design
   (llama-server for GGUF, the built-in ASR worker for ONNX speech-to-text)
   instead of llama-server only.

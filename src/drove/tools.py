@@ -8,6 +8,7 @@ import os
 import subprocess
 import threading
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -174,7 +175,7 @@ TOOL_DEFINITIONS = [
 
 
 # Global storage for background tasks
-_background_tasks: dict[str, dict] = {}
+_background_tasks: dict[str, dict[str, Any]] = {}
 
 
 def execute_tool(name: str, arguments: str) -> str:
@@ -202,7 +203,7 @@ def execute_tool(name: str, arguments: str) -> str:
         return f"Error: unknown tool '{name}'"
 
 
-def _read_file(args: dict) -> str:
+def _read_file(args: dict[str, Any]) -> str:
     path = Path(args.get("path", "")).expanduser()
     if not path.exists():
         return f"Error: file not found: {path}"
@@ -224,7 +225,7 @@ def _read_file(args: dict) -> str:
     return "".join(lines)
 
 
-def _write_file(args: dict) -> str:
+def _write_file(args: dict[str, Any]) -> str:
     path = Path(args.get("path", "")).expanduser()
     content = args.get("content", "")
     try:
@@ -235,7 +236,7 @@ def _write_file(args: dict) -> str:
     return f"Successfully wrote {len(content)} bytes to {path}"
 
 
-def _list_files(args: dict) -> str:
+def _list_files(args: dict[str, Any]) -> str:
     path_str = args.get("path", ".")
     recursive = args.get("recursive", False)
     path = Path(path_str).expanduser()
@@ -265,7 +266,7 @@ def _list_files(args: dict) -> str:
         return f"Error listing files: {e}"
 
 
-def _shell_execute(args: dict) -> str:
+def _shell_execute(args: dict[str, Any]) -> str:
     command = args.get("command", "")
     background = args.get("background", False)
     timeout = args.get("timeout", 30)
@@ -284,7 +285,7 @@ def _shell_execute(args: dict) -> str:
             "error": "",
         }
 
-        def run():
+        def run() -> None:
             try:
                 proc = subprocess.Popen(
                     command,
@@ -325,7 +326,7 @@ def _shell_execute(args: dict) -> str:
         return f"Error executing command: {e}"
 
 
-def _fetch_url(args: dict) -> str:
+def _fetch_url(args: dict[str, Any]) -> str:
     url = args.get("url", "")
     if not url:
         return "Error: no URL provided"
@@ -339,7 +340,7 @@ def _fetch_url(args: dict) -> str:
         return f"Error fetching URL: {e}"
 
 
-def _search_files(args: dict) -> str:
+def _search_files(args: dict[str, Any]) -> str:
     path_str = args.get("path", ".")
     name_pattern = args.get("name_pattern")
     content_query = args.get("content_query")
@@ -378,7 +379,7 @@ def _search_files(args: dict) -> str:
         return f"Error searching files: {e}"
 
 
-def _check_background_task(args: dict) -> str:
+def _check_background_task(args: dict[str, Any]) -> str:
     task_id = args.get("task_id", "")
     if task_id not in _background_tasks:
         return f"Error: task ID '{task_id}' not found"

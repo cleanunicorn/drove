@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 class Session:
@@ -12,7 +13,7 @@ class Session:
         self,
         model: str,
         session_id: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system_prompt: str | None = None,
         created_at: str | None = None,
         updated_at: str | None = None,
@@ -30,7 +31,7 @@ class Session:
         """First user message, truncated, as a human-readable title."""
         for m in self.messages:
             if m["role"] == "user":
-                text = m["content"].replace("\n", " ").strip()
+                text: str = m["content"].replace("\n", " ").strip()
                 return text[:60] + ("…" if len(text) > 60 else "")
         return "(empty)"
 
@@ -38,7 +39,7 @@ class Session:
     def message_count(self) -> int:
         return sum(1 for m in self.messages if m["role"] == "user")
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "model": self.model,
@@ -51,7 +52,7 @@ class Session:
 
 def new_session(model: str, system_prompt: str | None = None) -> Session:
     session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    messages: list[dict[str, str]] = []
+    messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     return Session(

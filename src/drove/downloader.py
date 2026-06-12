@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import enum
 import re
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from huggingface_hub import HfApi, hf_hub_download
+
+type ProgressCallback = Callable[[int, int, str], None]
 
 
 class FileStatus(enum.Enum):
@@ -227,9 +230,6 @@ class DownloadPlan:
                 downloaded_path.rename(flat_path)
 
         return dest / Path(first_shard(self.file_names)).name
-
-
-ProgressCallback = "Callable[[int, int, str], None]"
 
 
 def resolve_download(

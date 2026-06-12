@@ -1,6 +1,17 @@
 # CHANGELOG
 
 
+## [Unreleased]
+
+### Removed
+
+- Removed the stale `current_code.py` file from the repository root, a leftover pre-rebrand copy of `src/drove/observe_web.py` that was referenced nowhere.
+
+### Fixed
+
+- Fixed all mypy strict-mode errors across `src/` (51 errors in 11 files) so type checking passes clean; added `types-psutil` to the dev dependency group. No runtime behavior changed.
+
+
 ## v0.1.1 (2026-05-20)
 
 

@@ -110,7 +110,7 @@ def load_config(path: Path | None = None) -> Config:
     config_path = path or DEFAULT_CONFIG_PATH
     _migrate_legacy_config(config_path)
     # Point the TOML source at the requested file by temporarily updating model_config
-    Config.model_config["toml_file"] = str(config_path)  # type: ignore[index]
+    Config.model_config["toml_file"] = str(config_path)
     return Config()
 
 

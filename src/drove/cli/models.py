@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 if TYPE_CHECKING:
-    from drove.downloader import DownloadPlan
+    from drove.downloader import DownloadPlan, FileStatus
 
 from drove.model_config import (
     DownloadInfo,
@@ -31,7 +31,8 @@ models_app = typer.Typer(help="Manage models.", no_args_is_help=True)
 
 
 def _models_dir(ctx: typer.Context) -> Path:
-    return ctx.obj["config"].models_dir
+    models_dir: Path = ctx.obj["config"].models_dir
+    return models_dir
 
 
 def _complete_model_name(ctx: typer.Context, incomplete: str) -> list[str]:
@@ -258,7 +259,7 @@ def _prompt_quant_choice(quants: dict[str, int]) -> str | None:
 def _print_download_plan(
     plan: DownloadPlan,
     models_dir: Path,
-    statuses: dict[str, tuple[object, int]] | None = None,
+    statuses: dict[str, tuple[FileStatus, int]] | None = None,
 ) -> None:
     from drove.downloader import FileStatus
 

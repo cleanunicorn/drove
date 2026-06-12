@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -203,7 +203,7 @@ class ChatInput(TextArea):
     class Submitted(TextArea.Changed):
         pass
 
-    def _on_key(self, event) -> None:
+    def _on_key(self, event: events.Key) -> None:  # type: ignore[override]
         if event.key == "shift+enter":
             self.insert("\n")
             event.prevent_default()
@@ -355,7 +355,7 @@ class SessionPicker(ModalScreen[Session | None]):
 
 
 class ChatApp(App[None]):
-    async def push_screen_wait(self, screen: ModalScreen) -> Any:
+    async def push_screen_wait(self, screen: ModalScreen[Any]) -> Any:  # type: ignore[override]
         """Push a screen and wait for it to dismiss, returning the result."""
         from asyncio import Future
 
@@ -607,7 +607,7 @@ class ChatApp(App[None]):
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         self.action_submit()
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         ac = self.query_one("#autocomplete", OptionList)
         ac_visible = ac.has_class("visible")
 
@@ -669,7 +669,7 @@ class ChatApp(App[None]):
                 full_response = ""
                 full_thinking = ""
                 was_thinking = False
-                tool_calls: dict[int, dict] = {}
+                tool_calls: dict[int, dict[str, str]] = {}
 
                 async for event in self._stream_chat(self._history):
                     kind = event["kind"]
@@ -709,7 +709,7 @@ class ChatApp(App[None]):
                 if not tool_calls:
                     # No tool calls — save the final assistant message and break
                     if full_response or full_thinking:
-                        assistant_msg: dict = {
+                        assistant_msg: dict[str, Any] = {
                             "role": "assistant",
                             "content": full_response,
                         }
@@ -721,12 +721,12 @@ class ChatApp(App[None]):
                     break
 
                 # Build the assistant message with tool_calls for history
-                assistant_msg: dict = {"role": "assistant"}
+                tool_call_msg: dict[str, Any] = {"role": "assistant"}
                 if full_response:
-                    assistant_msg["content"] = full_response
+                    tool_call_msg["content"] = full_response
                 else:
-                    assistant_msg["content"] = None
-                assistant_msg["tool_calls"] = [
+                    tool_call_msg["content"] = None
+                tool_call_msg["tool_calls"] = [
                     {
                         "id": tc["id"],
                         "type": "function",
@@ -737,7 +737,7 @@ class ChatApp(App[None]):
                     }
                     for tc in sorted(tool_calls.values(), key=lambda t: t["id"])
                 ]
-                self._history.append(assistant_msg)
+                self._history.append(tool_call_msg)
 
                 # Execute each tool call and show results
                 for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
@@ -778,10 +778,11 @@ class ChatApp(App[None]):
                             try:
                                 from drove.config import load_config
 
-                                cfg = load_config(self._config_path)
-                                if name not in cfg.allowed_tools:
-                                    cfg.allowed_tools.append(name)
-                                    cfg.save(self._config_path)
+                                if self._config_path is not None:
+                                    cfg = load_config(self._config_path)
+                                    if name not in cfg.allowed_tools:
+                                        cfg.allowed_tools.append(name)
+                                        cfg.save(self._config_path)
                             except Exception:
                                 pass
                         else:
@@ -829,8 +830,8 @@ class ChatApp(App[None]):
 
     async def _stream_chat(
         self,
-        messages: list[dict],
-    ) -> AsyncIterator[dict]:
+        messages: list[dict[str, Any]],
+    ) -> AsyncIterator[dict[str, Any]]:
         """Yield event dicts: {kind: "thinking"/"content"/"tool_call", ...}."""
         payload = {
             "model": self._model,

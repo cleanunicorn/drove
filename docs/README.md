@@ -7,6 +7,7 @@ This directory contains the in-repo documentation for `drove`.
 - [Getting started](./getting-started.md)
 - [Configuration](./configuration.md)
 - [CLI reference](./cli.md)
+- [Speech-to-text](./speech-to-text.md)
 - [Architecture](./architecture.md)
 - [Release process](./deploy.md)
 

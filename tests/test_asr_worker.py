@@ -1,0 +1,135 @@
+"""Tests for the built-in ASR worker."""
+
+from __future__ import annotations
+
+import io
+import wave
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+
+from drove.workers.asr import TARGET_RATE, create_asr_app, normalize_audio
+
+
+class FakeEngine:
+    def __init__(self, text: str = "hello world") -> None:
+        self.text = text
+        self.paths: list[str] = []
+
+    def recognize(self, wav_path: str) -> str:
+        self.paths.append(wav_path)
+        return self.text
+
+
+def make_wav(rate: int = TARGET_RATE, channels: int = 1, seconds: float = 0.5) -> bytes:
+    buf = io.BytesIO()
+    n_frames = int(rate * seconds)
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x01" * n_frames * channels)
+    return buf.getvalue()
+
+
+def test_health() -> None:
+    app = create_asr_app(FakeEngine(), model_name="nemo-parakeet-tdt-0.6b-v3")
+    with TestClient(app) as client:
+        resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+    assert resp.json()["model"] == "nemo-parakeet-tdt-0.6b-v3"
+
+
+def test_transcribe_json_default() -> None:
+    engine = FakeEngine("the quick brown fox")
+    app = create_asr_app(engine)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("audio.wav", make_wav(), "audio/wav")},
+            data={"model": "parakeet"},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"text": "the quick brown fox"}
+    assert len(engine.paths) == 1
+
+
+def test_transcribe_text_format() -> None:
+    app = create_asr_app(FakeEngine("plain text result"))
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("audio.wav", make_wav(), "audio/wav")},
+            data={"response_format": "text"},
+        )
+    assert resp.status_code == 200
+    assert resp.text == "plain text result"
+
+
+def test_transcribe_verbose_json_includes_duration() -> None:
+    app = create_asr_app(FakeEngine())
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("audio.wav", make_wav(seconds=1.0), "audio/wav")},
+            data={"response_format": "verbose_json"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["task"] == "transcribe"
+    assert body["text"] == "hello world"
+    assert body["duration"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_transcribe_unsupported_format_returns_400() -> None:
+    app = create_asr_app(FakeEngine())
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("audio.wav", make_wav(), "audio/wav")},
+            data={"response_format": "srt"},
+        )
+    assert resp.status_code == 400
+    assert "response_format" in resp.json()["detail"]
+
+
+def test_transcribe_empty_file_returns_400() -> None:
+    app = create_asr_app(FakeEngine())
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("audio.wav", b"", "audio/wav")},
+        )
+    assert resp.status_code == 400
+
+
+def test_normalize_audio_conforming_wav_passthrough(tmp_path: Path) -> None:
+    data = make_wav(rate=TARGET_RATE, channels=1, seconds=0.25)
+    out, duration = normalize_audio(data, tmp_path)
+    assert out.read_bytes() == data
+    assert duration == pytest.approx(0.25, abs=0.01)
+
+
+def test_normalize_audio_resamples_stereo_without_ffmpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("drove.workers.asr.shutil.which", lambda _: None)
+    data = make_wav(rate=44_100, channels=2, seconds=0.25)
+    out, duration = normalize_audio(data, tmp_path)
+    with wave.open(str(out)) as w:
+        assert w.getnchannels() == 1
+        assert w.getframerate() == TARGET_RATE
+        assert w.getsampwidth() == 2
+    assert duration == pytest.approx(0.25, abs=0.02)
+
+
+def test_normalize_audio_non_wav_without_ffmpeg_raises_415(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("drove.workers.asr.shutil.which", lambda _: None)
+    with pytest.raises(HTTPException) as excinfo:
+        normalize_audio(b"\xffnot audio at all", tmp_path)
+    assert excinfo.value.status_code == 415

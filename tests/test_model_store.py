@@ -60,9 +60,7 @@ def test_resolve_exact_local_path_takes_priority_over_alias(tmp_path: Path) -> N
     primary = _make_gguf(tmp_path, "org", "repo", "model.gguf")
     # A sidecar TOML that maps the same "org/repo" repo_id to a different local name
     _make_gguf(tmp_path, "other-model", "other.gguf")
-    (tmp_path / "other-model" / "other.toml").write_bytes(
-        b'[download]\nrepo_id = "org/repo"\n'
-    )
+    (tmp_path / "other-model" / "other.toml").write_bytes(b'[download]\nrepo_id = "org/repo"\n')
     # resolve() must return the explicit directory, not redirect via alias
     assert ModelStore(tmp_path).resolve("org/repo") == primary
 
@@ -165,3 +163,49 @@ def test_complete_empty_prefix_returns_all(tmp_path: Path) -> None:
 def test_complete_no_match(tmp_path: Path) -> None:
     _make_gguf(tmp_path, "alpha", "a.gguf")
     assert ModelStore(tmp_path).complete("xyz") == []
+
+
+# ── ONNX (ASR) models ────────────────────────────────────────────────────────
+
+
+def _make_onnx_model(models_dir: Path, *parts: str) -> Path:
+    """Create an ONNX ASR model dir with encoder/decoder/vocab files."""
+    d = models_dir.joinpath(*parts)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "encoder-model.onnx").write_bytes(b"")
+    (d / "decoder_joint-model.onnx").write_bytes(b"")
+    (d / "vocab.txt").write_text("a\nb\n")
+    return d
+
+
+def test_resolve_onnx_model_dir(tmp_path: Path) -> None:
+    _make_onnx_model(tmp_path, "parakeet")
+    primary = ModelStore(tmp_path).resolve("parakeet")
+    assert primary.suffix == ".onnx"
+    assert primary.name == "decoder_joint-model.onnx"  # sorted-first onnx
+
+
+def test_resolve_prefers_gguf_over_onnx(tmp_path: Path) -> None:
+    d = _make_onnx_model(tmp_path, "mixed")
+    (d / "model.gguf").write_bytes(b"")
+    primary = ModelStore(tmp_path).resolve("mixed")
+    assert primary.suffix == ".gguf"
+
+
+def test_resolve_namespaced_onnx_model(tmp_path: Path) -> None:
+    _make_onnx_model(tmp_path, "istupakov", "parakeet-tdt-0.6b-v3-onnx")
+    primary = ModelStore(tmp_path).resolve("istupakov/parakeet-tdt-0.6b-v3-onnx")
+    assert primary.suffix == ".onnx"
+
+
+def test_list_includes_onnx_model_with_onnx_primary(tmp_path: Path) -> None:
+    _make_onnx_model(tmp_path, "parakeet")
+    entries = ModelStore(tmp_path).list()
+    assert len(entries) == 1
+    assert entries[0].name == "parakeet"
+    assert entries[0].primary.suffix == ".onnx"
+
+
+def test_complete_includes_onnx_models(tmp_path: Path) -> None:
+    _make_onnx_model(tmp_path, "parakeet")
+    assert ModelStore(tmp_path).complete("para") == ["parakeet"]

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from drove.model_config import resolve_model_alias
 
-_MODEL_EXTS = frozenset({".gguf", ".safetensors", ".bin", ".pt"})
+_MODEL_EXTS = frozenset({".gguf", ".onnx", ".safetensors", ".bin", ".pt"})
 
 
 @dataclass(frozen=True)
@@ -98,17 +98,21 @@ class ModelStore:
     # ── private helpers ──────────────────────────────────────────────────────
 
     def _find_primary(self, name: str) -> Path | None:
-        """Find the primary GGUF for a local name (no alias resolution).
+        """Find the primary model file for a local name (no alias resolution).
 
-        GGUF-only: non-GGUF formats (.safetensors, .bin, .pt) are intentionally
-        excluded so callers such as ServerManager never receive a path that
-        llama-server cannot open.
+        GGUF takes priority (served by llama-server), then ONNX (served by the
+        built-in ASR worker).  Other formats (.safetensors, .bin, .pt) are
+        intentionally excluded so callers such as ServerManager never receive
+        a path that no backend can open.
         """
         subdir = self._dir / name
         if subdir.is_dir():
             ggufs = sorted(subdir.rglob("*.gguf"))
             if ggufs:
                 return ggufs[0]
+            onnx = sorted(subdir.rglob("*.onnx"))
+            if onnx:
+                return onnx[0]
         candidate = self._dir / f"{name}.gguf"
         if candidate.exists():
             return candidate
@@ -132,6 +136,7 @@ class ModelStore:
         files = [f for f in directory.rglob("*") if f.is_file()]
         total = sum(f.stat().st_size for f in files)
         ggufs = sorted(f for f in files if f.suffix.lower() == ".gguf")
-        primary = ggufs[0] if ggufs else (sorted(files)[0] if files else None)
+        onnx = sorted(f for f in files if f.suffix.lower() == ".onnx")
+        primary = ggufs[0] if ggufs else onnx[0] if onnx else sorted(files)[0] if files else None
         if primary:
             results.append(ModelEntry(name, primary, total))

@@ -18,11 +18,18 @@ class DownloadInfo(BaseModel):
     quant: str | None = None
 
 
-class ModelConfig(BaseModel):
-    """llama-server parameters for a specific model.
+#: Config keys that drove consumes itself; excluded from llama-server args.
+_DROVE_ONLY_FIELDS = frozenset({"backend", "asr_model", "asr_quantization"})
 
-    Keys map to llama-server CLI flags (snake_case → --kebab-case).
+
+class ModelConfig(BaseModel):
+    """Per-model parameters.
+
+    Most keys map to llama-server CLI flags (snake_case → --kebab-case).
     See: https://github.com/ggml-org/llama.cpp/tree/master/tools/server
+
+    Keys in ``_DROVE_ONLY_FIELDS`` configure drove itself (backend selection
+    and the built-in ASR worker) and are never forwarded to llama-server.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -70,10 +77,17 @@ class ModelConfig(BaseModel):
     # Multimodal
     mmproj: str | None = None
 
+    # Drove-specific settings (never passed to llama-server)
+    backend: str | None = None  # "llama" (default) or "asr"
+    asr_model: str | None = None  # onnx-asr model type, e.g. "nemo-parakeet-tdt-0.6b-v3"
+    asr_quantization: str | None = None  # e.g. "int8"
+
     def to_llama_args(self) -> list[str]:
         """Convert config to llama-server CLI arguments."""
         args: list[str] = []
         for field, value in self.model_dump(exclude_none=True).items():
+            if field in _DROVE_ONLY_FIELDS:
+                continue
             flag = "--" + field.replace("_", "-")
             if isinstance(value, bool):
                 if value:

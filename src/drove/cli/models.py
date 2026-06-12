@@ -95,6 +95,16 @@ def _detect_capabilities(primary: Path) -> list[str]:
     if has_mmproj_file or has_mmproj_cfg:
         caps.append("vision")
 
+    # Speech-to-text: ONNX primary (built-in ASR worker) or explicit backend
+    if primary.suffix.lower() == ".onnx":
+        caps.append("stt")
+    else:
+        try:
+            if load_model_config(primary).backend == "asr":
+                caps.append("stt")
+        except Exception:
+            pass
+
     return caps
 
 
@@ -265,7 +275,7 @@ def _print_download_plan(
 
     dest = plan.destination(models_dir)
     col = 60
-    total_files = len(plan.files) + len(plan.mmproj_files)
+    total_files = len(plan.files) + len(plan.mmproj_files) + len(plan.extra_files)
 
     typer.echo("")
     typer.echo(f"  Repo        {plan.repo_id}")
@@ -293,6 +303,13 @@ def _print_download_plan(
         typer.echo("")
         typer.echo("  Multimodal projection (vision):")
         for fname, size in plan.mmproj_files.items():
+            label = _status_label(fname, size)
+            typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}{label}")
+
+    if plan.extra_files:
+        typer.echo("")
+        typer.echo("  Support files:")
+        for fname, size in plan.extra_files.items():
             label = _status_label(fname, size)
             typer.echo(f"    {fname:<{col}}  {_fmt_size(size):>10}{label}")
 
@@ -332,6 +349,8 @@ def download_model(
         drove models download unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M
 
         drove models download unsloth/Qwen3-8B-GGUF:Q8_0 --name qwen3-8b-q8
+
+        drove models download istupakov/parakeet-tdt-0.6b-v3-onnx  (speech-to-text)
     """
     from drove.downloader import (
         FileStatus,
@@ -401,7 +420,9 @@ def download_model(
         raise typer.Exit(1)
 
     # Save download metadata to sidecar TOML
-    all_files = sorted(plan.file_names) + sorted(plan.mmproj_files.keys())
+    all_files = (
+        sorted(plan.file_names) + sorted(plan.mmproj_files.keys()) + sorted(plan.extra_files.keys())
+    )
     save_download_info(
         primary,
         DownloadInfo(
@@ -410,6 +431,27 @@ def download_model(
             quant=quant,
         ),
     )
+
+    # Auto-configure speech-to-text models for the built-in ASR worker
+    if plan.is_asr:
+        from drove.backend import infer_asr_model_type
+
+        updates: dict[str, str] = {}
+        inferred = infer_asr_model_type(plan.repo_id)
+        if inferred:
+            updates["asr_model"] = inferred
+        if quant:
+            updates["asr_quantization"] = quant.lower()
+        if updates:
+            model_cfg = load_model_config(primary)
+            save_model_config(primary, model_cfg.model_copy(update=updates))
+            for k, v in updates.items():
+                typer.echo(f"  {k} auto-configured: {v}")
+        if not inferred:
+            typer.echo(
+                "  Could not infer the ASR model type. Set it with: "
+                f"drove models config '{plan.local_name}' asr_model <type>"
+            )
 
     # Auto-configure mmproj if a multimodal projection file was downloaded
     # Store just the filename — resolved to an absolute path at server startup.

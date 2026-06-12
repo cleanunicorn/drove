@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Added
+
+- Speech-to-text models (e.g. NVIDIA Parakeet TDT) served through a new built-in
+  ASR worker (`drove.workers.asr`) with an OpenAI-compatible
+  `/v1/audio/transcriptions` endpoint, managed with the same lazy-start /
+  idle-shutdown lifecycle as llama-server. Requires the optional `drove[asr]`
+  extra (onnx-asr).
+- ONNX model support across model management: `drove models download` resolves
+  ONNX repos (including int8 variants via `org/repo:int8` and support files such
+  as `vocab.txt`), and `models list`/`info`/`delete`/`config` handle ASR models
+  like any other, with a new `stt` capability tag.
+- Per-model `backend`, `asr_model`, and `asr_quantization` config keys; the
+  backend is auto-detected from the model files (`.onnx` → ASR worker) and the
+  ASR model type is auto-configured at download time for known repos.
+- The proxy now extracts the `model` field from multipart form bodies, so
+  OpenAI-style audio requests route to the right model on the same listen port.
+
 
 ## v0.1.2 (2026-06-12)
 

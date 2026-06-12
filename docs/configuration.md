@@ -38,3 +38,6 @@ Only keys declared in `ModelConfig` are accepted; unknown keys are silently igno
 Supported keys: `ctx_size`, `n_gpu_layers`, `main_gpu`, `tensor_split`, `batch_size`,
 `ubatch_size`, `n_parallel`, `temp`, `top_p`, `top_k`, `threads`, `threads_batch`,
 `flash_attn`, `rope_freq_base`, `rope_freq_scale`, `cache_type_k`, `cache_type_v`, `mmproj`.
+
+Drove-specific keys (never passed to llama-server): `backend` (`llama` or `asr`),
+`asr_model`, `asr_quantization` — see [Speech-to-text](./speech-to-text.md).

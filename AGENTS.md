@@ -47,9 +47,11 @@ uv run mypy src/
 
 **`src/drove/model_config.py`** — Per-model config (context size, GPU layers, etc.) stored as TOML files alongside model weights in the models directory. Loaded and merged into `llama-server` CLI args.
 
-**`src/drove/server_manager.py`** — Manages the `llama-server` subprocess lifecycle: start, stop, health check, inactivity timer. Only one model runs at a time. Uses `asyncio.subprocess`.
+**`src/drove/server_manager.py`** — Manages backend subprocess lifecycles (one per model): start, stop, health check, inactivity timer, LRU eviction. Uses `asyncio.subprocess`. The backend per model is chosen by `src/drove/backend.py`: GGUF models run `llama-server`, ONNX speech-to-text models run the built-in ASR worker.
 
-**`src/drove/proxy.py`** — FastAPI app that acts as a reverse proxy. On each request it calls `ServerManager.ensure_running(model)`, then forwards the request to `llama-server` via `httpx.AsyncClient`. Resets the inactivity timer on each proxied request.
+**`src/drove/workers/asr.py`** — Built-in speech-to-text worker spawned as `python -m drove.workers.asr`. Loads ONNX ASR models (e.g. NVIDIA Parakeet) via the optional `onnx-asr` package (`drove[asr]` extra) and serves an OpenAI-compatible `/v1/audio/transcriptions` plus `/health`.
+
+**`src/drove/proxy.py`** — FastAPI app that acts as a reverse proxy. On each request it extracts the model name (from JSON or multipart form bodies), calls `ServerManager.ensure_running(model)`, then forwards the request to the backend via `httpx.AsyncClient`. Resets the inactivity timer on each proxied request.
 
 **`src/drove/cli/`** — Typer CLI with subcommands: `serve`, `models list`, `models download`, `models delete`, `models info`, `models config`.
 

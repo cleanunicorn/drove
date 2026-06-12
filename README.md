@@ -38,6 +38,7 @@ drove chat
 - **Lazy by design** — model processes start on first request and stop after idle timeout.
 - **OpenAI-compatible** — drop drove behind existing OpenAI SDK clients.
 - **Observable** — request logging plus TUI/web inspection for request/response debugging.
+- **Speech-to-text** — serve ASR models like NVIDIA Parakeet via `/v1/audio/transcriptions` with the built-in ONNX worker ([docs](./docs/speech-to-text.md)).
 
 ## Comparison
 

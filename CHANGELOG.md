@@ -21,6 +21,9 @@
 
 ### Changed
 
+- Updated `docs/architecture.md` to describe the backend-per-model design
+  (llama-server for GGUF, the built-in ASR worker for ONNX speech-to-text)
+  instead of llama-server only.
 - The install script and `make install` now include the `asr` extra by
   default, so speech-to-text models work out of the box; set `DROVE_EXTRAS=""`
   on the install script for a minimal text-generation-only install.

@@ -8,10 +8,12 @@ from pathlib import Path
 from drove.observe import (
     ObserveContext,
     ObserveRecord,
+    find_record_path,
     list_records,
     list_records_page,
     load_record,
     save_record,
+    search_records_page,
 )
 
 
@@ -141,6 +143,67 @@ def test_list_records_page_nonexistent_dir(tmp_path: Path) -> None:
     page, total = list_records_page(tmp_path / "nonexistent")
     assert page == []
     assert total == 0
+
+
+def test_search_records_page_paginates_matches(tmp_path: Path) -> None:
+    for i in range(1, 4):
+        record = _make_record(model="alpha", record_id=f"20260408-10000{i}-aaaa000{i}")
+        save_record(tmp_path, record)
+    save_record(tmp_path, _make_record(model="beta", record_id="20260408-100009-bbbb0001"))
+
+    page, total = search_records_page(tmp_path, "alpha", offset=0, limit=2)
+    assert total == 3
+    assert [p[1].id for p in page] == [
+        "20260408-100003-aaaa0003",
+        "20260408-100002-aaaa0002",
+    ]
+
+    last, total = search_records_page(tmp_path, "alpha", offset=2, limit=2)
+    assert total == 3
+    assert len(last) == 1
+    assert last[0][1].id == "20260408-100001-aaaa0001"
+
+
+def test_search_records_page_no_matches(tmp_path: Path) -> None:
+    save_record(tmp_path, _make_record(record_id="20260408-100001-aaaa0001"))
+
+    page, total = search_records_page(tmp_path, "nomatch")
+    assert page == []
+    assert total == 0
+
+
+def test_search_records_page_skips_corrupt_files(tmp_path: Path) -> None:
+    save_record(tmp_path, _make_record(model="alpha", record_id="20260408-100001-aaaa0001"))
+    (tmp_path / "alpha" / "20260408-100002-corrupt0.json").write_text("not json")
+
+    page, total = search_records_page(tmp_path, "alpha")
+    assert total == 1
+    assert len(page) == 1
+
+
+def test_find_record_path_locates_record(tmp_path: Path) -> None:
+    record = _make_record(record_id="20260408-100001-aaaa0001")
+    saved = save_record(tmp_path, record)
+
+    assert find_record_path(tmp_path, record.id) == saved
+    assert find_record_path(tmp_path, record.id, model="testmodel") == saved
+
+
+def test_find_record_path_namespaced_model(tmp_path: Path) -> None:
+    record = _make_record(
+        model="unsloth/Qwen3-8B-GGUF:Q8_0",
+        record_id="20260408-100000-nnnn0001",
+    )
+    saved = save_record(tmp_path, record)
+
+    assert find_record_path(tmp_path, record.id) == saved
+
+
+def test_find_record_path_missing(tmp_path: Path) -> None:
+    save_record(tmp_path, _make_record(record_id="20260408-100001-aaaa0001"))
+
+    assert find_record_path(tmp_path, "nonexistent") is None
+    assert find_record_path(tmp_path / "nonexistent", "whatever") is None
 
 
 def test_list_records_finds_namespaced_models(tmp_path: Path) -> None:

@@ -358,3 +358,47 @@ def list_records_page(
         except json.JSONDecodeError, KeyError, ValueError:
             continue
     return page, total
+
+
+def search_records_page(
+    observe_dir: Path,
+    query: str,
+    model: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> tuple[list[tuple[Path, ObserveRecord]], int]:
+    """Return one page of records matching query (newest first) plus the total match count.
+
+    Search has to parse every record to evaluate the match, but only the
+    matches inside the requested window are kept, so memory stays bounded by
+    the page size rather than the full log.
+    """
+    page: list[tuple[Path, ObserveRecord]] = []
+    matched = 0
+    for p in _record_paths(observe_dir, model):
+        try:
+            record = load_record(p)
+        except json.JSONDecodeError, KeyError, ValueError:
+            continue
+        if not record_matches(record, query):
+            continue
+        if offset <= matched < offset + limit:
+            page.append((p, record))
+        matched += 1
+    return page, matched
+
+
+def find_record_path(observe_dir: Path, record_id: str, model: str | None = None) -> Path | None:
+    """Locate a record file by id without parsing any records.
+
+    Record ids double as filename stems, so the lookup is a direct filename
+    match across the record directories.
+    """
+    if not observe_dir.exists():
+        return None
+    name = f"{record_id}.json"
+    for d in _record_dirs(observe_dir, model):
+        candidate = d / name
+        if candidate.is_file():
+            return candidate
+    return None

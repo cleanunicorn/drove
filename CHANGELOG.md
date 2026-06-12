@@ -21,6 +21,9 @@
 
 ### Changed
 
+- The install script and `make install` now include the `asr` extra by
+  default, so speech-to-text models work out of the box; set `DROVE_EXTRAS=""`
+  on the install script for a minimal text-generation-only install.
 - Reworked the README around the two model classes drove serves: text
   generation (Gemma example via llama-server) and speech-to-text (Parakeet
   example via the built-in ONNX worker), with curl examples for both.

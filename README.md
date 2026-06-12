@@ -54,10 +54,9 @@ The model loads on the first request and shuts down after the idle timeout. Any 
 
 ## Speech-to-text
 
-drove also serves ASR models such as NVIDIA Parakeet through the same port and lifecycle, using its built-in ONNX worker (no extra server binary). Install the `asr` extra, then download an ONNX export:
+drove also serves ASR models such as NVIDIA Parakeet through the same port and lifecycle, using its built-in ONNX worker (no extra server binary). Speech-to-text support is included by the install script and `make install`; if you installed drove manually, add the `asr` extra (`pip install 'drove[asr]'`). Download an ONNX export:
 
 ```bash
-uv tool install 'drove[asr]'
 drove models download istupakov/parakeet-tdt-0.6b-v3-onnx
 ```
 

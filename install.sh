@@ -6,6 +6,9 @@ GITHUB_URL="https://github.com/${REPO}"
 DEFAULT_INSTALL_SOURCE="git+${GITHUB_URL}"
 INSTALL_SOURCE="${1:-${DROVE_INSTALL_SOURCE:-${DEFAULT_INSTALL_SOURCE}}}"
 PYTHON_REQUEST="${DROVE_PYTHON:-3.14}"
+# Extras installed by default (speech-to-text). Set DROVE_EXTRAS="" for a
+# minimal text-generation-only install.
+DROVE_EXTRAS="${DROVE_EXTRAS-asr}"
 
 # Colors
 RED='\033[0;31m'
@@ -57,8 +60,13 @@ fi
 # Install drove via uv tool. By default this installs from GitHub, but CI and
 # contributors can pass a local checkout path as the first argument or via
 # DROVE_INSTALL_SOURCE.
+if [[ -n "${DROVE_EXTRAS}" ]]; then
+    INSTALL_SPEC="drove[${DROVE_EXTRAS}] @ ${INSTALL_SOURCE}"
+else
+    INSTALL_SPEC="${INSTALL_SOURCE}"
+fi
 info "Installing drove from ${INSTALL_SOURCE} with Python ${PYTHON_REQUEST} ..."
-uv tool install --force --python "${PYTHON_REQUEST}" "${INSTALL_SOURCE}"
+uv tool install --force --python "${PYTHON_REQUEST}" "${INSTALL_SPEC}"
 
 # Ensure uv tool bin dir is on PATH for post-install checks in this session.
 UV_TOOL_BIN="$(uv tool dir --bin 2>/dev/null || echo "${HOME}/.local/bin")"
@@ -82,6 +90,9 @@ echo "    drove init                                    # Create config file"
 echo "    drove models download unsloth/Qwen3-8B-GGUF  # Download a model"
 echo "    drove serve                                   # Start the proxy"
 echo "    drove chat                                    # Interactive chat"
+echo ""
+echo "  Speech-to-text:"
+echo "    drove models download istupakov/parakeet-tdt-0.6b-v3-onnx"
 echo ""
 
 # Warn if llama-server is missing (required runtime dependency).

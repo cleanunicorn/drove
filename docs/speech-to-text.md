@@ -12,7 +12,9 @@ the same drove port as chat completions; the `model` form field picks the model.
 
 ## Install
 
-The ASR backend needs the optional `asr` extra:
+The install script and `make install` include speech-to-text support by
+default (set `DROVE_EXTRAS=""` when running the install script for a minimal,
+text-generation-only install). For manual installs, add the `asr` extra:
 
 ```bash
 uv tool install 'drove[asr]'

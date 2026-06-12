@@ -386,7 +386,8 @@ def download_model(
                 "HuggingFace repo reference. "
                 "Format: 'org/repo' or 'org/repo:QUANT'. "
                 "Examples: unsloth/Qwen3-8B-GGUF  "
-                "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M"
+                "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M  "
+                "istupakov/parakeet-tdt-0.6b-v3-onnx:int8"
             )
         ),
     ],
@@ -399,8 +400,10 @@ def download_model(
     """Download a model from HuggingFace Hub.
 
     Automatically discovers files in the repo. If a quantization tag is
-    provided (e.g. :Q4_K_M), only matching files are downloaded. Sharded
-    models (multiple files) are stored in a named subdirectory.
+    provided (:Q4_K_M for GGUF, :int8 for ONNX speech-to-text), only
+    matching files are downloaded; otherwise a repo with several variants
+    prompts for a choice. Sharded models (multiple files) are stored in a
+    named subdirectory.
 
     Examples:
 
@@ -410,7 +413,7 @@ def download_model(
 
         drove models download unsloth/Qwen3-8B-GGUF:Q8_0 --name qwen3-8b-q8
 
-        drove models download istupakov/parakeet-tdt-0.6b-v3-onnx  (speech-to-text)
+        drove models download istupakov/parakeet-tdt-0.6b-v3-onnx:int8  (speech-to-text)
     """
     from drove.downloader import (
         FileStatus,

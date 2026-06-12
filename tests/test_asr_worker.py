@@ -136,6 +136,44 @@ def test_normalize_audio_non_wav_without_ffmpeg_raises_415(
     assert excinfo.value.status_code == 415
 
 
+def test_main_wires_arguments_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import uvicorn
+
+    from drove.workers import asr as asr_module
+
+    engine_args: dict[str, tuple[str, Path, str | None]] = {}
+
+    class FakeEngineCls:
+        def __init__(self, model_type: str, model_dir: Path, quantization: str | None) -> None:
+            engine_args["init"] = (model_type, model_dir, quantization)
+
+        def recognize(self, wav_path: str) -> str:
+            return ""
+
+    monkeypatch.setattr(asr_module, "OnnxAsrEngine", FakeEngineCls)
+    runs: dict[str, object] = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: runs.update({"app": app, **kw}))
+
+    asr_module.main(
+        [
+            "--model-dir",
+            str(tmp_path),
+            "--model-type",
+            "nemo-parakeet-tdt-0.6b-v3",
+            "--quantization",
+            "int8",
+            "--port",
+            "9123",
+        ]
+    )
+
+    assert engine_args["init"] == ("nemo-parakeet-tdt-0.6b-v3", tmp_path, "int8")
+    assert runs["port"] == 9123
+    assert runs["host"] == "127.0.0.1"
+
+
 def test_read_wav_returns_none_for_corrupt_input() -> None:
     """Truncated (EOFError) and malformed (wave.Error) WAV bytes both yield None."""
     from drove.workers.asr import _read_wav

@@ -35,6 +35,9 @@
 
 ### Changed
 
+- Consolidated the download command's quantization-choice handling into a
+  shared helper covering both GGUF tags and ONNX variants; no behavior
+  change.
 - Clarified the quantization-filtering logic in the downloader
   (`filter_onnx_quant`) by checking the explicit-quant case first; no
   behavior change.

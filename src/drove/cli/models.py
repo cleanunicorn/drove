@@ -266,6 +266,64 @@ def _prompt_quant_choice(quants: dict[str, int]) -> str | None:
     return tags[int(raw) - 1]
 
 
+def _apply_quant_selection(
+    plan: DownloadPlan, chosen: str, filtered: dict[str, int], name_override: str | None
+) -> str | None:
+    """Narrow *plan* to the files of the chosen quant variant, in place.
+
+    Returns *chosen* on success, or None when no files matched (the plan is
+    left untouched).
+    """
+    from drove.downloader import infer_local_name, is_sharded
+
+    if not filtered:
+        return None
+    plan.files = filtered
+    plan.sharded = is_sharded(list(filtered.keys()))
+    if name_override is None:
+        plan.local_name = infer_local_name(plan.repo_id, list(filtered.keys()), chosen)
+    return chosen
+
+
+def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str | None:
+    """Offer the quant-variant menu for *plan* and apply the choice in place.
+
+    ONNX (ASR) repos carry variants as filename infixes (model.int8.onnx) and
+    resolve to the default variant, so choices come from the full pre-filter
+    set kept on ``plan.onnx_files``; GGUF repos carry tags in filenames and
+    resolve unfiltered. Returns the chosen quant tag, or None when the user
+    keeps the default / all files (or only one variant exists).
+    """
+    from drove.downloader import (
+        available_onnx_quants,
+        available_quants,
+        filter_by_quant,
+        filter_onnx_quant,
+    )
+
+    if plan.is_asr:
+        variants = available_onnx_quants(plan.onnx_files)
+        if len(variants) < 2:
+            return None
+        chosen = _prompt_quant_choice(variants)
+        if chosen is None:
+            plan.files = dict(plan.onnx_files)
+            return None
+        if chosen == "default":
+            return None
+        return _apply_quant_selection(
+            plan, chosen, filter_onnx_quant(plan.onnx_files, chosen), name_override
+        )
+
+    quants = available_quants(plan.files)
+    if len(quants) < 2:
+        return None
+    chosen = _prompt_quant_choice(quants)
+    if chosen is None:
+        return None
+    return _apply_quant_selection(plan, chosen, filter_by_quant(plan.files, chosen), name_override)
+
+
 def _print_download_plan(
     plan: DownloadPlan,
     models_dir: Path,
@@ -354,12 +412,6 @@ def download_model(
     """
     from drove.downloader import (
         FileStatus,
-        available_onnx_quants,
-        available_quants,
-        filter_by_quant,
-        filter_onnx_quant,
-        infer_local_name,
-        is_sharded,
         parse_model_ref,
         resolve_download,
     )
@@ -379,37 +431,7 @@ def download_model(
 
     _, quant = parse_model_ref(model_ref)
     if quant is None and not yes:
-        if plan.is_asr:
-            # ONNX repos carry quant variants as filename infixes; the plan
-            # resolved to the default variant but keeps the full set around.
-            variants = available_onnx_quants(plan.onnx_files)
-            if len(variants) > 1:
-                chosen = _prompt_quant_choice(variants)
-                if chosen is None:
-                    plan.files = dict(plan.onnx_files)
-                elif chosen != "default":
-                    filtered = filter_onnx_quant(plan.onnx_files, chosen)
-                    if filtered:
-                        plan.files = filtered
-                        quant = chosen
-                        if name is None:
-                            plan.local_name = infer_local_name(
-                                plan.repo_id, list(filtered.keys()), quant
-                            )
-        else:
-            quants = available_quants(plan.files)
-            if len(quants) > 1:
-                chosen = _prompt_quant_choice(quants)
-                if chosen is not None:
-                    filtered = filter_by_quant(plan.files, chosen)
-                    if filtered:
-                        plan.files = filtered
-                        plan.sharded = is_sharded(list(filtered.keys()))
-                        quant = chosen
-                        if name is None:
-                            plan.local_name = infer_local_name(
-                                plan.repo_id, list(filtered.keys()), quant
-                            )
+        quant = _select_quant_variant(plan, name)
 
     statuses = plan.check_local_files(models_dir)
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())

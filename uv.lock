@@ -64,7 +64,7 @@ wheels = [
 
 [[package]]
 name = "drove"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -85,6 +85,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "types-psutil" },
 ]
 
 [package.metadata]
@@ -107,6 +108,7 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "ruff", specifier = ">=0.15.7" },
+    { name = "types-psutil", specifier = ">=7.2.2.20260518" },
 ]
 
 [[package]]
@@ -700,6 +702,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f5/24/cb09efec5cc954f7f9b930bf8279447d24618bb6758d4f6adf2574c41780/typer-0.24.1.tar.gz", hash = "sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45", size = 118613, upload-time = "2026-02-21T16:54:40.609Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/91/48db081e7a63bb37284f9fbcefda7c44c277b18b0e13fbc36ea2335b71e6/typer-0.24.1-py3-none-any.whl", hash = "sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e", size = 56085, upload-time = "2026-02-21T16:54:41.616Z" },
+]
+
+[[package]]
+name = "types-psutil"
+version = "7.2.2.20260518"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cb/f1/6901857281d4e8d792492e1495eef6f4f01318a3b6a066486d81000a4511/types_psutil-7.2.2.20260518.tar.gz", hash = "sha256:9f825f631463a5b4d26f19f63aebc9ec25f01140d655026f3ad8a67841f9b331", size = 26660, upload-time = "2026-05-18T06:05:09.389Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/eb/f726339668879819599c74c2e1f0cab760912a4159046942bdae2ad37bd6/types_psutil-7.2.2.20260518-py3-none-any.whl", hash = "sha256:6a3d697665754a60d7b5a41d5a2cff12b53f5e0676d77810cd28ba5e14cb4049", size = 32820, upload-time = "2026-05-18T06:05:08.321Z" },
 ]
 
 [[package]]

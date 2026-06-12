@@ -226,9 +226,10 @@ def resolve_model_alias(models_dir: Path, ref: str) -> str | None:
     quant tag.  Returns the local model name, or None if no match found.
     """
     # Parse optional quant tag
+    quant: str | None
     if ":" in ref:
-        repo_id, quant = ref.rsplit(":", 1)
-        quant = quant.strip().lower() or None
+        repo_id, quant_tag = ref.rsplit(":", 1)
+        quant = quant_tag.strip().lower() or None
     else:
         repo_id, quant = ref, None
 

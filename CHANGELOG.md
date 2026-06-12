@@ -35,6 +35,9 @@
 
 ### Changed
 
+- The download command now echoes the chosen quantization (or "all") after
+  the selection menu, so picks that don't change the model name still get
+  visible confirmation.
 - Consolidated the download command's quantization-choice handling into a
   shared helper covering both GGUF tags and ONNX variants; no behavior
   change.

@@ -306,6 +306,7 @@ def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str 
         if len(variants) < 2:
             return None
         chosen = _prompt_quant_choice(variants)
+        typer.echo(f"Selected: {chosen or 'all variants'}")
         if chosen is None:
             plan.files = dict(plan.onnx_files)
             return None
@@ -319,6 +320,7 @@ def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str 
     if len(quants) < 2:
         return None
     chosen = _prompt_quant_choice(quants)
+    typer.echo(f"Selected: {chosen or 'all quantizations'}")
     if chosen is None:
         return None
     return _apply_quant_selection(plan, chosen, filter_by_quant(plan.files, chosen), name_override)

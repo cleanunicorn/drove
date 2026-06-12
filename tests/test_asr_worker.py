@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import wave
 from pathlib import Path
 
@@ -133,3 +134,20 @@ def test_normalize_audio_non_wav_without_ffmpeg_raises_415(
     with pytest.raises(HTTPException) as excinfo:
         normalize_audio(b"\xffnot audio at all", tmp_path)
     assert excinfo.value.status_code == 415
+
+
+def test_normalize_audio_ffmpeg_failure_raises_400(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("drove.workers.asr.shutil.which", lambda _: "/usr/bin/ffmpeg")
+    proc = subprocess.CompletedProcess(
+        args=[],
+        returncode=1,
+        stdout=b"",
+        stderr=b"pipe:0: Invalid data found when processing input\n",
+    )
+    monkeypatch.setattr("drove.workers.asr.subprocess.run", lambda *a, **kw: proc)
+    with pytest.raises(HTTPException) as excinfo:
+        normalize_audio(b"\xffnot audio at all", tmp_path)
+    assert excinfo.value.status_code == 400
+    assert "Invalid data found" in excinfo.value.detail

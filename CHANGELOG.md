@@ -18,6 +18,10 @@
   ASR model type is auto-configured at download time for known repos.
 - The proxy now extracts the `model` field from multipart form bodies, so
   OpenAI-style audio requests route to the right model on the same listen port.
+- Expanded ASR test coverage: ffmpeg decode-failure and conversion happy
+  paths, non-16-bit and corrupt WAV handling, multi-channel downmix, the
+  worker CLI entry point, and the ASR model-type inference fallback in
+  `server_manager`.
 
 ### Changed
 

@@ -19,6 +19,12 @@
 - The proxy now extracts the `model` field from multipart form bodies, so
   OpenAI-style audio requests route to the right model on the same listen port.
 
+### Changed
+
+- Reworked the README around the two model classes drove serves: text
+  generation (Gemma example via llama-server) and speech-to-text (Parakeet
+  example via the built-in ONNX worker), with curl examples for both.
+
 
 ## v0.1.2 (2026-06-12)
 

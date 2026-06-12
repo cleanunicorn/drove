@@ -1,76 +1,161 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Security
+## v0.2.0 (2026-06-12)
 
-- The ASR worker's `/v1/audio/transcriptions` endpoint now rejects uploads
-  over 100 MB with HTTP 413 instead of reading arbitrarily large bodies
-  into memory.
-- ffmpeg's error output is no longer echoed in the ASR worker's decode
-  error responses; clients get a generic message and the detail goes to
-  the server log.
+### Bug Fixes
 
-### Fixed
+- **asr**: Cap transcription upload size at 100 MB
+  ([`391460b`](https://github.com/cleanunicorn/drove/commit/391460b1b7f208e1a7edcde9ae7b73dab1627ae1))
 
-- The ASR worker no longer crashes with an internal error on WAV uploads
-  with malformed chunk sizes; such files now fall back to ffmpeg decoding
-  like other non-conforming input.
+The endpoint read the whole upload into memory unbounded; drove listens on the network by default,
+  so an oversized body could exhaust worker memory. Reject anything past 100 MB with HTTP 413.
+  (round-2 review finding security-1)
 
-### Added
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 
-- Speech-to-text models (e.g. NVIDIA Parakeet TDT) served through a new built-in
-  ASR worker (`drove.workers.asr`) with an OpenAI-compatible
-  `/v1/audio/transcriptions` endpoint, managed with the same lazy-start /
-  idle-shutdown lifecycle as llama-server. Requires the optional `drove[asr]`
-  extra (onnx-asr).
-- ONNX model support across model management: `drove models download` resolves
-  ONNX repos (including int8 variants via `org/repo:int8` and support files such
-  as `vocab.txt`), and `models list`/`info`/`delete`/`config` handle ASR models
-  like any other, with a new `stt` capability tag.
-- Per-model `backend`, `asr_model`, and `asr_quantization` config keys; the
-  backend is auto-detected from the model files (`.onnx` → ASR worker) and the
-  ASR model type is auto-configured at download time for known repos.
-- The proxy now extracts the `model` field from multipart form bodies, so
-  OpenAI-style audio requests route to the right model on the same listen port.
-- `drove models download` now prompts for the quantization variant of ONNX
-  speech-to-text repos (e.g. default vs int8), matching the existing choice
-  menu for GGUF models; previously the unquantized variant was selected
-  silently.
-- `drove models config` now validates `backend` against the known backends
-  and rejects malformed `asr_model` / `asr_quantization` values when they
-  are set, instead of failing later at backend startup.
-- The download command now echoes the chosen quantization (or "all") after
-  the selection menu, so picks that don't change the model name still get
-  visible confirmation.
-- Expanded ASR test coverage: ffmpeg decode-failure and conversion happy
-  paths, non-16-bit and corrupt WAV handling, multi-channel downmix, the
-  worker CLI entry point, the ASR model-type inference fallback in
-  `server_manager`, and the download command's quantization-variant
-  selection for both ONNX and GGUF repos.
+- **asr**: Keep ffmpeg error output out of client responses
+  ([`e028c87`](https://github.com/cleanunicorn/drove/commit/e028c87bdb131b64b4f242c4b41c2c144d5a09f7))
 
-### Changed
+The decode-failure detail echoed ffmpeg's stderr tail, which can name local paths and tool
+  internals; log it server-side and return a generic message instead. (review finding: sanitize
+  ffmpeg stderr)
 
-- Documented ONNX quantization references (`org/repo:int8`) in the
-  download command's help and docstring, and the `CAPS` column tags
-  (`vision`, `stt`) in the CLI reference.
-- Extracted the downloader's repeated ONNX-extension check into a shared
-  helper; no behavior change.
-- Consolidated the download command's quantization-choice handling into a
-  shared helper covering both GGUF tags and ONNX variants; no behavior
-  change.
-- Clarified the quantization-filtering logic in the downloader
-  (`filter_onnx_quant`) by checking the explicit-quant case first; no
-  behavior change.
-- Updated `docs/architecture.md` to describe the backend-per-model design
-  (llama-server for GGUF, the built-in ASR worker for ONNX speech-to-text)
-  instead of llama-server only.
-- The install script and `make install` now include the `asr` extra by
-  default, so speech-to-text models work out of the box; set `DROVE_EXTRAS=""`
-  on the install script for a minimal text-generation-only install.
-- Reworked the README around the two model classes drove serves: text
-  generation (Gemma example via llama-server) and speech-to-text (Parakeet
-  example via the built-in ONNX worker), with curl examples for both.
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **asr**: Treat WAV files with bogus chunk sizes as non-conforming
+  ([`bbec6ee`](https://github.com/cleanunicorn/drove/commit/bbec6eeec8dc83bdc4d5b70ea25cb183e012eaf1))
+
+The chunk reader behind the wave module raises a bare RuntimeError when a chunk size seeks past the
+  end of the data, which escaped _read_wav and surfaced as an internal error instead of falling back
+  to ffmpeg. Catch it alongside wave.Error and EOFError. (found while writing testing-3)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+### Documentation
+
+- **architecture**: Reflect backend-per-model design in architecture.md
+  ([`4dcea70`](https://github.com/cleanunicorn/drove/commit/4dcea70ff874bdc7a1a633f214ebfe8c1cc85ac4))
+
+The request-flow diagram and module list still described llama-server as the only backend; ONNX
+  speech-to-text models now run the built-in ASR worker. (review finding docs-1)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **changelog**: File the selection-echo entry under Added
+  ([`839e398`](https://github.com/cleanunicorn/drove/commit/839e398acca4791d03de316cecba5c0e3c86f0ed))
+
+The entry for the feat(cli) echo commit sat under ### Changed; AGENTS.md requires changelog entries
+  consistent with the commit type. (round-3 review finding conventions-1)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **cli**: Document ONNX quant refs and the CAPS column
+  ([`9ded1fd`](https://github.com/cleanunicorn/drove/commit/9ded1fdc0a4aa95cd242f7cb0c0a82cc521488a5))
+
+The download help only showed GGUF-style :Q4_K_M references; ONNX repos take :int8-style variants
+  and prompt when several exist. Also explain the vision/stt tags in models list output. (round-2
+  review findings docs-1, docs-2, docs-3)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **readme**: Present text generation and speech-to-text side by side
+  ([`e62e183`](https://github.com/cleanunicorn/drove/commit/e62e1835094a14b34657cc6f3ecca45693b9187e))
+
+Broaden the tagline from "local LLMs" to "local models", add a Text generation section (Gemma 3 12B
+  GGUF example with a curl chat request) and a Speech-to-text section (Parakeet ONNX example with a
+  curl transcription request and real output), and add a speech-to-text row to the comparison table.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+### Features
+
+- **asr**: Serve speech-to-text models via a built-in ONNX worker
+  ([`433e1de`](https://github.com/cleanunicorn/drove/commit/433e1de689b8d9bc0493447daa2a3b1fdaa779ae))
+
+Add first-class speech-to-text support (e.g. NVIDIA Parakeet TDT) managed exactly like LLMs — lazy
+  start on first request, idle shutdown, LRU eviction, same listen port:
+
+- New built-in worker (python -m drove.workers.asr) that loads ONNX ASR models via the optional
+  onnx-asr package (drove[asr] extra) and serves an OpenAI-compatible POST /v1/audio/transcriptions
+  plus /health. Audio is normalized to 16 kHz mono PCM (ffmpeg when available, pure-Python WAV
+  fallback). - Per-model backend selection (src/drove/backend.py): .gguf → llama-server, .onnx → ASR
+  worker, overridable with the new `backend` config key. New `asr_model` and `asr_quantization` keys
+  (excluded from llama args). - ServerManager dispatches the right command per backend; health
+  checks and lifecycle are unchanged. - Proxy extracts the model name from multipart form bodies so
+  OpenAI audio requests route on the same port as chat completions. - Downloader handles ONNX repos:
+  weights + support files (vocab/config), int8 variant selection via org/repo:int8; CLI
+  auto-configures asr_model for known repos and shows an `stt` capability tag. - ModelStore resolves
+  ONNX model dirs (GGUF still wins in mixed dirs); list/info/delete/config work uniformly.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **cli**: Confirm the quantization selection with an echo
+  ([`8746f50`](https://github.com/cleanunicorn/drove/commit/8746f50a4bec8e6a48ebe68efbbf1a07ddc88f88))
+
+Choosing 'default' or 'all' leaves the model name unchanged, so nothing visibly acknowledged the
+  menu choice before the plan printed. (round-2 review finding ux-polish-1)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **cli**: Prompt for ONNX quantization variants on download
+  ([`0a6c907`](https://github.com/cleanunicorn/drove/commit/0a6c907ae96e324a6a808161ec1c63b2f17e1331))
+
+available_quants() only recognises GGUF-style tags and resolve_download had already narrowed the
+  plan to the unquantized variant, so ONNX repos with int8 variants never showed the quant choice
+  menu. Keep the full ONNX file set on the plan, summarise its variants, and reuse the existing
+  prompt. (review finding ux-polish-1)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **config**: Validate drove-specific keys when set via the CLI
+  ([`2f59793`](https://github.com/cleanunicorn/drove/commit/2f597936e68d636ea7f1bb12f43f2079089c9d3e))
+
+backend is checked against VALID_BACKENDS, and asr_model / asr_quantization must be safe tokens
+  (they end up on the ASR worker's command line). Shape validation rather than a whitelist: setting
+  asr_model manually is the documented escape hatch for models outside the known-repo table. (review
+  finding: validate asr config values)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **install**: Include speech-to-text support by default
+  ([`2b3151c`](https://github.com/cleanunicorn/drove/commit/2b3151c106e8840427bfd7b64d6f72e534dbb3c0))
+
+A model that downloads fine but 503s at request time is a confusing default, so make install and
+  install.sh now install drove with the asr extra out of the box (~40 MB of CPU ONNX wheels).
+  install.sh accepts DROVE_EXTRAS="" for a minimal text-generation-only install, and the plain pip
+  extra remains for manual installs. The installer quick-start now mentions downloading a
+  speech-to-text model.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+### Refactoring
+
+- **cli**: Extract shared quant-selection helpers
+  ([`5f26483`](https://github.com/cleanunicorn/drove/commit/5f264833ed75f4543ff3fb4a274a8a271489df21))
+
+The ONNX and GGUF prompt branches in download_model duplicated the filter-narrow-rename sequence;
+  move selection into _select_quant_variant with a shared _apply_quant_selection step. No behavior
+  change. (round-2 review finding refactor-2)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **downloader**: Check explicit quant first in filter_onnx_quant
+  ([`3b68009`](https://github.com/cleanunicorn/drove/commit/3b68009ceefbbbbca9f26979a8276855f6852ce4))
+
+The quant-is-None branch led with inverted logic (filter OUT quantized files); leading with the
+  positive case reads in the order the docstring describes. No behavior change. (review finding
+  refactor-1)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **downloader**: Extract _is_onnx_file helper
+  ([`7d036be`](https://github.com/cleanunicorn/drove/commit/7d036be97154036b58a5f6c8efc390729ed37a4f))
+
+The .onnx suffix check appeared in _fetch_files_with_sizes and is_onnx_files; centralize it. No
+  behavior change. (review finding: extract _is_onnx_file)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 
 
 ## v0.1.2 (2026-06-12)

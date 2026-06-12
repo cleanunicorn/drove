@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from importlib.metadata import version as _package_version
 from pathlib import Path
 from typing import Annotated
 
@@ -24,6 +25,12 @@ app.add_typer(server_app, name="server")
 app.add_typer(server_app, name="serve", hidden=True)
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"drove {_package_version('drove')}")
+        raise typer.Exit()
+
+
 @app.callback()
 def _root(
     ctx: typer.Context,
@@ -32,6 +39,15 @@ def _root(
         typer.Option("--config", "-c", help="Path to config TOML file."),
     ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            help="Show the drove version and exit.",
+            callback=_version_callback,
+            is_eager=True,
+        ),
+    ] = False,
 ) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,

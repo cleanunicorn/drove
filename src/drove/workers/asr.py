@@ -148,7 +148,9 @@ def _read_wav(data: bytes) -> tuple[array.array[int], int, int] | None:
             samples: array.array[int] = array.array("h")
             samples.frombytes(w.readframes(w.getnframes()))
             return samples, w.getnchannels(), w.getframerate()
-    except wave.Error, EOFError:
+    # RuntimeError: the chunk reader behind wave raises it for bogus chunk
+    # sizes that seek past the end of the data.
+    except wave.Error, EOFError, RuntimeError:
         return None
 
 

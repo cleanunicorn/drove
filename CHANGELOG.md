@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The ASR worker no longer crashes with an internal error on WAV uploads
+  with malformed chunk sizes; such files now fall back to ffmpeg decoding
+  like other non-conforming input.
+
 ### Added
 
 - Speech-to-text models (e.g. NVIDIA Parakeet TDT) served through a new built-in

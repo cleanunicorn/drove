@@ -142,8 +142,10 @@ def test_read_wav_returns_none_for_corrupt_input() -> None:
 
     truncated = make_wav()[:12]
     not_wave = b"RIFF\x10\x00\x00\x00WAVXgarbage!"
+    bogus_chunk = b"RIFF\x10\x00\x00\x00WAVEgarbage!"  # chunk seek past EOF → RuntimeError
     assert _read_wav(truncated) is None
     assert _read_wav(not_wave) is None
+    assert _read_wav(bogus_chunk) is None
 
 
 def test_normalize_audio_corrupt_wav_without_ffmpeg_raises_415(

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Security
+
+- The ASR worker's `/v1/audio/transcriptions` endpoint now rejects uploads
+  over 100 MB with HTTP 413 instead of reading arbitrarily large bodies
+  into memory.
+
 ### Fixed
 
 - The ASR worker no longer crashes with an internal error on WAV uploads

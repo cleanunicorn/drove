@@ -108,6 +108,18 @@ def test_transcribe_empty_file_returns_400() -> None:
     assert resp.status_code == 400
 
 
+def test_transcribe_oversized_file_returns_413(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("drove.workers.asr.MAX_UPLOAD_BYTES", 64)
+    app = create_asr_app(FakeEngine())
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("audio.wav", b"\x00" * 65, "audio/wav")},
+        )
+    assert resp.status_code == 413
+    assert "too large" in resp.json()["detail"]
+
+
 def test_normalize_audio_conforming_wav_passthrough(tmp_path: Path) -> None:
     data = make_wav(rate=TARGET_RATE, channels=1, seconds=0.25)
     out, duration = normalize_audio(data, tmp_path)

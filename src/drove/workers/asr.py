@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 TARGET_RATE = 16_000
 
+# Memory-exhaustion guard for uploads (the file is read fully into memory),
+# not an audio-length limit; ~100 MB fits well over an hour of 16-bit WAV.
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+
 _RESPONSE_FORMATS = frozenset({"json", "text", "verbose_json"})
 
 
@@ -86,9 +90,14 @@ def create_asr_app(engine: AsrEngine, model_name: str = "asr") -> FastAPI:
                 detail=f"Unsupported response_format '{response_format}'. Supported: {supported}",
             )
 
-        data = file.file.read()
+        data = file.file.read(MAX_UPLOAD_BYTES + 1)
         if not data:
             raise HTTPException(status_code=400, detail="Empty audio file.")
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Audio file too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).",
+            )
 
         with tempfile.TemporaryDirectory(prefix="drove-asr-") as tmp:
             wav_path, duration = normalize_audio(data, Path(tmp))

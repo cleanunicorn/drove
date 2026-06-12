@@ -34,6 +34,9 @@
   speech-to-text repos (e.g. default vs int8), matching the existing choice
   menu for GGUF models; previously the unquantized variant was selected
   silently.
+- The download command now echoes the chosen quantization (or "all") after
+  the selection menu, so picks that don't change the model name still get
+  visible confirmation.
 - Expanded ASR test coverage: ffmpeg decode-failure and conversion happy
   paths, non-16-bit and corrupt WAV handling, multi-channel downmix, the
   worker CLI entry point, the ASR model-type inference fallback in
@@ -45,9 +48,6 @@
 - Documented ONNX quantization references (`org/repo:int8`) in the
   download command's help and docstring, and the `CAPS` column tags
   (`vision`, `stt`) in the CLI reference.
-- The download command now echoes the chosen quantization (or "all") after
-  the selection menu, so picks that don't change the model name still get
-  visible confirmation.
 - Consolidated the download command's quantization-choice handling into a
   shared helper covering both GGUF tags and ONNX variants; no behavior
   change.

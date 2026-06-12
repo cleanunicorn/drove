@@ -30,8 +30,9 @@
   silently.
 - Expanded ASR test coverage: ffmpeg decode-failure and conversion happy
   paths, non-16-bit and corrupt WAV handling, multi-channel downmix, the
-  worker CLI entry point, and the ASR model-type inference fallback in
-  `server_manager`.
+  worker CLI entry point, the ASR model-type inference fallback in
+  `server_manager`, and the download command's quantization-variant
+  selection for both ONNX and GGUF repos.
 
 ### Changed
 

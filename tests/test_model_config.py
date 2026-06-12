@@ -89,3 +89,36 @@ def test_set_model_config_key_accepts_asr_fields(tmp_path: Path) -> None:
     updated = set_model_config_key(model, "asr_model", "nemo-parakeet-tdt-0.6b-v3")
     assert updated.asr_model == "nemo-parakeet-tdt-0.6b-v3"
     assert load_model_config(model).asr_model == "nemo-parakeet-tdt-0.6b-v3"
+
+
+def test_set_model_config_key_rejects_malformed_asr_model(tmp_path: Path) -> None:
+    model = fake_model(tmp_path)
+    with pytest.raises(ValueError, match="Invalid value for 'asr_model'"):
+        set_model_config_key(model, "asr_model", "bad value; rm -rf /")
+    assert load_model_config(model).asr_model is None
+
+
+def test_set_model_config_key_rejects_malformed_asr_quantization(tmp_path: Path) -> None:
+    model = fake_model(tmp_path)
+    with pytest.raises(ValueError, match="Invalid value for 'asr_quantization'"):
+        set_model_config_key(model, "asr_quantization", "int8 --extra-flag")
+    assert load_model_config(model).asr_quantization is None
+
+
+def test_set_model_config_key_accepts_valid_asr_quantization(tmp_path: Path) -> None:
+    model = fake_model(tmp_path)
+    updated = set_model_config_key(model, "asr_quantization", "int8")
+    assert updated.asr_quantization == "int8"
+
+
+def test_set_model_config_key_rejects_unknown_backend(tmp_path: Path) -> None:
+    model = fake_model(tmp_path)
+    with pytest.raises(ValueError, match="Unknown backend"):
+        set_model_config_key(model, "backend", "whisper")
+    assert load_model_config(model).backend is None
+
+
+def test_set_model_config_key_accepts_valid_backend(tmp_path: Path) -> None:
+    model = fake_model(tmp_path)
+    updated = set_model_config_key(model, "backend", "asr")
+    assert updated.backend == "asr"

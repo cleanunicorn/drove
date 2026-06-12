@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,32 @@ class ModelConfig(BaseModel):
         return self.model_dump(exclude_none=True)
 
 
+# Safe-token shape for values handed to the ASR worker's command line.
+# Not a whitelist: onnx-asr supports more model types than drove's known-repo
+# table, and setting asr_model manually is the documented escape hatch.
+_ASR_VALUE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _validate_drove_key(key: str, value: str) -> None:
+    """Validate drove-specific config values when they are set via the CLI.
+
+    Fails fast with a helpful message instead of leaving a value that only
+    blows up when the backend subprocess starts.
+    """
+    if key == "backend":
+        from drove.backend import VALID_BACKENDS
+
+        if value.strip().lower() not in VALID_BACKENDS:
+            valid = ", ".join(sorted(VALID_BACKENDS))
+            raise ValueError(f"Unknown backend '{value}'. Valid backends: {valid}")
+    elif key in ("asr_model", "asr_quantization") and not _ASR_VALUE_RE.match(value):
+        raise ValueError(
+            f"Invalid value for '{key}': '{value}'. "
+            "Use letters, digits, dots, dashes, and underscores only "
+            "(e.g. nemo-parakeet-tdt-0.6b-v3, int8)."
+        )
+
+
 GLOBAL_CONFIG_FILENAME = "_global.toml"
 
 
@@ -133,6 +160,8 @@ def set_global_model_config_key(models_dir: Path, key: str, value: str) -> Model
     if key not in fields:
         valid = ", ".join(sorted(fields.keys()))
         raise ValueError(f"Unknown config key '{key}'. Valid keys: {valid}")
+
+    _validate_drove_key(key, value)
 
     annotation = fields[key].annotation
     origin = getattr(annotation, "__origin__", None)
@@ -196,6 +225,8 @@ def set_model_config_key(model_path: Path, key: str, value: str) -> ModelConfig:
     if key not in fields:
         valid = ", ".join(sorted(fields.keys()))
         raise ValueError(f"Unknown config key '{key}'. Valid keys: {valid}")
+
+    _validate_drove_key(key, value)
 
     annotation = fields[key].annotation
     # Resolve Optional[X] → X

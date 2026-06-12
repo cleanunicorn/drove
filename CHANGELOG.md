@@ -34,6 +34,9 @@
   speech-to-text repos (e.g. default vs int8), matching the existing choice
   menu for GGUF models; previously the unquantized variant was selected
   silently.
+- `drove models config` now validates `backend` against the known backends
+  and rejects malformed `asr_model` / `asr_quantization` values when they
+  are set, instead of failing later at backend startup.
 - The download command now echoes the chosen quantization (or "all") after
   the selection menu, so picks that don't change the model name still get
   visible confirmation.

@@ -2,16 +2,18 @@
 
 ## Install
 
-### Option 1: installer script
+### Option 1: make install
 
 ```bash
-curl -LsSf drove.sh | sh
+git clone https://github.com/cleanunicorn/drove.git
+cd drove
+make install
 ```
 
 ### Option 2: uv tool install
 
 ```bash
-uv tool install git+https://github.com/cleanunicorn/drove
+uv tool install 'drove[asr] @ git+https://github.com/cleanunicorn/drove'
 ```
 
 ## Initialize local config

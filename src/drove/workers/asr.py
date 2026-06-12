@@ -237,9 +237,13 @@ def _convert_with_ffmpeg(data: bytes, out: Path) -> None:
         capture_output=True,
     )
     if proc.returncode != 0:
+        # Keep ffmpeg's output in the server log only; it can name local
+        # paths and tool internals that don't belong in a client response.
         tail = proc.stderr.decode(errors="replace").strip().splitlines()[-3:]
+        logger.warning("ffmpeg failed to decode upload: %s", " | ".join(tail))
         raise HTTPException(
-            status_code=400, detail="ffmpeg failed to decode audio: " + " | ".join(tail)
+            status_code=400,
+            detail="Failed to decode the audio file. Check that it is a supported audio format.",
         )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import array
 import io
+import logging
 import subprocess
 import wave
 from pathlib import Path
@@ -270,7 +271,7 @@ def test_normalize_audio_non_wav_with_ffmpeg_converts(
 
 
 def test_normalize_audio_ffmpeg_failure_raises_400(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr("drove.workers.asr.shutil.which", lambda _: "/usr/bin/ffmpeg")
     proc = subprocess.CompletedProcess(
@@ -280,7 +281,11 @@ def test_normalize_audio_ffmpeg_failure_raises_400(
         stderr=b"pipe:0: Invalid data found when processing input\n",
     )
     monkeypatch.setattr("drove.workers.asr.subprocess.run", lambda *a, **kw: proc)
-    with pytest.raises(HTTPException) as excinfo:
-        normalize_audio(b"\xffnot audio at all", tmp_path)
+    with caplog.at_level(logging.WARNING, logger="drove.workers.asr"):
+        with pytest.raises(HTTPException) as excinfo:
+            normalize_audio(b"\xffnot audio at all", tmp_path)
     assert excinfo.value.status_code == 400
-    assert "Invalid data found" in excinfo.value.detail
+    # ffmpeg's stderr goes to the server log, not the client response.
+    assert "Invalid data found" not in excinfo.value.detail
+    assert "Failed to decode" in excinfo.value.detail
+    assert "Invalid data found" in caplog.text

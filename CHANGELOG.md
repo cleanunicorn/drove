@@ -7,6 +7,9 @@
 - The ASR worker's `/v1/audio/transcriptions` endpoint now rejects uploads
   over 100 MB with HTTP 413 instead of reading arbitrarily large bodies
   into memory.
+- ffmpeg's error output is no longer echoed in the ASR worker's decode
+  error responses; clients get a generic message and the detail goes to
+  the server log.
 
 ### Fixed
 

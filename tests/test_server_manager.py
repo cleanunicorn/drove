@@ -353,6 +353,17 @@ def test_infer_asr_model_type_from_download_info(tmp_path: Path) -> None:
     assert manager._infer_asr_model_type("parakeet", primary) == "nemo-parakeet-tdt-0.6b-v3"
 
 
+def test_infer_asr_model_type_falls_back_to_model_name(tmp_path: Path) -> None:
+    """Without download metadata, a recognised model name alone resolves the type."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    primary = make_asr_model(config, name="parakeet-tdt-0.6b-v3")
+
+    inferred = manager._infer_asr_model_type("parakeet-tdt-0.6b-v3", primary)
+
+    assert inferred == "nemo-parakeet-tdt-0.6b-v3"
+
+
 def test_infer_asr_model_type_unknown_raises(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     manager = ServerManager(config)

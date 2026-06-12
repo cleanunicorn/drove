@@ -1,21 +1,20 @@
 # CHANGELOG
 
 
-## [Unreleased]
+## v0.1.2 (2026-06-12)
 
-### Added
+### Bug Fixes
 
-- Added a `--version` flag to the `drove` CLI that prints the installed version, matching what `install.sh` already expected.
-- `drove server` now warns at startup when the configured `llama_server_bin` binary cannot be found, instead of failing only on the first model request.
+- Version flag, llama-server startup warning, TUI tool-grant reset
+  ([`e1aa1eb`](https://github.com/cleanunicorn/drove/commit/e1aa1eb27d76edb6c9ee156ee2b1bb29c7d84839))
 
-### Removed
+- Add a --version flag to the drove CLI (install.sh already probes `drove --version` during
+  installation). - Warn at `drove server` startup when the configured llama_server_bin is not found
+  on PATH, instead of failing only on the first request. - Reset session-level tool permissions when
+  starting a new chat via /new or /clear in the chat TUI, so grants no longer leak across
+  conversations.
 
-- Removed the stale `current_code.py` file from the repository root, a leftover pre-rebrand copy of `src/drove/observe_web.py` that was referenced nowhere.
-
-### Fixed
-
-- Starting a new chat with `/new` or `/clear` in the chat TUI now resets session-level tool permissions, so tools granted in the previous conversation no longer carry over.
-- Fixed all mypy strict-mode errors across `src/` (51 errors in 11 files) so type checking passes clean; added `types-psutil` to the dev dependency group. No runtime behavior changed.
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 
 
 ## v0.1.1 (2026-05-20)

@@ -483,7 +483,8 @@ def _find_free_port() -> int:
     """Bind to port 0 to let the OS assign an available port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 def _tail(text: str, n: int) -> str:

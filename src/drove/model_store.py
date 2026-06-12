@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,7 +78,7 @@ class ModelStore:
                 results.append(ModelEntry(p.stem, p, p.stat().st_size))
         return results
 
-    def complete(self, prefix: str) -> list[str]:
+    def complete(self, prefix: str) -> builtins.list[str]:
         """Return model names that start with *prefix* (for shell completion)."""
         names: list[str] = []
         if not self._dir.exists():
@@ -127,7 +128,7 @@ class ModelStore:
     def _has_model_files(directory: Path) -> bool:
         return any(f.suffix.lower() in _MODEL_EXTS for f in directory.iterdir() if f.is_file())
 
-    def _add_entry(self, directory: Path, name: str, results: list[ModelEntry]) -> None:
+    def _add_entry(self, directory: Path, name: str, results: builtins.list[ModelEntry]) -> None:
         files = [f for f in directory.rglob("*") if f.is_file()]
         total = sum(f.stat().st_size for f in files)
         ggufs = sorted(f for f in files if f.suffix.lower() == ".gguf")

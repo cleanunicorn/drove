@@ -184,6 +184,8 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 )
             # Use the first loaded model as fallback for the upstream URL
             resolved_model = manager.current_model
+            # is_running was just checked above, so a loaded model must exist
+            assert resolved_model is not None
         else:
             resolved_model = model_name
             try:
@@ -464,8 +466,8 @@ def _record_usage(
             except json.JSONDecodeError, ValueError:
                 continue
 
-    prompt_tokens = tokens_out["prompt"]
-    completion_tokens = tokens_out["completion"]
+    prompt_tokens = int(tokens_out["prompt"] or 0)
+    completion_tokens = int(tokens_out["completion"] or 0)
     tok_per_sec = tokens_out["speed"]
 
     if prompt_tokens or completion_tokens:

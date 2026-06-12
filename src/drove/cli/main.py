@@ -301,7 +301,7 @@ def _select_model_from_endpoint(base_url: str, api_key: str | None) -> str | Non
         typer.echo("Invalid response from /v1/models.", err=True)
         return None
 
-    names = [m["id"] for m in model_list if "id" in m]
+    names: list[str] = [m["id"] for m in model_list if "id" in m]
     if not names:
         typer.echo("No models available at this endpoint.", err=True)
         return None

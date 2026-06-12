@@ -8,9 +8,14 @@
 - Added a `--version` flag to the `drove` CLI that prints the installed version, matching what `install.sh` already expected.
 - `drove server` now warns at startup when the configured `llama_server_bin` binary cannot be found, instead of failing only on the first model request.
 
+### Removed
+
+- Removed the stale `current_code.py` file from the repository root, a leftover pre-rebrand copy of `src/drove/observe_web.py` that was referenced nowhere.
+
 ### Fixed
 
 - Starting a new chat with `/new` or `/clear` in the chat TUI now resets session-level tool permissions, so tools granted in the previous conversation no longer carry over.
+- Fixed all mypy strict-mode errors across `src/` (51 errors in 11 files) so type checking passes clean; added `types-psutil` to the dev dependency group. No runtime behavior changed.
 
 
 ## v0.1.1 (2026-05-20)

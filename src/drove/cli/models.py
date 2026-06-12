@@ -354,8 +354,10 @@ def download_model(
     """
     from drove.downloader import (
         FileStatus,
+        available_onnx_quants,
         available_quants,
         filter_by_quant,
+        filter_onnx_quant,
         infer_local_name,
         is_sharded,
         parse_model_ref,
@@ -377,19 +379,37 @@ def download_model(
 
     _, quant = parse_model_ref(model_ref)
     if quant is None and not yes:
-        quants = available_quants(plan.files)
-        if len(quants) > 1:
-            chosen = _prompt_quant_choice(quants)
-            if chosen is not None:
-                filtered = filter_by_quant(plan.files, chosen)
-                if filtered:
-                    plan.files = filtered
-                    plan.sharded = is_sharded(list(filtered.keys()))
-                    quant = chosen
-                    if name is None:
-                        plan.local_name = infer_local_name(
-                            plan.repo_id, list(filtered.keys()), quant
-                        )
+        if plan.is_asr:
+            # ONNX repos carry quant variants as filename infixes; the plan
+            # resolved to the default variant but keeps the full set around.
+            variants = available_onnx_quants(plan.onnx_files)
+            if len(variants) > 1:
+                chosen = _prompt_quant_choice(variants)
+                if chosen is None:
+                    plan.files = dict(plan.onnx_files)
+                elif chosen != "default":
+                    filtered = filter_onnx_quant(plan.onnx_files, chosen)
+                    if filtered:
+                        plan.files = filtered
+                        quant = chosen
+                        if name is None:
+                            plan.local_name = infer_local_name(
+                                plan.repo_id, list(filtered.keys()), quant
+                            )
+        else:
+            quants = available_quants(plan.files)
+            if len(quants) > 1:
+                chosen = _prompt_quant_choice(quants)
+                if chosen is not None:
+                    filtered = filter_by_quant(plan.files, chosen)
+                    if filtered:
+                        plan.files = filtered
+                        plan.sharded = is_sharded(list(filtered.keys()))
+                        quant = chosen
+                        if name is None:
+                            plan.local_name = infer_local_name(
+                                plan.repo_id, list(filtered.keys()), quant
+                            )
 
     statuses = plan.check_local_files(models_dir)
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())

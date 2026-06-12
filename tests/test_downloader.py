@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from drove.downloader import (
     DownloadPlan,
+    available_onnx_quants,
     available_quants,
     filter_by_quant,
     filter_onnx_quant,
@@ -83,6 +84,31 @@ def test_filter_onnx_quant_int8_selects_only_int8() -> None:
 
 def test_filter_onnx_quant_unknown_tag_returns_empty() -> None:
     assert filter_onnx_quant(_ONNX_FILES, "int4") == {}
+
+
+def test_available_onnx_quants_groups_default_and_variants() -> None:
+    assert available_onnx_quants(_ONNX_FILES) == {"default": 2_480, "int8": 620}
+
+
+def test_available_onnx_quants_single_variant() -> None:
+    files = {"encoder-model.onnx": 100, "decoder_joint-model.onnx": 50}
+    assert available_onnx_quants(files) == {"default": 150}
+
+
+def test_download_plan_keeps_full_onnx_file_set() -> None:
+    """The plan retains all ONNX variants so the CLI can offer a quant choice."""
+    plan = DownloadPlan(
+        repo_id="istupakov/parakeet-tdt-0.6b-v3-onnx",
+        files=filter_onnx_quant(_ONNX_FILES, None),
+        local_name="istupakov/parakeet-tdt-0.6b-v3-onnx",
+        sharded=False,
+        onnx_files=_ONNX_FILES,
+    )
+    assert available_onnx_quants(plan.onnx_files) == {"default": 2_480, "int8": 620}
+    assert filter_onnx_quant(plan.onnx_files, "int8") == {
+        "encoder-model.int8.onnx": 600,
+        "decoder_joint-model.int8.onnx": 20,
+    }
 
 
 def test_download_plan_includes_extra_files() -> None:

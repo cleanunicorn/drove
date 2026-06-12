@@ -91,6 +91,20 @@ def is_onnx_files(files: dict[str, int]) -> bool:
     return any(PurePosixPath(f).suffix.lower() == ".onnx" for f in files)
 
 
+def available_onnx_quants(files: dict[str, int]) -> dict[str, int]:
+    """Return {variant: total_bytes} for each ONNX quant variant in *files*.
+
+    Unquantized files are grouped under "default". Insertion order is the
+    order in which each variant is first encountered.
+    """
+    out: dict[str, int] = {}
+    for fname, size in files.items():
+        m = _ONNX_QUANT_RE.search(Path(fname).name)
+        tag = m.group(1).lower() if m else "default"
+        out[tag] = out.get(tag, 0) + size
+    return out
+
+
 def filter_onnx_quant(files: dict[str, int], quant: str | None) -> dict[str, int]:
     """Filter ONNX files by quantization variant.
 
@@ -191,6 +205,7 @@ class DownloadPlan:
         sharded: bool,
         mmproj_files: dict[str, int] | None = None,
         extra_files: dict[str, int] | None = None,
+        onnx_files: dict[str, int] | None = None,
     ) -> None:
         self.repo_id = repo_id
         self.files = files  # preserves insertion order
@@ -198,6 +213,9 @@ class DownloadPlan:
         self.sharded = sharded
         self.mmproj_files = mmproj_files or {}
         self.extra_files = extra_files or {}
+        # Full pre-quant-filter set of ONNX weights, so the CLI can offer
+        # the other variants (e.g. int8) after a default resolution.
+        self.onnx_files = onnx_files or {}
 
     @property
     def file_names(self) -> list[str]:
@@ -304,8 +322,10 @@ def resolve_download(
     if not files:
         raise ValueError(f"No model files found in repo '{repo_id}'.")
 
+    onnx_files: dict[str, int] = {}
     if is_onnx_files(files):
         # ONNX repos carry quant variants as filename infixes (model.int8.onnx)
+        onnx_files = files
         matched = filter_onnx_quant(files, quant)
         if not matched:
             raise ValueError(
@@ -333,16 +353,13 @@ def resolve_download(
         sharded=sharded,
         mmproj_files=mmproj_files,
         extra_files=extra_files,
+        onnx_files=onnx_files,
     )
 
 
 def _summarise_onnx_quants(files: list[str]) -> str:
     """List the quant variants present in ONNX filenames (plus 'default')."""
-    tags: set[str] = set()
-    for f in files:
-        m = _ONNX_QUANT_RE.search(Path(f).name)
-        tags.add(m.group(1).lower() if m else "default")
-    return ", ".join(sorted(tags))
+    return ", ".join(sorted(available_onnx_quants(dict.fromkeys(files, 0))))
 
 
 def _summarise_quants(files: list[str]) -> str:

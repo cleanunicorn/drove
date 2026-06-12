@@ -137,9 +137,7 @@ def test_normalize_audio_non_wav_without_ffmpeg_raises_415(
     assert excinfo.value.status_code == 415
 
 
-def test_main_wires_arguments_through(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_wires_arguments_through(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import uvicorn
 
     from drove.workers import asr as asr_module

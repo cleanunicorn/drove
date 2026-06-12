@@ -136,6 +136,22 @@ def test_normalize_audio_non_wav_without_ffmpeg_raises_415(
     assert excinfo.value.status_code == 415
 
 
+def test_normalize_audio_8bit_wav_treated_as_non_conforming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-16-bit WAV skips the pure-Python path and needs the ffmpeg decoder."""
+    monkeypatch.setattr("drove.workers.asr.shutil.which", lambda _: None)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(1)
+        w.setframerate(TARGET_RATE)
+        w.writeframes(b"\x80" * 1000)
+    with pytest.raises(HTTPException) as excinfo:
+        normalize_audio(buf.getvalue(), tmp_path)
+    assert excinfo.value.status_code == 415
+
+
 def test_normalize_audio_ffmpeg_failure_raises_400(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

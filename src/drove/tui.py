@@ -480,6 +480,7 @@ class ChatApp(App[None]):
             self._session = new_session(self._model, self._system_prompt)
             self._history = list(self._session.messages)
             self._queue.clear()
+            self._session_allowed_tools.clear()
             self._update_status()
 
         elif cmd == "/sessions":

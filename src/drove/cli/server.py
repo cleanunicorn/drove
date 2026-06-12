@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 from typing import Annotated
@@ -37,6 +38,15 @@ def _server_default(
         config = config.model_copy(update={"listen_port": port})
 
     config.models_dir.mkdir(parents=True, exist_ok=True)
+
+    if not shutil.which(str(config.llama_server_bin)):
+        typer.secho(
+            f"Warning: llama-server binary not found: {config.llama_server_bin!r}. "
+            "Model requests will fail until it is installed and on PATH "
+            "(or set llama_server_bin in the config).",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
 
     cfg_path: Path = ctx.obj["config_path"]
 

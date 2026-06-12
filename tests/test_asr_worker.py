@@ -237,6 +237,28 @@ def test_normalize_audio_8bit_wav_treated_as_non_conforming(
     assert excinfo.value.status_code == 415
 
 
+def test_normalize_audio_non_wav_with_ffmpeg_converts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("drove.workers.asr.shutil.which", lambda _: "/usr/bin/ffmpeg")
+    received: dict[str, bytes] = {}
+
+    def fake_run(
+        cmd: list[str], input: bytes, capture_output: bool
+    ) -> subprocess.CompletedProcess[bytes]:
+        received["input"] = input
+        Path(cmd[-1]).write_bytes(make_wav(seconds=0.5))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("drove.workers.asr.subprocess.run", fake_run)
+
+    out, duration = normalize_audio(b"\xfffake mp3 bytes", tmp_path)
+
+    assert received["input"] == b"\xfffake mp3 bytes"
+    assert out.exists()
+    assert duration == pytest.approx(0.5, abs=0.01)
+
+
 def test_normalize_audio_ffmpeg_failure_raises_400(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

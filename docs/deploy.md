@@ -61,7 +61,7 @@ fix(proxy): return 503 when llama-server is unreachable
 feat(cli): add `models prune` command
 feat(api)!: rename /v1/completions request schema
 perf(loader): cache tokenizer between requests
-docs: clarify install.sh usage
+docs: clarify make install usage
 ```
 
 **Examples of incorrect PR titles** (the `PR Title` check will fail):
@@ -144,7 +144,7 @@ Use **Squash and merge**. This is what makes the PR title become the commit mess
 
 The job uses `permissions: contents: write` and the default `GITHUB_TOKEN`; no PAT or extra secret is required.
 
-> **Note:** there is no PyPI publish step. `drove` is distributed via `install.sh` (smoke-tested by `.github/workflows/install.yml`), not PyPI. Adding PyPI publishing later would mean adding a `publish` step to `release.yml` and a `PYPI_TOKEN` secret.
+> **Note:** there is no PyPI publish step. `drove` is distributed via `make install` / `uv tool install` from the GitHub repository (smoke-tested by `.github/workflows/install.yml`), not PyPI. Adding PyPI publishing later would mean adding a `publish` step to `release.yml` and a `PYPI_TOKEN` secret.
 
 ---
 

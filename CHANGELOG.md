@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Changed
+- `make install` is now the single install entry point: it bootstraps `uv` if missing, pins the Python version, installs the CLI with speech-to-text support, and warns about PATH and missing `llama-server`.
+
+### Removed
+- Removed `install.sh`; its functionality moved into `make install`.
+
 
 ## v0.2.0 (2026-06-12)
 

@@ -6,23 +6,21 @@ A local model server manager that wakes models when you need them and shuts them
 
 ## Install
 
-### Install script
-
-Install `drove` with the repository install script. It installs [`uv`](https://docs.astral.sh/uv/) if needed, then installs the `drove` CLI as a `uv` tool.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/cleanunicorn/drove/main/install.sh | bash
-```
-
-Or run the same script from a local checkout:
+Install `drove` from a checkout with `make install`. It installs [`uv`](https://docs.astral.sh/uv/) if needed, then installs the `drove` CLI (with speech-to-text support) as a `uv` tool:
 
 ```bash
 git clone https://github.com/cleanunicorn/drove.git
 cd drove
-./install.sh
+make install
 ```
 
-After installation, make sure the `uv` tool bin directory is on your `PATH` if the installer prints a PATH warning. `drove` also requires `llama-server` from llama.cpp before you start the proxy.
+Or install directly with `uv` without cloning:
+
+```bash
+uv tool install 'drove[asr] @ git+https://github.com/cleanunicorn/drove'
+```
+
+After installation, make sure the `uv` tool bin directory is on your `PATH` if `make install` prints a PATH warning. `drove` also requires `llama-server` from llama.cpp before you start the proxy.
 
 ## Quick start
 
@@ -54,7 +52,7 @@ The model loads on the first request and shuts down after the idle timeout. Any 
 
 ## Speech-to-text
 
-drove also serves ASR models such as NVIDIA Parakeet through the same port and lifecycle, using its built-in ONNX worker (no extra server binary). Speech-to-text support is included by the install script and `make install`; if you installed drove manually, add the `asr` extra (`pip install 'drove[asr]'`). Download an ONNX export:
+drove also serves ASR models such as NVIDIA Parakeet through the same port and lifecycle, using its built-in ONNX worker (no extra server binary). Speech-to-text support is included by `make install`; if you installed drove manually, add the `asr` extra (`pip install 'drove[asr]'`). Download an ONNX export:
 
 ```bash
 drove models download istupakov/parakeet-tdt-0.6b-v3-onnx

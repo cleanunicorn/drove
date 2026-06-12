@@ -7,7 +7,7 @@ on:
 
 jobs:
   install:
-    name: Install script smoke test
+    name: make install smoke test
     runs-on: ubuntu-latest
 
     steps:
@@ -19,14 +19,11 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Check install script syntax
-        run: bash -n install.sh
-
-      - name: Run install script from checkout
+      - name: Run make install from checkout
         env:
           HOME: ${{ runner.temp }}/drove-home
           UV_PYTHON_PREFERENCE: only-managed
-        run: ./install.sh "$PWD"
+        run: make install
 
       - name: Smoke test installed CLI
         env:

@@ -136,6 +136,25 @@ def test_normalize_audio_non_wav_without_ffmpeg_raises_415(
     assert excinfo.value.status_code == 415
 
 
+def test_read_wav_returns_none_for_corrupt_input() -> None:
+    """Truncated (EOFError) and malformed (wave.Error) WAV bytes both yield None."""
+    from drove.workers.asr import _read_wav
+
+    truncated = make_wav()[:12]
+    not_wave = b"RIFF\x10\x00\x00\x00WAVXgarbage!"
+    assert _read_wav(truncated) is None
+    assert _read_wav(not_wave) is None
+
+
+def test_normalize_audio_corrupt_wav_without_ffmpeg_raises_415(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("drove.workers.asr.shutil.which", lambda _: None)
+    with pytest.raises(HTTPException) as excinfo:
+        normalize_audio(make_wav()[:12], tmp_path)
+    assert excinfo.value.status_code == 415
+
+
 def test_normalize_audio_8bit_wav_treated_as_non_conforming(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

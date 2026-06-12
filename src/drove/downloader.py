@@ -66,7 +66,7 @@ def _fetch_files_with_sizes(
     info = api.model_info(repo_id, files_metadata=True)
     siblings = [(s.rfilename, s.size or 0) for s in info.siblings or []]
 
-    onnx_mode = any(PurePosixPath(p).suffix.lower() == ".onnx" for p, _ in siblings)
+    onnx_mode = any(_is_onnx_file(p) for p, _ in siblings)
     model_files: dict[str, int] = {}
     mmproj_files: dict[str, int] = {}
     extra_files: dict[str, int] = {}
@@ -86,9 +86,14 @@ def _fetch_files_with_sizes(
     return model_files, mmproj_files, extra_files
 
 
+def _is_onnx_file(filename: str) -> bool:
+    """True when *filename* is an ONNX weights file."""
+    return PurePosixPath(filename).suffix.lower() == ".onnx"
+
+
 def is_onnx_files(files: dict[str, int]) -> bool:
     """True when the model files are ONNX weights (ASR backend)."""
-    return any(PurePosixPath(f).suffix.lower() == ".onnx" for f in files)
+    return any(_is_onnx_file(f) for f in files)
 
 
 def available_onnx_quants(files: dict[str, int]) -> dict[str, int]:

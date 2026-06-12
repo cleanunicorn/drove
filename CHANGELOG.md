@@ -48,6 +48,8 @@
 - Documented ONNX quantization references (`org/repo:int8`) in the
   download command's help and docstring, and the `CAPS` column tags
   (`vision`, `stt`) in the CLI reference.
+- Extracted the downloader's repeated ONNX-extension check into a shared
+  helper; no behavior change.
 - Consolidated the download command's quantization-choice handling into a
   shared helper covering both GGUF tags and ONNX variants; no behavior
   change.

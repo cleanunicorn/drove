@@ -1,12 +1,50 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Changed
-- `make install` is now the single install entry point: it bootstraps `uv` if missing, pins the Python version, installs the CLI with speech-to-text support, and warns about PATH and missing `llama-server`.
+## v0.3.0 (2026-06-13)
 
-### Removed
-- Removed `install.sh`; its functionality moved into `make install`.
+### Bug Fixes
+
+- **server**: Re-evaluate eviction victim after draining
+  ([`c6dedf5`](https://github.com/cleanunicorn/drove/commit/c6dedf54e3a6a670f5dac6fdb02bccd64ad05282))
+
+When every loaded model is busy, _evict_if_needed releases the lock to wait for the LRU model's
+  in-flight requests to drain. The victim could be re-claimed by a new request (or capacity could
+  free up) during that window, yet the old code stopped the stale victim unconditionally on
+  re-acquiring the lock.
+
+Loop the selection instead: after each drain, re-acquire the lock and re-evaluate from scratch. An
+  idle model is now stopped only if it is still idle, and nothing is stopped if a slot freed up
+  while waiting.
+
+Add regression tests for the re-claim and capacity-freed races.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+### Build System
+
+- Consolidate installation into make install and remove install.sh
+  ([`0f81870`](https://github.com/cleanunicorn/drove/commit/0f81870519a8af19aa5b9f13c826404127c0a3ea))
+
+There were two install entry points: install.sh (end-user installer from GitHub) and make install
+  (dev install from checkout). Fold all of install.sh's behavior — OS check, uv bootstrap, Python
+  pin, extras, PATH warning, llama-server warning, quick-start hints — into the Makefile install
+  target, delete the script, and update the README, getting-started, deploy docs, and the CI
+  smoke-test workflow.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+### Features
+
+- **server**: Evict idle models before busy ones at capacity
+  ([`94dbe02`](https://github.com/cleanunicorn/drove/commit/94dbe021b7852cc5b22065ed2386d24fd6e46f4a))
+
+When max_loaded_models is reached and a new model must start, prefer evicting a model with no active
+  connections instead of the strict LRU. Models still serving in-flight requests are left running;
+  the least-recently-used idle model is evicted. Only when every loaded model is busy do we fall
+  back to draining the LRU model.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
 
 ## v0.2.0 (2026-06-12)

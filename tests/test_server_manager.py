@@ -215,6 +215,143 @@ async def test_ensure_running_claim_prevents_eviction_race(tmp_path: Path) -> No
     mock_stop.assert_awaited_with("model-a")
 
 
+async def test_evict_prefers_idle_over_busy_lru(tmp_path: Path) -> None:
+    """At capacity, an idle model is evicted even if a busier model is older (LRU).
+
+    model-a is the least-recently-used but still has an active connection;
+    model-b is idle. The idle model-b must be evicted, leaving the busy
+    model-a running.
+    """
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, max_loaded_models=2)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+
+    mtimes = (0.0, 0.0)
+    inst_a = make_fake_instance("model-a", make_model(config, "model-a"), mtimes, active_requests=1)
+    inst_b = make_fake_instance("model-b", make_model(config, "model-b"), mtimes)
+    # model-a is the LRU (oldest last_request_time) but is busy; model-b is idle.
+    inst_a.last_request_time = 100.0
+    inst_b.last_request_time = 200.0
+    manager._instances["model-a"] = inst_a
+    manager._instances["model-b"] = inst_b
+
+    with patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop:
+        await manager._evict_if_needed()
+
+    # Idle model-b evicted; busy model-a left running despite being LRU.
+    mock_stop.assert_awaited_once_with("model-b")
+
+
+async def test_evict_drains_lru_when_all_busy(tmp_path: Path) -> None:
+    """When every loaded model is busy, fall back to draining the LRU model."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, max_loaded_models=2)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+
+    mtimes = (0.0, 0.0)
+    inst_a = make_fake_instance("model-a", make_model(config, "model-a"), mtimes, active_requests=1)
+    inst_b = make_fake_instance("model-b", make_model(config, "model-b"), mtimes, active_requests=1)
+    inst_a.last_request_time = 100.0  # LRU
+    inst_b.last_request_time = 200.0
+    manager._instances["model-a"] = inst_a
+    manager._instances["model-b"] = inst_b
+
+    original_sleep = __import__("asyncio").sleep
+
+    async def fake_sleep(seconds: float) -> None:
+        inst_a.active_requests = 0  # request drains during the wait
+        await original_sleep(0)
+
+    with (
+        patch("drove.server_manager.asyncio.sleep", side_effect=fake_sleep),
+        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
+    ):
+        # _evict_if_needed releases/re-acquires the lock while draining.
+        async with manager._lock:
+            await manager._evict_if_needed()
+
+    mock_stop.assert_awaited_once_with("model-a")
+
+
+async def test_evict_reselects_when_victim_reclaimed_during_drain(tmp_path: Path) -> None:
+    """A victim re-claimed while draining is spared; an idle peer is evicted instead.
+
+    All models start busy, so eviction drains the LRU (model-a) with the lock
+    released. While the lock is released a fresh request re-claims model-a and
+    model-b goes idle. On re-acquiring the lock, eviction must re-evaluate and
+    stop the now-idle model-b rather than the re-claimed model-a.
+    """
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, max_loaded_models=2)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+
+    mtimes = (0.0, 0.0)
+    inst_a = make_fake_instance("model-a", make_model(config, "model-a"), mtimes, active_requests=1)
+    inst_b = make_fake_instance("model-b", make_model(config, "model-b"), mtimes, active_requests=1)
+    inst_a.last_request_time = 100.0  # LRU, selected as the initial drain victim
+    inst_b.last_request_time = 200.0
+    manager._instances["model-a"] = inst_a
+    manager._instances["model-b"] = inst_b
+
+    original_sleep = __import__("asyncio").sleep
+
+    async def fake_sleep(seconds: float) -> None:
+        inst_a.active_requests = 0  # model-a's in-flight request completes
+        inst_b.active_requests = 0  # model-b goes idle
+        await original_sleep(0)
+
+    real_acquire = manager._lock.acquire
+    acquire_calls = {"n": 0}
+
+    async def acquire_reclaiming() -> bool:
+        result = await real_acquire()
+        acquire_calls["n"] += 1
+        if acquire_calls["n"] == 2:  # the re-acquire after draining
+            inst_a.active_requests = 1  # a new request re-claims model-a in the gap
+        return result
+
+    with (
+        patch("drove.server_manager.asyncio.sleep", side_effect=fake_sleep),
+        patch.object(manager._lock, "acquire", side_effect=acquire_reclaiming),
+        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
+    ):
+        async with manager._lock:  # acquire call #1
+            await manager._evict_if_needed()
+
+    mock_stop.assert_awaited_once_with("model-b")
+
+
+async def test_evict_skips_stop_when_capacity_frees_during_drain(tmp_path: Path) -> None:
+    """If a slot frees up while draining the busy LRU, no model is stopped."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, max_loaded_models=2)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+
+    mtimes = (0.0, 0.0)
+    inst_a = make_fake_instance("model-a", make_model(config, "model-a"), mtimes, active_requests=1)
+    inst_b = make_fake_instance("model-b", make_model(config, "model-b"), mtimes, active_requests=1)
+    inst_a.last_request_time = 100.0  # LRU
+    inst_b.last_request_time = 200.0
+    manager._instances["model-a"] = inst_a
+    manager._instances["model-b"] = inst_b
+
+    original_sleep = __import__("asyncio").sleep
+
+    async def fake_sleep(seconds: float) -> None:
+        inst_a.active_requests = 0  # model-a drains...
+        inst_b.process.returncode = 0  # ...and model-b exits, freeing a slot
+        await original_sleep(0)
+
+    with (
+        patch("drove.server_manager.asyncio.sleep", side_effect=fake_sleep),
+        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
+    ):
+        async with manager._lock:
+            await manager._evict_if_needed()
+
+    mock_stop.assert_not_awaited()
+
+
 async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:
     """The idle watcher should detect config changes and stop the instance,
     even when no new request arrives to trigger ensure_running()."""

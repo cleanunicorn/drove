@@ -284,40 +284,59 @@ class ServerManager:
             inst.last_request_time = time.monotonic()
 
     async def _evict_if_needed(self) -> None:
-        """Evict the least-recently-used model if we are at capacity.
+        """Evict a loaded model if we are at capacity.
+
+        Prefers evicting a model with no active connections: models that are
+        still serving in-flight requests are left running. Among the idle
+        models the least-recently-used is chosen. Only when every loaded model
+        is busy do we fall back to draining the least-recently-used one (wait
+        for its active requests to finish before stopping it).
 
         Must be called while holding ``self._lock``.
         """
         max_models = self._config.max_loaded_models
         if max_models <= 0:
             return  # unlimited
-        running = {n: i for n, i in self._instances.items() if i.is_running}
-        if len(running) < max_models:
-            return
 
-        # Pick the model with the oldest last_request_time (LRU)
-        victim_name = min(running, key=lambda n: running[n].last_request_time)
-        victim = running[victim_name]
+        # Loop: draining the busy fallback releases the lock, so the situation
+        # may change while we wait. Re-evaluate from scratch after every drain
+        # rather than acting on a now-stale victim selection.
+        while True:
+            running = {n: i for n, i in self._instances.items() if i.is_running}
+            if len(running) < max_models:
+                return
 
-        # Wait for in-flight requests to drain before stopping
-        if victim.active_requests > 0:
+            # Prefer an idle model (no active connections); pick LRU among those.
+            # Fall back to the LRU of all running models only when all are busy.
+            idle = {n: i for n, i in running.items() if i.active_requests == 0}
+            candidates = idle or running
+            victim_name = min(candidates, key=lambda n: candidates[n].last_request_time)
+            victim = running[victim_name]
+
+            if victim.active_requests == 0:
+                logger.info(
+                    "Evicting model=%s to make room (max_loaded_models=%d)",
+                    victim_name,
+                    max_models,
+                )
+                await self._stop_instance(victim_name)
+                return
+
+            # Every running model is busy: wait for the LRU to drain. Release
+            # the lock while waiting so its in-flight requests can complete.
             logger.info(
                 "Waiting for %d active request(s) on model=%s before evicting",
                 victim.active_requests,
                 victim_name,
             )
-            # Release the lock while waiting so requests can complete
             self._lock.release()
             try:
                 while victim.active_requests > 0:
                     await asyncio.sleep(0.5)
             finally:
                 await self._lock.acquire()
-
-        logger.info(
-            "Evicting model=%s to make room (max_loaded_models=%d)", victim_name, max_models
-        )
-        await self._stop_instance(victim_name)
+            # The victim may have been re-claimed (or capacity freed) while the
+            # lock was released; loop back to re-evaluate before stopping anything.
 
     async def stop(self) -> None:
         """Gracefully stop all running llama-server processes."""

@@ -284,7 +284,13 @@ class ServerManager:
             inst.last_request_time = time.monotonic()
 
     async def _evict_if_needed(self) -> None:
-        """Evict the least-recently-used model if we are at capacity.
+        """Evict a loaded model if we are at capacity.
+
+        Prefers evicting a model with no active connections: models that are
+        still serving in-flight requests are left running. Among the idle
+        models the least-recently-used is chosen. Only when every loaded model
+        is busy do we fall back to draining the least-recently-used one (wait
+        for its active requests to finish before stopping it).
 
         Must be called while holding ``self._lock``.
         """
@@ -295,8 +301,11 @@ class ServerManager:
         if len(running) < max_models:
             return
 
-        # Pick the model with the oldest last_request_time (LRU)
-        victim_name = min(running, key=lambda n: running[n].last_request_time)
+        # Prefer an idle model (no active connections); pick LRU among those.
+        # Fall back to the LRU of all running models only when all are busy.
+        idle = {n: i for n, i in running.items() if i.active_requests == 0}
+        candidates = idle or running
+        victim_name = min(candidates, key=lambda n: candidates[n].last_request_time)
         victim = running[victim_name]
 
         # Wait for in-flight requests to drain before stopping

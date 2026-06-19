@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, Query
@@ -11,10 +12,10 @@ from fastapi.staticfiles import StaticFiles
 
 from drove.observe import (
     _record_to_dict,
-    list_records,
+    find_record_path,
     list_records_page,
     load_record,
-    record_matches,
+    search_records_page,
 )
 
 _STATIC_DIR = Path(__file__).parent / "observe_web_static"
@@ -56,38 +57,29 @@ def create_observe_app(observe_dir: Path, model: str | None = None) -> FastAPI:
         limit: int = Query(100, ge=1, le=500),
     ) -> JSONResponse:
         if search:
-            # Search must scan every record to filter, so the full set is
-            # loaded and then paginated in memory.
-            items = [
-                _summarize(record)
-                for _, record in list_records(observe_dir, model)
-                if record_matches(record, search)
-            ]
-            total = len(items)
-            page = items[offset : offset + limit]
+            # Search still scans every record to filter, but only the
+            # requested page is kept in memory.
+            records, total = search_records_page(observe_dir, search, model, offset, limit)
         else:
             # No search: only the requested page is read from disk.
             records, total = list_records_page(observe_dir, model, offset, limit)
-            page = [_summarize(record) for _, record in records]
+        page = [_summarize(record) for _, record in records]
         return JSONResponse({"items": page, "total": total})
 
     @app.get("/api/records/{record_id}")
     async def get_record(record_id: str) -> JSONResponse:
-        for path, record in list_records(observe_dir, model):
-            if record.id != record_id:
-                continue
-            try:
-                full = load_record(path)
-            except Exception:
-                full = record
-            return JSONResponse(_record_to_dict(full))
-        return JSONResponse({"error": "not found"}, status_code=404)
+        path = find_record_path(observe_dir, record_id, model)
+        if path is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            record = load_record(path)
+        except json.JSONDecodeError, KeyError, ValueError:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(_record_to_dict(record))
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
         filter_label = f" (model: {model})" if model else ""
-        return _INDEX_PATH.read_text(encoding="utf-8").replace(
-            "{{FILTER_LABEL}}", filter_label
-        )
+        return _INDEX_PATH.read_text(encoding="utf-8").replace("{{FILTER_LABEL}}", filter_label)
 
     return app

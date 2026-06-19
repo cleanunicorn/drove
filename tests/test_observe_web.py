@@ -131,3 +131,27 @@ def test_api_record_not_found(tmp_path: Path) -> None:
     with TestClient(app) as client:
         resp = client.get("/api/records/nonexistent")
     assert resp.status_code == 404
+
+
+def test_api_record_detail_corrupt_file_is_404(tmp_path: Path) -> None:
+    save_record(tmp_path, _make_record())
+    (tmp_path / "testmodel" / "20260408-130000-corrupt0.json").write_text("not json")
+
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        resp = client.get("/api/records/20260408-130000-corrupt0")
+    assert resp.status_code == 404
+
+
+def test_api_records_search_offset(tmp_path: Path) -> None:
+    save_record(tmp_path, _make_record(model="alpha", record_id="20260408-100000-aaaa0001"))
+    save_record(tmp_path, _make_record(model="alpha", record_id="20260408-100100-aaaa0002"))
+    save_record(tmp_path, _make_record(model="beta", record_id="20260408-100200-aaaa0003"))
+
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        resp = client.get("/api/records?search=alpha&offset=1&limit=1")
+    data = resp.json()
+    assert data["total"] == 2
+    assert len(data["items"]) == 1
+    assert data["items"][0]["id"] == "20260408-100000-aaaa0001"

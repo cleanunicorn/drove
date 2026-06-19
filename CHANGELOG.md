@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v0.3.1 (2026-06-19)
+
+### Performance Improvements
+
+- **observe**: Direct record detail lookup and memory-bounded search
+  ([`4111faa`](https://github.com/cleanunicorn/drove/commit/4111faaf69fc46667e794cee121cda2739e9005d))
+
+The record detail endpoint parsed every record on disk to find one id, even though record ids double
+  as filename stems — resolve the path directly instead. Search loaded and summarized the full log
+  in memory before paginating — scan lazily and keep only the requested page.
+
+Refs #59
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
 ## v0.3.0 (2026-06-13)
 
 ### Bug Fixes

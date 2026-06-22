@@ -8,36 +8,55 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
-This project uses [uv](https://docs.astral.sh/uv/) for dependency and environment management.
+This project uses [uv](https://docs.astral.sh/uv/) for dependency and environment management, with a `Makefile` wrapping the common tasks. **Always use the `make` targets rather than invoking `uv`/`pytest`/`ruff`/`mypy` directly.**
 
 ```bash
-# Install dependencies and create venv
-uv sync
-
-# Run the server
-uv run drove serve
-
-# Run the CLI
-uv run drove <command>
+# Install drove (and its dependencies) as a uv tool
+make install
 
 # Run tests
-uv run pytest
+make test
 
+# Lint
+make lint
+
+# Format
+make fmt
+
+# Type check
+make typecheck
+
+# Install shell completions (also runs make install)
+make completions
+```
+
+Note that `make install` installs the `drove` CLI globally (via `uv tool install`) so you can *run* it — it is not a prerequisite for development. `make test`, `make lint`, `make fmt`, and `make typecheck` use `uv run` against the project environment directly, which uv syncs automatically, so they work without `make install`.
+
+After `make install`, run the server and CLI via the installed `drove` binary:
+
+```bash
+# Run the server
+drove serve
+
+# Run the CLI
+drove <command>
+```
+
+For running an individual test file or a single test by name, there is no
+dedicated `make` target, so fall back to `pytest` through uv:
+
+```bash
 # Run a single test file
 uv run pytest tests/test_proxy.py
 
 # Run a single test by name
 uv run pytest tests/test_proxy.py::test_name
-
-# Lint
-uv run ruff check .
-
-# Format
-uv run ruff format .
-
-# Type check
-uv run mypy src/
 ```
+
+A systemd user service can be managed with the `service-*` targets
+(`make service-install`, `make service-start`, `make service-stop`,
+`make service-restart`, `make service-status`, `make service-logs`,
+`make service-uninstall`).
 
 ## Architecture
 

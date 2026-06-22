@@ -30,6 +30,8 @@ make typecheck
 make completions
 ```
 
+Note that `make install` installs the `drove` CLI globally (via `uv tool install`) so you can *run* it — it is not a prerequisite for development. `make test`, `make lint`, `make fmt`, and `make typecheck` use `uv run` against the project environment directly, which uv syncs automatically, so they work without `make install`.
+
 After `make install`, run the server and CLI via the installed `drove` binary:
 
 ```bash

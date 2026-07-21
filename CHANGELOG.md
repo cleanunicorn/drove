@@ -1,6 +1,42 @@
 # CHANGELOG
 
 
+## v0.4.0 (2026-07-21)
+
+### Documentation
+
+- Clarify make install is not required for development
+  ([`0e01446`](https://github.com/cleanunicorn/drove/commit/0e01446010cf86eb96fbb95f1fad941661856d53))
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01M33GHdU7ceBeknt8GxNo4F
+
+- Use make commands in AGENTS.md development section
+  ([`58b4f2f`](https://github.com/cleanunicorn/drove/commit/58b4f2f1a47fa5f86aca850ebd0755d16ffe87ca))
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01M33GHdU7ceBeknt8GxNo4F
+
+### Features
+
+- Add max_memory budget for loaded models
+  ([`a0cf71b`](https://github.com/cleanunicorn/drove/commit/a0cf71bed501049e107effb0b607bb5c4f88b8ae))
+
+Add a max_memory config option (default "0" = unlimited) that caps the combined memory estimate of
+  all loaded models, complementing the existing max_loaded_models count limit. Sizes accept decimal
+  ("24GB"), binary ("16GiB"), or plain-byte values.
+
+Model memory is estimated from on-disk file size: all shards for sharded GGUF models, all .onnx
+  files for ASR models. Eviction keeps the existing idle-LRU-first policy, now looping since memory
+  pressure can require evicting several models. A model whose estimate alone exceeds the budget is
+  still started (after evicting everything else) rather than refused. The estimate is exposed in
+  status as est_memory_bytes.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
 ## v0.3.1 (2026-06-19)
 
 ### Performance Improvements

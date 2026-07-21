@@ -15,10 +15,30 @@ listen_host = "0.0.0.0"
 listen_port = 8080
 llama_server_bin = "llama-server"
 idle_timeout_seconds = 1800
+max_loaded_models = 1
+max_memory = "24GB"
 
 [llama_server]
 n_gpu_layers = -1
 ```
+
+## Model eviction
+
+Two independent limits control when loaded models are stopped to make room
+for a newly requested one (in both cases the least-recently-used idle model
+is evicted first; models with in-flight requests are drained before being
+stopped):
+
+- `max_loaded_models` — how many models may be loaded at once (`0` = unlimited, default `1`).
+- `max_memory` — combined memory budget for all loaded models (`"0"` = unlimited, the default).
+  Accepts decimal (`"24GB"`, `"512MB"`) and binary (`"16GiB"`) units, or a plain
+  number of bytes.
+
+The memory used by a model is estimated from its on-disk file size (all shards
+for sharded GGUF models, all `.onnx` files for speech-to-text models). Context
+(KV cache) and runtime overhead are not counted, so leave some headroom below
+your real RAM/VRAM limit. A model whose estimate alone exceeds `max_memory` is
+still started (after evicting everything else) rather than refused.
 
 ## Per-model config
 

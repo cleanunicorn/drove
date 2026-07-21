@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,38 @@ DEFAULT_OBSERVE_DIR = Path.home() / ".local" / "share" / "drove" / "observe"
 
 # Module-level mutable so load_config() can point to a custom path
 _config_path: Path = DEFAULT_CONFIG_PATH
+
+_SIZE_UNITS = {
+    "b": 1,
+    "kb": 1000,
+    "mb": 1000**2,
+    "gb": 1000**3,
+    "tb": 1000**4,
+    "kib": 1024,
+    "mib": 1024**2,
+    "gib": 1024**3,
+    "tib": 1024**4,
+}
+
+
+def parse_size(value: str | int) -> int:
+    """Parse a human-readable size ('24GB', '16GiB', '512 MB', plain bytes) to bytes.
+
+    Decimal units (KB, MB, GB, TB) use powers of 1000; binary units
+    (KiB, MiB, GiB, TiB) use powers of 1024. A bare number means bytes.
+    """
+    if isinstance(value, int):
+        return value
+    text = value.strip().lower().replace(" ", "")
+    if not text:
+        return 0
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([kmgt]i?b|b)?", text)
+    if match is None:
+        raise ValueError(
+            f"Invalid size '{value}'. Use a number of bytes or a unit suffix, e.g. '24GB', '16GiB'."
+        )
+    number, unit = match.groups()
+    return int(float(number) * _SIZE_UNITS[unit or "b"])
 
 
 class LlamaServerDefaults(BaseSettings):
@@ -60,6 +93,7 @@ class Config(BaseSettings):
     startup_timeout_seconds: int = 300  # max wait for llama-server to become healthy
     idle_timeout_seconds: int = 1800  # 30 minutes
     max_loaded_models: int = 1
+    max_memory: str = "0"  # combined memory budget for loaded models, e.g. "24GB"; "0" = unlimited
     llama_server_host: str = "127.0.0.1"
     tui_theme: str = "textual-dark"
 
@@ -82,6 +116,17 @@ class Config(BaseSettings):
     def expand_path(cls, v: Any) -> Path:
         return Path(v).expanduser()
 
+    @field_validator("max_memory", mode="before")
+    @classmethod
+    def validate_max_memory(cls, v: Any) -> str:
+        text = str(v)
+        parse_size(text)  # raises ValueError on invalid input
+        return text
+
+    @property
+    def max_memory_bytes(self) -> int:
+        return parse_size(self.max_memory)
+
     def save(self, path: Path = DEFAULT_CONFIG_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {
@@ -96,6 +141,7 @@ class Config(BaseSettings):
             "startup_timeout_seconds": self.startup_timeout_seconds,
             "idle_timeout_seconds": self.idle_timeout_seconds,
             "max_loaded_models": self.max_loaded_models,
+            "max_memory": self.max_memory,
             "llama_server_host": self.llama_server_host,
             "tui_theme": self.tui_theme,
             "llama_server": {

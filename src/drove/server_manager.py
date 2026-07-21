@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import re
 import shutil
 import signal
 import socket
@@ -37,6 +38,32 @@ HEALTH_CHECK_INTERVAL = 0.5  # seconds between health poll attempts
 
 _STDERR_MAX_BYTES = 256 * 1024  # keep last 256 KB of stderr
 
+_GGUF_SHARD_RE = re.compile(r"^(.+)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
+
+
+def _estimate_model_memory(model_path: Path) -> int:
+    """Estimate the memory needed to serve a model, in bytes.
+
+    Uses on-disk file size as a proxy for resident weight memory: all shards
+    for sharded GGUF models, all .onnx files in the directory for ASR models,
+    or the single model file otherwise. KV cache and runtime overhead are not
+    counted, so budgets should leave headroom.
+    """
+    try:
+        if model_path.suffix.lower() == ".onnx":
+            return sum(f.stat().st_size for f in model_path.parent.glob("*.onnx") if f.is_file())
+        shard = _GGUF_SHARD_RE.match(model_path.name)
+        if shard:
+            prefix = shard.group(1)
+            return sum(
+                f.stat().st_size
+                for f in model_path.parent.iterdir()
+                if f.is_file() and (m := _GGUF_SHARD_RE.match(f.name)) and m.group(1) == prefix
+            )
+        return model_path.stat().st_size
+    except OSError:
+        return 0
+
 
 class _ModelInstance:
     """State for a single running llama-server process."""
@@ -55,6 +82,7 @@ class _ModelInstance:
         self.model_path = model_path
         self.config_mtimes = config_mtimes  # (per-model mtime, global mtime) at startup
         self.needs_restart: bool = False
+        self.est_memory_bytes: int = 0
         self.loaded_at: float = time.time()
         self.last_request_time: float = time.monotonic()
         self.active_requests: int = 0
@@ -200,6 +228,7 @@ class ServerManager:
                     "idle_timeout_seconds": self._config.idle_timeout_seconds,
                     "active_requests": inst.active_requests,
                     "port": inst.port,
+                    "est_memory_bytes": inst.est_memory_bytes,
                 }
             )
         return result
@@ -231,9 +260,9 @@ class ServerManager:
         When the per-model or global config file has been modified since startup,
         the instance is restarted if idle; otherwise it is flagged for restart once
         all in-flight requests finish (the idle watcher handles that case).
-        When ``max_loaded_models`` would be exceeded, the least-recently-used
-        model is drained (wait for its active requests to finish) and evicted
-        before starting the new one.
+        When ``max_loaded_models`` or the ``max_memory`` budget would be
+        exceeded, least-recently-used models are drained (wait for their active
+        requests to finish) and evicted before starting the new one.
 
         If *claim* is True, atomically increment ``active_requests`` before
         releasing the lock.  This prevents a race where a concurrent
@@ -271,7 +300,9 @@ class ServerManager:
             elif inst is not None:
                 # Clean up stale instance if process died
                 await self._stop_instance(model_name)
-            await self._evict_if_needed()
+            # Resolve before evicting so an unknown model cannot evict anything.
+            incoming_bytes = _estimate_model_memory(self._resolve_model(model_name))
+            await self._evict_if_needed(incoming_bytes)
             await self._start(model_name)
             if claim:
                 self._claim_slot(model_name)
@@ -283,8 +314,13 @@ class ServerManager:
             inst.active_requests += 1
             inst.last_request_time = time.monotonic()
 
-    async def _evict_if_needed(self) -> None:
-        """Evict a loaded model if we are at capacity.
+    async def _evict_if_needed(self, incoming_bytes: int = 0) -> None:
+        """Evict loaded models until count and memory budgets allow one more.
+
+        Two independent limits apply: ``max_loaded_models`` caps the number of
+        loaded models, and ``max_memory`` caps the combined memory estimate of
+        the loaded models plus *incoming_bytes* (the estimate for the model
+        about to start). Either limit set to 0 means unlimited.
 
         Prefers evicting a model with no active connections: models that are
         still serving in-flight requests are left running. Among the idle
@@ -295,15 +331,29 @@ class ServerManager:
         Must be called while holding ``self._lock``.
         """
         max_models = self._config.max_loaded_models
-        if max_models <= 0:
+        max_memory = self._config.max_memory_bytes
+        if max_models <= 0 and max_memory <= 0:
             return  # unlimited
+
+        if max_memory > 0 and incoming_bytes > max_memory:
+            logger.warning(
+                "Model memory estimate (%d bytes) alone exceeds max_memory=%s; "
+                "starting it anyway after evicting all other models",
+                incoming_bytes,
+                self._config.max_memory,
+            )
 
         # Loop: draining the busy fallback releases the lock, so the situation
         # may change while we wait. Re-evaluate from scratch after every drain
-        # rather than acting on a now-stale victim selection.
+        # or eviction — memory pressure can require evicting more than one model.
         while True:
             running = {n: i for n, i in self._instances.items() if i.is_running}
-            if len(running) < max_models:
+            over_count = max_models > 0 and len(running) >= max_models
+            used_bytes = sum(i.est_memory_bytes for i in running.values())
+            over_memory = (
+                max_memory > 0 and bool(running) and used_bytes + incoming_bytes > max_memory
+            )
+            if not over_count and not over_memory:
                 return
 
             # Prefer an idle model (no active connections); pick LRU among those.
@@ -314,13 +364,14 @@ class ServerManager:
             victim = running[victim_name]
 
             if victim.active_requests == 0:
-                logger.info(
-                    "Evicting model=%s to make room (max_loaded_models=%d)",
-                    victim_name,
-                    max_models,
+                reason = (
+                    f"max_loaded_models={max_models}"
+                    if over_count
+                    else f"max_memory={self._config.max_memory}"
                 )
+                logger.info("Evicting model=%s to make room (%s)", victim_name, reason)
                 await self._stop_instance(victim_name)
-                return
+                continue
 
             # Every running model is busy: wait for the LRU to drain. Release
             # the lock while waiting so its in-flight requests can complete.
@@ -376,6 +427,7 @@ class ServerManager:
 
         config_mtimes = self._get_config_mtimes(model_path)
         inst = _ModelInstance(model_name, process, port, model_path, config_mtimes)
+        inst.est_memory_bytes = _estimate_model_memory(model_path)
         inst.start_stderr_reader()
         self._instances[model_name] = inst
 

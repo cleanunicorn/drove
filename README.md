@@ -72,7 +72,7 @@ Text and speech models are managed identically (`drove models list/info/config/d
 
 ## Flagship features
 
-- **Lazy by design** — model processes start on first request and stop after idle timeout.
+- **Lazy by design** — model processes start on first request, stop after idle timeout, and are evicted least-recently-used first to stay within a configurable `max_memory` budget.
 - **OpenAI-compatible** — drop drove behind existing OpenAI SDK clients.
 - **Observable** — request logging plus TUI/web inspection for request/response debugging.
 - **Speech-to-text** — serve ASR models like NVIDIA Parakeet via `/v1/audio/transcriptions` with the built-in ONNX worker ([docs](./docs/speech-to-text.md)).

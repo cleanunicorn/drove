@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from drove.config import Config
-from drove.server_manager import ServerManager, _ModelInstance
+from drove.server_manager import ServerManager, _estimate_model_memory, _ModelInstance
 
 
 def make_config(tmp_path: Path) -> Config:
@@ -39,6 +40,19 @@ def make_fake_instance(
     inst = _ModelInstance(model_name, process, 9999, model_path, config_mtimes)
     inst.active_requests = active_requests
     return inst
+
+
+def patch_stop_instance(manager: ServerManager) -> Any:
+    """Patch _stop_instance with a mock that, like the real one, removes the instance.
+
+    Eviction re-evaluates the running set after each stop, so a mock that
+    leaves the instance in place would loop forever.
+    """
+
+    async def remove(name: str) -> None:
+        manager._instances.pop(name, None)
+
+    return patch.object(manager, "_stop_instance", new_callable=AsyncMock, side_effect=remove)
 
 
 def test_get_config_mtimes_no_files(tmp_path: Path) -> None:
@@ -206,7 +220,7 @@ async def test_ensure_running_claim_prevents_eviction_race(tmp_path: Path) -> No
     with (
         patch("drove.server_manager.asyncio.sleep", side_effect=fake_sleep),
         patch.object(manager, "_start", new_callable=AsyncMock, side_effect=fake_start_b),
-        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
+        patch_stop_instance(manager) as mock_stop,
     ):
         await manager.ensure_running("model-b")
 
@@ -235,7 +249,7 @@ async def test_evict_prefers_idle_over_busy_lru(tmp_path: Path) -> None:
     manager._instances["model-a"] = inst_a
     manager._instances["model-b"] = inst_b
 
-    with patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop:
+    with patch_stop_instance(manager) as mock_stop:
         await manager._evict_if_needed()
 
     # Idle model-b evicted; busy model-a left running despite being LRU.
@@ -264,7 +278,7 @@ async def test_evict_drains_lru_when_all_busy(tmp_path: Path) -> None:
 
     with (
         patch("drove.server_manager.asyncio.sleep", side_effect=fake_sleep),
-        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
+        patch_stop_instance(manager) as mock_stop,
     ):
         # _evict_if_needed releases/re-acquires the lock while draining.
         async with manager._lock:
@@ -313,7 +327,7 @@ async def test_evict_reselects_when_victim_reclaimed_during_drain(tmp_path: Path
     with (
         patch("drove.server_manager.asyncio.sleep", side_effect=fake_sleep),
         patch.object(manager._lock, "acquire", side_effect=acquire_reclaiming),
-        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as mock_stop,
+        patch_stop_instance(manager) as mock_stop,
     ):
         async with manager._lock:  # acquire call #1
             await manager._evict_if_needed()
@@ -350,6 +364,121 @@ async def test_evict_skips_stop_when_capacity_frees_during_drain(tmp_path: Path)
             await manager._evict_if_needed()
 
     mock_stop.assert_not_awaited()
+
+
+# ── Memory budget (max_memory) ───────────────────────────────────────────────
+
+
+def make_memory_manager(tmp_path: Path, max_memory: str) -> ServerManager:
+    config = Config(
+        models_dir=tmp_path / "models",
+        listen_port=8080,
+        max_loaded_models=0,  # isolate the memory budget from the count limit
+        max_memory=max_memory,
+    )
+    config.models_dir.mkdir()
+    return ServerManager(config)
+
+
+def add_instance(
+    manager: ServerManager, name: str, est_memory_bytes: int, last_request_time: float
+) -> _ModelInstance:
+    inst = make_fake_instance(name, make_model(manager._config, name), (0.0, 0.0))
+    inst.est_memory_bytes = est_memory_bytes
+    inst.last_request_time = last_request_time
+    manager._instances[name] = inst
+    return inst
+
+
+async def test_evict_for_memory_budget(tmp_path: Path) -> None:
+    """The LRU idle model is evicted when the incoming model would exceed max_memory."""
+    manager = make_memory_manager(tmp_path, max_memory="100")
+    add_instance(manager, "model-a", est_memory_bytes=40, last_request_time=100.0)  # LRU
+    add_instance(manager, "model-b", est_memory_bytes=40, last_request_time=200.0)
+
+    with patch_stop_instance(manager) as mock_stop:
+        await manager._evict_if_needed(incoming_bytes=50)
+
+    # Evicting model-a is enough: 40 (model-b) + 50 (incoming) fits in 100.
+    mock_stop.assert_awaited_once_with("model-a")
+
+
+async def test_evict_multiple_models_for_memory_budget(tmp_path: Path) -> None:
+    """Memory pressure can require evicting more than one model."""
+    manager = make_memory_manager(tmp_path, max_memory="100")
+    add_instance(manager, "model-a", est_memory_bytes=60, last_request_time=100.0)  # LRU
+    add_instance(manager, "model-b", est_memory_bytes=30, last_request_time=200.0)
+
+    with patch_stop_instance(manager) as mock_stop:
+        await manager._evict_if_needed(incoming_bytes=90)
+
+    # 90 incoming leaves no room for either loaded model: both are evicted, LRU first.
+    assert [c.args[0] for c in mock_stop.await_args_list] == ["model-a", "model-b"]
+
+
+async def test_no_evict_when_memory_budget_fits(tmp_path: Path) -> None:
+    manager = make_memory_manager(tmp_path, max_memory="200")
+    add_instance(manager, "model-a", est_memory_bytes=40, last_request_time=100.0)
+    add_instance(manager, "model-b", est_memory_bytes=40, last_request_time=200.0)
+
+    with patch_stop_instance(manager) as mock_stop:
+        await manager._evict_if_needed(incoming_bytes=50)
+
+    mock_stop.assert_not_awaited()
+
+
+async def test_oversized_model_evicts_all_and_still_starts(tmp_path: Path) -> None:
+    """A model bigger than the whole budget evicts everything else but is not refused."""
+    manager = make_memory_manager(tmp_path, max_memory="100")
+    add_instance(manager, "model-a", est_memory_bytes=40, last_request_time=100.0)
+
+    with patch_stop_instance(manager) as mock_stop:
+        await manager._evict_if_needed(incoming_bytes=150)
+
+    # model-a was evicted and _evict_if_needed returned so the load can proceed.
+    mock_stop.assert_awaited_once_with("model-a")
+
+
+async def test_memory_budget_prefers_idle_over_busy_lru(tmp_path: Path) -> None:
+    """Under memory pressure, a busy LRU model is spared in favour of an idle one."""
+    manager = make_memory_manager(tmp_path, max_memory="100")
+    inst_a = add_instance(manager, "model-a", est_memory_bytes=40, last_request_time=100.0)
+    inst_a.active_requests = 1
+    add_instance(manager, "model-b", est_memory_bytes=40, last_request_time=200.0)
+
+    with patch_stop_instance(manager) as mock_stop:
+        await manager._evict_if_needed(incoming_bytes=50)
+
+    mock_stop.assert_awaited_once_with("model-b")
+
+
+def test_estimate_model_memory_single_file(tmp_path: Path) -> None:
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"x" * 123)
+    assert _estimate_model_memory(model) == 123
+
+
+def test_estimate_model_memory_sharded_gguf(tmp_path: Path) -> None:
+    """All shards of a sharded GGUF count, but unrelated files do not."""
+    (tmp_path / "big-00001-of-00002.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "big-00002-of-00002.gguf").write_bytes(b"x" * 50)
+    (tmp_path / "other-00001-of-00001.gguf").write_bytes(b"x" * 999)
+    (tmp_path / "readme.txt").write_bytes(b"x" * 999)
+
+    assert _estimate_model_memory(tmp_path / "big-00001-of-00002.gguf") == 150
+
+
+def test_estimate_model_memory_onnx_dir(tmp_path: Path) -> None:
+    """ASR models load every .onnx file in the directory."""
+    (tmp_path / "encoder-model.onnx").write_bytes(b"x" * 70)
+    (tmp_path / "decoder_joint-model.onnx").write_bytes(b"x" * 30)
+    (tmp_path / "vocab.txt").write_bytes(b"x" * 999)
+
+    assert _estimate_model_memory(tmp_path / "encoder-model.onnx") == 100
+
+
+def test_estimate_model_memory_missing_file(tmp_path: Path) -> None:
+    assert _estimate_model_memory(tmp_path / "gone.gguf") == 0
 
 
 async def test_idle_watcher_detects_config_change(tmp_path: Path) -> None:

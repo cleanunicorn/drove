@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Changed
+
+- Reworked the agent guide (AGENTS.md) around the agents-library template — make-target commands, architecture map, config formats, and changelog policy preserved and reorganized into the standard agent-guide structure.
 
 ## v0.5.0 (2026-08-18)
 

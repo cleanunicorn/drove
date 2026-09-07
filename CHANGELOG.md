@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Documentation
+
+- Add architecture proposal for a CI quality gate running `make lint` /
+  `make typecheck` / `make test` on every PR (`docs/proposals/ci-quality-gate.md`)
 
 ## v0.5.0 (2026-08-18)
 

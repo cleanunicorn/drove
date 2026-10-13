@@ -10,6 +10,7 @@ from typing import Annotated
 import typer
 
 from drove.cli.completions import completions_app
+from drove.cli.integrate import integrate
 from drove.cli.models import _complete_model_name, models_app
 from drove.cli.server import server_app
 from drove.config import DEFAULT_CONFIG_PATH, Config, load_config
@@ -23,6 +24,7 @@ app.add_typer(models_app, name="models")
 app.add_typer(completions_app, name="completions")
 app.add_typer(server_app, name="server")
 app.add_typer(server_app, name="serve", hidden=True)
+app.command("integrate")(integrate)
 
 
 def _version_callback(value: bool) -> None:

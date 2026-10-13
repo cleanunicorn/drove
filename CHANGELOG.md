@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Added
+
+- Added `drove integrate <agent>`, which registers drove models with the pi,
+  opencode, and Kilo Code coding agents. Each model's context window, output
+  limit, vision, tool calling, and reasoning support are filled in from its
+  config and GGUF metadata. Supports `--default`, `--remove`, and `--dry-run`.
+
 
 ## v0.5.0 (2026-08-18)
 

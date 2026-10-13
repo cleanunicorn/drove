@@ -72,7 +72,9 @@ A systemd user service can be managed with the `service-*` targets
 
 **`src/drove/proxy.py`** — FastAPI app that acts as a reverse proxy. On each request it extracts the model name (from JSON or multipart form bodies), calls `ServerManager.ensure_running(model)`, then forwards the request to the backend via `httpx.AsyncClient`. Resets the inactivity timer on each proxied request.
 
-**`src/drove/cli/`** — Typer CLI with subcommands: `serve`, `models list`, `models download`, `models delete`, `models info`, `models config`.
+**`src/drove/integrations.py`** — Registers drove models with local coding agents (pi, opencode, Kilo Code) by merging a `drove` provider into each agent's JSON config. Model setup (context, output limit, vision, tools, reasoning) comes from the merged model config and GGUF metadata (`src/drove/gguf.py`).
+
+**`src/drove/cli/`** — Typer CLI with subcommands: `serve`, `integrate`, `models list`, `models download`, `models delete`, `models info`, `models config`.
 
 ### Request Flow
 

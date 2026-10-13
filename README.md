@@ -83,6 +83,7 @@ The model loads on that first request and unloads itself after the idle timeout.
 | 📊 **Live status** | `drove server status` shows loaded models, memory, tokens/sec, and time-to-first-token. |
 | ♻️ **Hot config reload** | Edit the config file while the server runs — changes are picked up without a restart. |
 | ⬇️ **Smart downloads** | Resolves HuggingFace repos, offers a quantization menu, handles sharded models, and resumes partial downloads. |
+| 🤖 **Agent integrations** | `drove integrate` registers your models with pi, opencode, and Kilo Code — context window, output limit, vision, tools, and reasoning filled in. |
 
 ---
 
@@ -281,6 +282,25 @@ Supported keys include `ctx_size`, `n_gpu_layers`, `main_gpu`, `tensor_split`, `
 </details>
 
 <details>
+<summary><b>Coding agents (pi, opencode, Kilo Code)</b></summary>
+
+<br>
+
+Point a local coding agent at drove with one command. It writes a `drove` provider into the agent's own config, with every chat model and its setup: context window (from the model's `ctx_size` or the GGUF header), output limit, vision, tool calling, and reasoning support. Other providers and settings in that file are left alone, and the previous file is kept as `<file>.bak`.
+
+```bash
+drove integrate opencode                  # every chat model → ~/.config/opencode/opencode.json
+drove integrate kilo                      # Kilo Code CLI     → ~/.config/kilo/kilo.json
+drove integrate pi qwen3-coder -d qwen3-coder   # one model, made pi's default
+drove integrate opencode --dry-run        # print the result, write nothing
+drove integrate opencode --remove         # undo
+```
+
+Re-run it after downloading or reconfiguring models; a run with no model names also drops models drove no longer has.
+
+</details>
+
+<details>
 <summary><b>Configuration & memory budget</b></summary>
 
 <br>
@@ -327,6 +347,7 @@ Two independent limits decide when a loaded model is stopped to make room: **`ma
 | `drove models info NAME` | Show a model's files, size, caps, and effective config. |
 | `drove models config …` | Get/set per-model or global (`-g`) model parameters (`--unset` to remove). |
 | `drove models delete NAME` | Delete a model and its config (`-y` to skip confirmation). |
+| `drove integrate AGENT [MODEL…]` | Add models to a coding agent: `pi`, `opencode`, `kilo` (`-d` default, `--remove`, `-n` dry run). |
 | `drove observe [-m MODEL]` | Browse logged requests in a TUI. |
 | `drove observe web` | Web UI for logs (`--host`, `--port`, default `127.0.0.1:8877`). |
 | `drove completions` | Generate shell completions. |

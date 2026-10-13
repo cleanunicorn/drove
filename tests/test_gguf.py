@@ -5,7 +5,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from drove.gguf import uses_sliding_window_attention
+from drove.gguf import ModelMetadata, read_model_metadata, uses_sliding_window_attention
 
 # Metadata value type ids from the GGUF spec.
 T_UINT32 = 4
@@ -122,3 +122,45 @@ def test_empty_file_is_unknown(tmp_path: Path) -> None:
     path = tmp_path / "m.gguf"
     path.write_bytes(b"")
     assert uses_sliding_window_attention(path) is None
+
+
+# ── read_model_metadata ──────────────────────────────────────────────────────
+
+
+def test_reads_context_name_and_template_past_the_vocabulary(tmp_path: Path) -> None:
+    model = write_gguf(
+        tmp_path / "m.gguf",
+        [
+            _kv_string("general.architecture", "qwen3"),
+            _kv_string("general.name", "Qwen3 8B"),
+            _kv_uint32("qwen3.context_length", 40960),
+            _kv_string_array("tokenizer.ggml.tokens", ["a", "b", "c"]),
+            _kv_string("tokenizer.chat_template", "{% if tools %}<think>{% endif %}"),
+        ],
+    )
+    meta = read_model_metadata(model)
+    assert meta == ModelMetadata(
+        architecture="qwen3",
+        name="Qwen3 8B",
+        context_length=40960,
+        chat_template="{% if tools %}<think>{% endif %}",
+    )
+
+
+def test_context_length_prefers_the_declared_architecture(tmp_path: Path) -> None:
+    model = write_gguf(
+        tmp_path / "m.gguf",
+        [
+            _kv_uint32("clip.context_length", 512),
+            _kv_string("general.architecture", "llama"),
+            _kv_uint32("llama.context_length", 8192),
+        ],
+    )
+    meta = read_model_metadata(model)
+    assert meta is not None and meta.context_length == 8192
+
+
+def test_metadata_is_none_for_a_non_gguf_file(tmp_path: Path) -> None:
+    bogus = tmp_path / "m.gguf"
+    bogus.write_bytes(b"not a gguf file at all")
+    assert read_model_metadata(bogus) is None

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import mmap
 import struct
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,14 @@ _TYPE_ARRAY = 9
 #: Key suffix every sliding-window architecture sets (gemma3.attention.sliding_window,
 #: phi3.attention.sliding_window, …).
 _SLIDING_WINDOW_SUFFIX = ".attention.sliding_window"
+
+#: Key suffix for the training context length (llama.context_length, qwen3.context_length, …).
+_CONTEXT_LENGTH_SUFFIX = ".context_length"
+
+#: String keys read by ``read_model_metadata``.
+_METADATA_STRING_KEYS = frozenset(
+    {"general.architecture", "general.name", "tokenizer.chat_template"}
+)
 
 
 class _MalformedGGUF(Exception):
@@ -127,7 +136,8 @@ def uses_sliding_window_attention(model_path: Path) -> bool | None:
         return None
 
 
-def _scan_for_sliding_window(buf: mmap.mmap | bytes) -> bool | None:
+def _open_header(buf: mmap.mmap | bytes) -> _Cursor:
+    """Validate the GGUF preamble and return a cursor at the metadata KV count."""
     cur = _Cursor(buf)
     if bytes(buf[:4]) != _MAGIC:
         raise _MalformedGGUF("missing GGUF magic")
@@ -136,6 +146,11 @@ def _scan_for_sliding_window(buf: mmap.mmap | bytes) -> bool | None:
     if version < _MIN_VERSION:
         raise _MalformedGGUF(f"unsupported GGUF version {version}")
     cur.u64()  # tensor count
+    return cur
+
+
+def _scan_for_sliding_window(buf: mmap.mmap | bytes) -> bool | None:
+    cur = _open_header(buf)
     kv_count = cur.u64()
 
     for _ in range(kv_count):
@@ -148,3 +163,60 @@ def _scan_for_sliding_window(buf: mmap.mmap | bytes) -> bool | None:
             return bool(window)
         cur.skip_value(value_type)
     return False
+
+
+@dataclass(frozen=True)
+class ModelMetadata:
+    """The GGUF header fields drove uses to describe a model to other tools."""
+
+    architecture: str | None = None
+    name: str | None = None
+    context_length: int | None = None
+    chat_template: str | None = None
+
+
+def read_model_metadata(model_path: Path) -> ModelMetadata | None:
+    """Return the architecture, display name, training context and chat template.
+
+    Returns None when the file cannot be inspected, like
+    ``uses_sliding_window_attention``.
+    """
+    try:
+        with model_path.open("rb") as f:
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+                return _scan_model_metadata(buf)
+    except (OSError, ValueError, _MalformedGGUF) as e:
+        logger.debug("Could not read GGUF metadata from %s: %s", model_path, e)
+        return None
+
+
+def _scan_model_metadata(buf: mmap.mmap | bytes) -> ModelMetadata:
+    cur = _open_header(buf)
+    kv_count = cur.u64()
+
+    strings: dict[str, str] = {}
+    context_lengths: dict[str, int] = {}
+    for _ in range(kv_count):
+        key = cur.string()
+        value_type = cur.u32()
+        if key in _METADATA_STRING_KEYS and value_type == _TYPE_STRING:
+            strings[key] = cur.string()
+        elif key.endswith(_CONTEXT_LENGTH_SUFFIX):
+            value = cur.read_int(value_type)
+            if value:
+                context_lengths[key.removesuffix(_CONTEXT_LENGTH_SUFFIX)] = value
+        else:
+            cur.skip_value(value_type)
+
+    arch = strings.get("general.architecture")
+    # The architecture's own key is authoritative; a lone *.context_length is a
+    # reasonable fallback for files whose architecture key is missing.
+    ctx = context_lengths.get(arch) if arch else None
+    if ctx is None and len(context_lengths) == 1:
+        ctx = next(iter(context_lengths.values()))
+    return ModelMetadata(
+        architecture=arch,
+        name=strings.get("general.name"),
+        context_length=ctx,
+        chat_template=strings.get("tokenizer.chat_template"),
+    )

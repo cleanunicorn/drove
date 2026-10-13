@@ -9,6 +9,16 @@
   limit, vision, tool calling, and reasoning support are filled in from its
   config and GGUF metadata. Supports `--default`, `--remove`, and `--dry-run`.
 
+- Added a proposal for shared SSE delta parsing across observation logs, proxy metrics, and terminal chat.
+
+- Added an Architect journal documenting proposal review lessons and verification against the pinned Python toolchain.
+
+
+### Changed
+
+- Updated the agent guide to include `drove integrate` and its model registration module.
+
+- Reworked the agent guide (AGENTS.md) around the agents-library template — make-target commands, architecture map, config formats, and changelog policy preserved and reorganized into the standard agent-guide structure.
 
 ## v0.5.0 (2026-08-18)
 

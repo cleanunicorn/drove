@@ -1,24 +1,86 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Added
+## v0.6.0 (2026-10-13)
 
-- Added `drove integrate <agent>`, which registers drove models with the pi,
-  opencode, and Kilo Code coding agents. Each model's context window, output
-  limit, vision, tool calling, and reasoning support are filled in from its
-  config and GGUF metadata. Supports `--default`, `--remove`, and `--dry-run`.
+### Documentation
 
-- Added a proposal for shared SSE delta parsing across observation logs, proxy metrics, and terminal chat.
+- Adopt the agents-library AGENTS.md template
+  ([`24811cf`](https://github.com/cleanunicorn/drove/commit/24811cf698b698b44d4f29551e4ce1e4abfd7f82))
 
-- Added an Architect journal documenting proposal review lessons and verification against the pinned Python toolchain.
+Rewrite AGENTS.md to follow the agents-library agent-guide template. All content from the old
+  Claude-Code-style guide is preserved and reorganized: the make-target commands (and the
+  always-use-make rule with the single-test uv fallback), the architecture map (config.py,
+  model_config.py, model_store.py, server_manager.py, backend.py, workers/asr.py, proxy.py, cli/),
+  the request flow, the global and per-model config formats, the systemd service targets, and the
+  CHANGELOG policy. New: verified prerequisites, golden rules, the GitHub flow, PR title rules (as
+  enforced by pr-title.yml), and a release-automation section matching release.yml, pyproject.toml
+  [tool.semantic_release], and docs/deploy.md.
 
+CHANGELOG.md gains the required [Unreleased] entry.
 
-### Changed
+- **architect**: Journal — verify claims against pinned toolchain
+  ([`06a37fb`](https://github.com/cleanunicorn/drove/commit/06a37fb27c0faf30df5beef2c799fbe3828b488d))
 
-- Updated the agent guide to include `drove integrate` and its model registration module.
+Records a correction made on PR #79's motivating evidence (an except-clause pattern claimed as a
+  Python 3 SyntaxError is actually valid under this repo's pinned Python 3.14 via PEP 758), and the
+  decision not to open a third unreviewed Architect proposal while #77 and #79 are still pending
+  review.
 
-- Reworked the agent guide (AGENTS.md) around the agents-library template — make-target commands, architecture map, config formats, and changelog policy preserved and reorganized into the standard agent-guide structure.
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01EaHRt5WStkkmPGTacGwhvA
+
+- **architect**: Propose backend adapter extraction for ServerManager
+  ([`534664b`](https://github.com/cleanunicorn/drove/commit/534664b766bbd6f27d8e575219953e04815d28c5))
+
+Structural-debt review: ServerManager branches on backend type (llama vs ASR) inline for command
+  building and prompt-cache eligibility, while backend.py only handles detection. Recent llama-only
+  feature work (prompt cache persistence, cache flags) grew this special-casing further.
+  Proposal-only doc, zero functional code changes.
+
+- **architect**: Propose shared SSE delta-parsing module
+  ([`01ac071`](https://github.com/cleanunicorn/drove/commit/01ac071702da55d36ffd7780b1c5f18aded03484))
+
+Structural-debt review: observe.py, proxy.py, and tui.py each independently reimplement parsing of
+  llama-server's `data: {...}` SSE chat-completions stream (line filtering, JSON decode,
+  choices[].delta walk, tool-call accumulation by index). The three implementations have already
+  drifted (proxy.py/observe.py require "data: " with a space, tui.py accepts "data:" without one),
+  and proxy.py's copy has no direct unit test coverage today. Proposal-only doc, zero functional
+  code changes.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CvQEdCs7mwjEVyCLzzCtrd
+
+- **readme**: Describe drove integrate's final behavior
+  ([`0b22ce3`](https://github.com/cleanunicorn/drove/commit/0b22ce37f0200f2095072ec3fab088408eaabda2))
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Features
+
+- **integrate**: Register drove models with pi, opencode and Kilo Code
+  ([`8e951c4`](https://github.com/cleanunicorn/drove/commit/8e951c453f9d32da689923dfba27261bdd69d4e8))
+
+Add `drove integrate <agent> [MODEL...]`, which writes a `drove` provider into a local coding
+  agent's config with each model fully set up: the context one request can use (from ctx_size,
+  extra_args, slot layout and the GGUF training context), an output limit, vision, tool calling and
+  reasoning support read from the effective chat template.
+
+- pi: ~/.pi/agent/models.json, default model in the settings.json beside it - opencode:
+  ~/.config/opencode/opencode.json[c] - Kilo Code CLI: ~/.config/kilo/kilo.json[c] (and
+  opencode/config.json names)
+
+Merges keep other providers and hand-added keys at any depth. A full sync prunes models drove no
+  longer has and clears selections that pointed at them. Writes are all-or-nothing across files,
+  keep .bak copies, preserve permissions and symlinks, and roll back on failure. Supports --default,
+  --remove, --dry-run, --file, --base-url and --provider-id.
+
+The GGUF reader now also exposes architecture, name, training context length and chat template.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
 
 ## v0.5.0 (2026-08-18)
 

@@ -216,6 +216,17 @@ drove observe                  # interactive TUI browser (-m <model> to filter)
 drove observe web              # web UI at http://127.0.0.1:8877
 ```
 
+## Use drove from a coding agent
+
+Register your models with pi, opencode, or Kilo Code. Context windows, output
+limits, vision, tool calling, and reasoning are filled in for each model:
+
+```bash
+drove integrate opencode     # or: pi, kilo
+```
+
+See the [CLI reference](./cli.md#coding-agent-integration) for options.
+
 ## Next steps
 
 - [Configuration](./configuration.md) — global settings, memory budget, eviction, per-model config.

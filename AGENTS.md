@@ -58,7 +58,8 @@ here.
 - **Run locally:** `drove serve` after `make install` (equivalently
   `drove server`; `serve` is a hidden alias), then point any OpenAI client at
   `http://localhost:8080/v1`. Useful stablemates: `drove chat`,
-  `drove models list`, `drove server status`, `drove observe`.
+  `drove models list`, `drove server status`, `drove observe`,
+  `drove integrate <agent>` (pi, opencode, or Kilo Code).
 - **Completions:** `make completions` (runs `make install` first).
 - **Systemd user service:** `make service-install` (writes
   `~/.config/systemd/user/drove.service`, enables + starts it), plus
@@ -286,6 +287,9 @@ src/drove/
                        observe logs when enabled
   downloader.py        HuggingFace downloads (GGUF + ONNX, quantization prompts)
   converter.py         HF → GGUF conversion
+  integrations.py      Registers models with pi, opencode, and Kilo Code; merges
+                       a drove provider into each agent's JSON config, inferring
+                       capabilities from model config and GGUF metadata
   gguf.py              Minimal GGUF header reader (sliding-window detection)
   observe.py           Request/response record storage
   observe_tui.py       Textual TUI browser for observe logs
@@ -294,7 +298,8 @@ src/drove/
                        tool execution, token/process metrics
   cli/                 Typer CLI: main.py (config, chat, observe, init),
                        models.py (list, download, delete, info, config),
-                       server.py (serve — default, status), completions.py
+                       server.py (serve — default, status), integrate.py
+                       (agent registration), completions.py
 tests/                 pytest suite, one file per module
 docs/                  architecture.md, configuration.md, deploy.md (release
                        process), getting-started.md, cli.md, speech-to-text.md

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a proposal for shared SSE delta parsing across observation logs, proxy metrics, and terminal chat.
+
+- Added an Architect journal documenting proposal review lessons and verification against the pinned Python toolchain.
+
+
 ### Changed
 
 - Reworked the agent guide (AGENTS.md) around the agents-library template — make-target commands, architecture map, config formats, and changelog policy preserved and reorganized into the standard agent-guide structure.

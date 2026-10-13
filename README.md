@@ -286,7 +286,7 @@ Supported keys include `ctx_size`, `n_gpu_layers`, `main_gpu`, `tensor_split`, `
 
 <br>
 
-Point a local coding agent at drove with one command. It writes a `drove` provider into the agent's own config, with every chat model and its setup: context window (from the model's `ctx_size` or the GGUF header), output limit, vision, tool calling, and reasoning support. Other providers and settings in that file are left alone, and the previous file is kept as `<file>.bak`.
+Point a local coding agent at drove with one command. It writes a `drove` provider into the agent's own config, with every chat model and its setup: the context a request can actually use (from `ctx_size`, slot settings, and the GGUF header), output limit, vision, tool calling, and reasoning support. Other providers, settings, and keys you added by hand are left alone, and the previous file is kept as `<file>.bak`.
 
 ```bash
 drove integrate opencode                  # every chat model → ~/.config/opencode/opencode.json
@@ -296,7 +296,7 @@ drove integrate opencode --dry-run        # print the result, write nothing
 drove integrate opencode --remove         # undo
 ```
 
-Re-run it after downloading or reconfiguring models; a run with no model names also drops models drove no longer has.
+Re-run it after downloading or reconfiguring models; a run with no model names also drops models drove no longer has, and clears them from the agent's default-model settings. Full details: [docs/cli.md](./docs/cli.md#coding-agent-integration).
 
 </details>
 

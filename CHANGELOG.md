@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added a proposal for shared SSE delta parsing across observation logs, proxy metrics, and terminal chat.
+
 - Added an Architect journal documenting proposal review lessons and verification against the pinned Python toolchain.
 
 

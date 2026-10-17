@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import shutil
 import time
 from pathlib import Path
@@ -81,6 +82,21 @@ def _base_url(ctx: typer.Context, host: str | None, port: int | None) -> str:
     config = ctx.obj["config"]
     base = f"http://{host or config.listen_host}:{port or config.listen_port}"
     return base.replace("//0.0.0.0:", "//127.0.0.1:")
+
+
+def _exposure_note(listen: str) -> str | None:
+    """Describe a non-loopback bind address, or None when only this machine can connect."""
+    host = listen.rpartition(":")[0].strip("[]")
+    if host in ("", "0.0.0.0", "::"):
+        return f"listening on all interfaces ({listen})"
+    if host == "localhost":
+        return None
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return None
+    except ValueError:
+        pass  # A hostname: assume it may be reachable from other machines.
+    return f"listening on {listen}"
 
 
 class _OptionalValueCommand(TyperCommand):
@@ -177,6 +193,9 @@ def _print_status(base: str, *, watch: bool = False, verbose: bool = False) -> N
     if req["errors"]:
         summary.append(f" · {req['errors']:,} errors since startup", style="bold yellow")
     out.print(summary)
+    exposure = _exposure_note(server.get("listen", ""))
+    if exposure:
+        out.print(Text(exposure))
 
     models = data.get("models", [])
     section(out, f"Loaded models · {len(models)}")

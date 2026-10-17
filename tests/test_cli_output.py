@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from drove.cli.main import app
 from drove.cli.models import _print_download_plan, _print_resolved_config
 from drove.cli.output import fields, heading, table
-from drove.cli.server import _print_status
+from drove.cli.server import _exposure_note, _print_status
 from drove.downloader import DownloadPlan, FileStatus
 
 
@@ -137,6 +137,37 @@ def test_status_empty(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFix
     assert "Models start on the first request" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("listen", "expected"),
+    [
+        ("0.0.0.0:8080", "listening on all interfaces (0.0.0.0:8080)"),
+        (":::8080", "listening on all interfaces (:::8080)"),
+        ("192.168.1.20:8080", "listening on 192.168.1.20:8080"),
+        ("myhost.lan:8080", "listening on myhost.lan:8080"),
+        ("127.0.0.1:8080", None),
+        ("127.0.1.1:8080", None),
+        ("[::1]:8080", None),
+        ("::1:8080", None),
+        ("localhost:8080", None),
+    ],
+)
+def test_exposure_note_flags_non_loopback_binds(listen: str, expected: str | None) -> None:
+    assert _exposure_note(listen) == expected
+
+
+def test_status_loopback_bind_stays_concise(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = {
+        "server": {"uptime_seconds": 0, "listen": "127.0.0.1:8080"},
+        "requests": {"total": 0, "active": 0, "errors": 0},
+        "tokens": {"prompt": 0, "completion": 0, "total": 0},
+    }
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: Mock(json=lambda: data))
+    _print_status("http://127.0.0.1:8080")
+    assert "listening on" not in capsys.readouterr().out
+
+
 def test_status_offline_exit_and_watch_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     def offline(*args: object, **kwargs: object) -> None:
         raise httpx.ConnectError("offline")
@@ -240,7 +271,7 @@ def test_status_default_prioritizes_activity_and_errors(monkeypatch: pytest.Monk
     idle = next(line for line in result.stdout.splitlines() if line.split()[:1] == ["idle"])
     assert idle.split()[-1] == "~50s"
     assert "Tokens" not in result.stdout and "Processes" not in result.stdout
-    assert "0.0.0.0" not in result.stdout
+    assert "listening on all interfaces (0.0.0.0:8080)" in result.stdout
     detailed = runner.invoke(app, ["server", "status", "--verbose"])
     assert detailed.exit_code == 0
     assert "Tokens" in detailed.stdout and "Processes" in detailed.stdout

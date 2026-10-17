@@ -237,6 +237,22 @@ def _print_status(base: str, *, watch: bool = False, verbose: bool = False) -> N
     else:
         hint(out, "No models loaded. Models start on the first request.")
 
+    audio = data.get("audio", {})
+    for key, label in [("transcriptions", "Transcription"), ("speech", "Speech")]:
+        metrics = audio.get(key, {})
+        if metrics.get("requests"):
+            fields(
+                out,
+                [
+                    (
+                        label,
+                        f"{metrics['requests']:,} requests · "
+                        f"{metrics['audio_seconds']:.1f}s audio · "
+                        f"{metrics['processing_seconds']:.1f}s processing",
+                    )
+                ],
+            )
+
     if not verbose:
         if req["total"]:
             hint(out, f"{req['total']:,} requests since startup")

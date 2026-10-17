@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
+
+
+@dataclass
+class AudioStats:
+    """Completed audio requests and their audio and processing durations."""
+
+    requests: int = 0
+    audio_seconds: float = 0.0
+    processing_seconds: float = 0.0
 
 
 class ProxyStats:
@@ -13,6 +23,8 @@ class ProxyStats:
         self.request_count: int = 0
         self.active_requests: int = 0
         self.error_count: int = 0
+        self.transcriptions = AudioStats()
+        self.speech = AudioStats()
         self.tokens_prompt: int = 0
         self.tokens_completion: int = 0
         self._completion_speeds: list[tuple[int, float]] = []  # (tokens, duration_secs)

@@ -103,8 +103,9 @@ def create_asr_app(engine: AsrEngine, model_name: str = "asr") -> FastAPI:
             wav_path, duration = normalize_audio(data, Path(tmp))
             text = engine.recognize(str(wav_path)).strip()
 
+        headers = {"X-Drove-Audio-Seconds": str(duration)}
         if response_format == "text":
-            return PlainTextResponse(text)
+            return PlainTextResponse(text, headers=headers)
         if response_format == "verbose_json":
             return JSONResponse(
                 {
@@ -113,9 +114,10 @@ def create_asr_app(engine: AsrEngine, model_name: str = "asr") -> FastAPI:
                     "duration": round(duration, 3),
                     "text": text,
                     "segments": [],
-                }
+                },
+                headers=headers,
             )
-        return JSONResponse({"text": text})
+        return JSONResponse({"text": text}, headers=headers)
 
     return app
 

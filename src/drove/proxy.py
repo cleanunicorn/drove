@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import signal
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 import httpx
@@ -119,6 +121,10 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     "total": stats.request_count,
                     "active": stats.active_requests,
                     "errors": stats.error_count,
+                },
+                "audio": {
+                    "transcriptions": asdict(stats.transcriptions),
+                    "speech": asdict(stats.speech),
                 },
                 "tokens": {
                     "prompt": stats.tokens_prompt,
@@ -240,6 +246,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     headers=headers,
                     content=body,
                 )
+                upstream_started = time.monotonic()
                 resp = await client.send(upstream, stream=True)
             except httpx.TransportError as e:
                 # str(e) is empty for some httpx errors (e.g. ReadError);
@@ -263,6 +270,10 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     resolved_model,
                     obs_ctx,
                     current_config.observe_dir,
+                    endpoint=path,
+                    response_status=resp.status_code,
+                    audio_duration=resp.headers.get("x-drove-audio-seconds"),
+                    upstream_started=upstream_started,
                 ),
                 status_code=resp.status_code,
                 headers=response_headers,
@@ -381,6 +392,11 @@ async def _counting_stream(
     model_name: str,
     obs_ctx: ObserveContext | None = None,
     observe_dir: Path | None = None,
+    *,
+    endpoint: str = "",
+    response_status: int = 200,
+    audio_duration: str | None = None,
+    upstream_started: float | None = None,
 ) -> AsyncIterator[bytes]:
     """Wrap a response stream, collecting bytes to extract token usage afterwards."""
     try:
@@ -395,10 +411,27 @@ async def _counting_stream(
         t_end = time.monotonic()
         duration = t_end - t_start
         ttft = (t_first_chunk - t_start) if t_first_chunk is not None else None
-        if ttft is not None:
+        is_audio = endpoint in {"v1/audio/transcriptions", "v1/audio/speech"}
+        if ttft is not None and not is_audio:
             stats.record_ttft(ttft)
+        if is_audio and 200 <= response_status < 300:
+            audio = stats.transcriptions if endpoint.endswith("transcriptions") else stats.speech
+            audio.requests += 1
+            audio.processing_seconds += t_end - (
+                upstream_started if upstream_started is not None else t_start
+            )
+            try:
+                seconds = float(audio_duration) if audio_duration is not None else 0.0
+            except ValueError:
+                seconds = 0.0
+            if math.isfinite(seconds) and seconds >= 0:
+                audio.audio_seconds += seconds
         full_body = b"".join(chunks)
-        tokens = _record_usage(full_body, stats, duration)
+        tokens = (
+            {"prompt": 0, "completion": 0, "speed": None}
+            if is_audio
+            else _record_usage(full_body, stats, duration)
+        )
 
         # Fire-and-forget observe logging
         if obs_ctx is not None and observe_dir is not None:

@@ -176,6 +176,14 @@ class CathyVoiceTests(unittest.TestCase):
         self.assertEqual(self.engine._voice("male"), "am_michael:2,am_fenrir:1")
         self.assertEqual(self.engine._voice("af_heart:2,af_bella:1"), "af_heart:2,af_bella:1")
 
+    def test_uncurated_default_voice_is_validated_against_model(self) -> None:
+        self.engine.default_voice = "af_sarah"
+        self.assertEqual(self.engine._voice("alloy"), "af_sarah")
+        self.engine.engine.validate_voice.assert_called_once_with("af_sarah")
+        self.engine.engine.validate_voice.side_effect = ValueError("Voice absent")
+        with self.assertRaisesRegex(ValueError, "Voice absent"):
+            self.engine._voice("af_missing")
+
     def test_voice_paths_invalid_weights_and_wrong_language_rejected(self) -> None:
         for voice in (
             "/tmp/voice.pt",

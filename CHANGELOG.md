@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopped TTS worker process groups during shutdown and eviction, including children left behind by the runtime supervisor.
+- Applied global model settings to TTS startup and memory reservations while preserving per-model overrides.
+- Accepted Kokoro voices present in the model beyond the curated presets, including configured defaults.
+- Required matching transcripts for custom Fish reference recordings instead of using the generated preset transcript.
+
 ### Added
 
 - Added TTS downloads through `drove models download`, with resume support, preserved voice/tokenizer files, automatic configuration, and workers that load the downloaded weights.

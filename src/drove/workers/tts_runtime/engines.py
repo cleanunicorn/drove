@@ -303,7 +303,7 @@ class KokoroEngine:
 
     def _resolve(self, spec: str) -> Any:
         """Support weighted blends like 'af_heart:2,af_bella:1'."""
-        if ":" not in spec:
+        if ":" not in spec and "," not in spec:
             return self._load_voice(spec) if self.model_dir is not None else spec
 
         torch = import_module("torch")
@@ -324,6 +324,14 @@ class KokoroEngine:
                 raise ValueError(f"Voice '{name}' is absent from the downloaded model.")
             return self.pipeline.load_single_voice(str(voice))
         return self.pipeline.load_single_voice(name)
+
+    def validate_voice(self, name: str) -> None:
+        """Check the downloaded voice packs or the pipeline's repository/cache."""
+        EntryNotFoundError = import_module("huggingface_hub.errors").EntryNotFoundError
+        try:
+            self._load_voice(name)
+        except EntryNotFoundError as exc:
+            raise ValueError(f"Unknown Kokoro voice '{name}'.") from exc
 
     def paragraph(self, text: str) -> Any:
         for _, _, audio in self.pipeline(text, voice=self.voice, speed=self.speed):
@@ -511,7 +519,15 @@ class FishEngine(ClonedVoiceMixin):
         snapshot_download = import_module("huggingface_hub").snapshot_download
 
         clip = self.reference_clip(voice, device)
-        self.reference = ServeReferenceAudio(audio=clip.read_bytes(), text=REFERENCE_TEXT)
+        if voice in ("male", "female", "british-male", "british-female"):
+            reference_text = REFERENCE_TEXT
+        else:
+            transcript = clip.with_suffix(".txt")
+            if not transcript.is_file() or not (reference_text := transcript.read_text().strip()):
+                raise ValueError(
+                    "Fish custom reference audio requires a nonempty companion .txt transcript."
+                )
+        self.reference = ServeReferenceAudio(audio=clip.read_bytes(), text=reference_text)
 
         GatedRepoError = import_module("huggingface_hub.errors").GatedRepoError
 

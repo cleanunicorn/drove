@@ -9,6 +9,7 @@ import argparse
 import io
 import logging
 import math
+import re
 import shutil
 import subprocess
 import threading
@@ -104,17 +105,17 @@ class CathyEngine:
         voice = aliases.get(voice, voice)
         if self.name == "kokoro":
             voice = self.engines.KOKORO_ALIASES.get(voice, voice)
-            known = self.engines.KOKORO_VOICES | self.engines.KOKORO_INTL
             for part in voice.split(","):
                 preset, _, weight = part.partition(":")
-                if preset not in known:
-                    raise ValueError("Unknown Kokoro voice; use a documented preset or alias.")
+                if not re.fullmatch(r"[a-z]{2}_[a-z0-9_]+", preset):
+                    raise ValueError("Invalid Kokoro voice name.")
                 if weight and (not math.isfinite(float(weight)) or float(weight) <= 0):
                     raise ValueError("Voice blend weights must be positive finite numbers.")
                 if preset[0] != self.engine.pipeline.lang_code:
                     raise ValueError(
                         "This voice uses a different language; register a separate model."
                     )
+                self.engine.validate_voice(preset)
             return voice
         if self.name == "qwen":
             voice = self.engines.QWEN_ALIASES.get(voice, voice)

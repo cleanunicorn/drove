@@ -169,6 +169,34 @@ def test_kokoro_loads_checkpoint_and_voice_from_model_directory(tmp_path: Path) 
         engine._resolve("af_bella")
 
 
+def test_kokoro_validates_downloaded_uncurated_voice(tmp_path: Path) -> None:
+    (tmp_path / "voices").mkdir()
+    (tmp_path / "voices/af_sarah.pt").touch()
+    engine = engines.KokoroEngine.__new__(engines.KokoroEngine)
+    engine.model_dir = tmp_path
+    engine.pipeline = MagicMock()
+    engine.validate_voice("af_sarah")
+    engine.pipeline.load_single_voice.assert_called_once_with(str(tmp_path / "voices/af_sarah.pt"))
+    with pytest.raises(ValueError, match="absent"):
+        engine.validate_voice("af_missing")
+
+
+def test_kokoro_validates_remote_voice_against_repository() -> None:
+    from huggingface_hub.errors import EntryNotFoundError
+
+    engine = engines.KokoroEngine.__new__(engines.KokoroEngine)
+    engine.model_dir = None
+    engine.pipeline = MagicMock()
+    engine.validate_voice("af_sarah")
+    engine.pipeline.load_single_voice.assert_called_once_with("af_sarah")
+    engine.pipeline.load_single_voice.side_effect = EntryNotFoundError("missing")
+    with pytest.raises(ValueError, match="Unknown Kokoro voice"):
+        engine.validate_voice("af_missing")
+    engine.pipeline.load_single_voice.side_effect = RuntimeError("offline")
+    with pytest.raises(RuntimeError, match="offline"):
+        engine.validate_voice("af_sarah")
+
+
 def test_qwen_loads_downloaded_directory(tmp_path: Path) -> None:
     qwen = SimpleNamespace(Qwen3TTSModel=MagicMock())
     torch = SimpleNamespace(bfloat16="bfloat16")
@@ -202,9 +230,17 @@ def test_chatterbox_uses_local_loader(tmp_path: Path) -> None:
     cls.from_pretrained.assert_not_called()
 
 
-def test_fish_uses_local_checkpoints_without_snapshot_download(tmp_path: Path) -> None:
+@pytest.mark.parametrize("reference_kind", ["preset", "custom", "missing", "empty"])
+def test_fish_uses_local_checkpoints_without_snapshot_download(
+    tmp_path: Path, reference_kind: str
+) -> None:
     reference = tmp_path / "reference.wav"
     reference.write_bytes(b"reference")
+    voice = "female" if reference_kind == "preset" else str(reference)
+    if reference_kind == "custom":
+        reference.with_suffix(".txt").write_text("Actual words in the recording.")
+    elif reference_kind == "empty":
+        reference.with_suffix(".txt").write_text("  ")
     launch = MagicMock()
     load_decoder = MagicMock()
     load_decoder.return_value.spec_transform.sample_rate = 24000
@@ -231,7 +267,15 @@ def test_fish_uses_local_checkpoints_without_snapshot_download(tmp_path: Path) -
         ),
         patch.object(engines.FishEngine, "reference_clip", return_value=reference),
     ):
-        engine = engines.FishEngine("female", 1.0, "cpu", model_dir=tmp_path)
+        if reference_kind in {"missing", "empty"}:
+            with pytest.raises(ValueError, match="companion .txt transcript"):
+                engines.FishEngine(voice, 1.0, "cpu", model_dir=tmp_path)
+            launch.assert_not_called()
+            return
+        engine = engines.FishEngine(voice, 1.0, "cpu", model_dir=tmp_path)
+    assert modules["fish_speech.utils.schema"].ServeReferenceAudio.call_args.kwargs["text"] == (
+        engines.REFERENCE_TEXT if reference_kind == "preset" else "Actual words in the recording."
+    )
     snapshot.assert_not_called()
     assert launch.call_args.kwargs["checkpoint_path"] == tmp_path
     assert load_decoder.call_args.kwargs["checkpoint_path"] == tmp_path / "codec.pth"

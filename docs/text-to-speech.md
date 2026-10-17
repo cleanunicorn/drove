@@ -139,6 +139,16 @@ path with `--voice /path/to/reference.wav`, or Cathy's male/female presets,
 then send `voice="alloy"`. API callers cannot select arbitrary reference files
 on the server.
 
+For Fish, a custom reference WAV also requires a UTF-8 transcript alongside it
+with the same stem, such as `reference.wav` and `reference.txt`. The text must
+match the words spoken in the recording; missing or empty transcripts prevent
+startup. Generated preset references supply their transcript automatically.
+
+Kokoro accepts voices available in the downloaded model's `voices/` directory
+or its Hugging Face repository, including presets beyond the curated list above.
+Global model settings in `_global.toml` apply to TTS, with per-model sidecars
+taking precedence, including device selection and memory reservations.
+
 Sidecar example:
 
 ```toml

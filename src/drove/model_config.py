@@ -6,10 +6,10 @@ import re
 import shlex
 import tomllib
 from pathlib import Path
-from typing import Any, get_origin
+from typing import Any, Literal, get_origin
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DownloadInfo(BaseModel):
@@ -21,7 +21,20 @@ class DownloadInfo(BaseModel):
 
 
 #: Config keys that drove consumes itself; excluded from llama-server args.
-_DROVE_ONLY_FIELDS = frozenset({"backend", "asr_model", "asr_quantization"})
+_DROVE_ONLY_FIELDS = frozenset(
+    {
+        "backend",
+        "asr_model",
+        "asr_quantization",
+        "tts_engine",
+        "tts_voice",
+        "tts_device",
+        "tts_model_dir",
+        "tts_language",
+        "tts_max_chunk_chars",
+        "tts_memory_mb",
+    }
+)
 
 #: Boolean keys llama-server exposes as a ``--flag`` / ``--no-flag`` pair, where
 #: ``false`` must emit the negated flag instead of omitting the argument.
@@ -106,6 +119,14 @@ class ModelConfig(BaseModel):
     asr_model: str | None = None  # onnx-asr model type, e.g. "nemo-parakeet-tdt-0.6b-v3"
     asr_quantization: str | None = None  # e.g. "int8"
 
+    tts_engine: Literal["kokoro", "qwen", "chatterbox", "fish"] | None = None
+    tts_voice: str | None = None
+    tts_model_dir: str | None = None  # relative to the model sidecar, or absolute
+    tts_device: Literal["auto", "cpu", "cuda", "mps"] | None = None
+    tts_language: str | None = None
+    tts_max_chunk_chars: int | None = Field(default=None, ge=150)
+    tts_memory_mb: int | None = Field(default=None, gt=0)
+
     def to_llama_args(self) -> list[str]:
         """Convert config to llama-server CLI arguments."""
         args: list[str] = []
@@ -170,6 +191,9 @@ def _coerce_config_value(key: str, value: str) -> Any:
         raise ValueError(f"Unknown config key '{key}'. Valid keys: {valid}")
 
     _validate_drove_key(key, value)
+    if key.startswith("tts_"):
+        validated = ModelConfig.model_validate({key: value})
+        return getattr(validated, key)
 
     annotation = fields[key].annotation
     # Resolve Optional[X] → X

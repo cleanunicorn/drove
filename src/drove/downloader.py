@@ -9,6 +9,8 @@ from pathlib import Path, PurePosixPath
 
 from huggingface_hub import HfApi, hf_hub_download
 
+from drove.backend import infer_tts_engine
+
 type ProgressCallback = Callable[[int, int, str], None]
 
 
@@ -26,7 +28,11 @@ _SHARD_RE = re.compile(r"-\d{5}-of-\d{5}", re.IGNORECASE)
 # Model file extensions we care about
 _MODEL_EXTS = {".gguf", ".safetensors", ".bin", ".pt"}
 
-# ONNX model weights (".data" covers external-data files like model.onnx.data)
+# Speech synthesis weights and tokenizer/config support files.
+_TTS_WEIGHT_EXTS = {".safetensors", ".bin", ".pt", ".pth"}
+_TTS_SUPPORT_EXTS = {".json", ".txt", ".model", ".tiktoken", ".yaml", ".yml", ".jinja"}
+
+# ONNX weights (".data" covers external-data files like model.onnx.data).
 _ONNX_EXTS = {".onnx", ".onnx_data", ".data"}
 
 # Small support files an ONNX ASR model needs alongside its weights
@@ -211,7 +217,9 @@ class DownloadPlan:
         mmproj_files: dict[str, int] | None = None,
         extra_files: dict[str, int] | None = None,
         onnx_files: dict[str, int] | None = None,
+        tts_engine: str | None = None,
     ) -> None:
+        self.tts_engine = tts_engine
         self.repo_id = repo_id
         self.files = files  # preserves insertion order
         self.local_name = local_name
@@ -229,7 +237,12 @@ class DownloadPlan:
     @property
     def is_asr(self) -> bool:
         """True when this plan downloads an ONNX (ASR backend) model."""
-        return is_onnx_files(self.files)
+        return not self.is_tts and is_onnx_files(self.files)
+
+    @property
+    def is_tts(self) -> bool:
+        """True when the plan preserves a speech engine's repository layout."""
+        return self.tts_engine is not None
 
     @property
     def total_bytes(self) -> int:
@@ -241,10 +254,15 @@ class DownloadPlan:
 
     def destination(self, models_dir: Path) -> Path:
         """Return the model directory (always a directory)."""
+        if self.is_tts:
+            _validate_relative_path(self.local_name)
         return models_dir / self.local_name
 
     def _local_path(self, repo_file: str, models_dir: Path) -> Path:
-        """Return the expected local path for a repo file after flattening."""
+        """Return the local path, preserving TTS repository directories."""
+        if self.is_tts:
+            _validate_relative_path(repo_file)
+            return self.destination(models_dir) / repo_file
         return self.destination(models_dir) / Path(repo_file).name
 
     def _all_remote_files(self) -> dict[str, int]:
@@ -306,15 +324,35 @@ class DownloadPlan:
             # Flatten any repo subdirectory structure
             downloaded_path = Path(downloaded)
             flat_path = dest / downloaded_path.name
-            if downloaded_path != flat_path and downloaded_path.exists():
+            if not self.is_tts and downloaded_path != flat_path and downloaded_path.exists():
                 downloaded_path.rename(flat_path)
 
+        if self.is_tts:
+            # Prepare worker settings before publishing the entry: a running
+            # proxy may discover it as soon as the marker becomes visible.
+            from drove.model_config import load_model_config, save_model_config
+
+            primary = dest / "model.tts"
+            cfg = load_model_config(primary)
+            save_model_config(
+                primary,
+                cfg.model_copy(
+                    update={
+                        "backend": "tts",
+                        "tts_engine": self.tts_engine,
+                        "tts_model_dir": ".",
+                    }
+                ),
+            )
+            primary.touch()
+            return primary
         return dest / Path(first_shard(self.file_names)).name
 
 
 def resolve_download(
     model_ref: str,
     name_override: str | None = None,
+    tts_engine: str | None = None,
 ) -> DownloadPlan:
     """Resolve a model reference to a DownloadPlan without downloading.
 
@@ -322,6 +360,11 @@ def resolve_download(
     Raises ValueError if no matching files are found.
     """
     repo_id, quant = parse_model_ref(model_ref)
+    engine = tts_engine or infer_tts_engine(repo_id)
+    if engine:
+        if quant:
+            raise ValueError("TTS repositories do not support quantization tags.")
+        return _resolve_tts_download(repo_id, engine, name_override)
     files, mmproj_files, extra_files = _fetch_files_with_sizes(repo_id)
 
     if not files:
@@ -378,3 +421,37 @@ def _summarise_quants(files: list[str]) -> str:
     if not seen:
         return ", ".join(sorted({Path(f).suffix for f in files}))
     return ", ".join(sorted(seen.values()))
+
+
+def _validate_relative_path(value: str) -> None:
+    path = PurePosixPath(value)
+    if not value or not path.parts or path.is_absolute() or ".." in path.parts or "\\" in value:
+        raise ValueError(f"Expected a relative model path, got '{value}'.")
+
+
+def _resolve_tts_download(repo_id: str, engine: str, name: str | None) -> DownloadPlan:
+    if engine not in {"kokoro", "qwen", "chatterbox", "fish"}:
+        raise ValueError("Unknown TTS engine. Use kokoro, qwen, chatterbox, or fish.")
+    local_name = name or repo_id
+    _validate_relative_path(local_name)
+    info = HfApi().model_info(repo_id, files_metadata=True)
+    weights: dict[str, int] = {}
+    support: dict[str, int] = {}
+    for file in info.siblings or []:
+        path = file.rfilename
+        _validate_relative_path(path)
+        suffix = PurePosixPath(path).suffix.lower()
+        if suffix in _TTS_WEIGHT_EXTS:
+            weights[path] = file.size or 0
+        elif suffix in _TTS_SUPPORT_EXTS:
+            support[path] = file.size or 0
+    if not weights:
+        raise ValueError(f"No TTS weights found in repo '{repo_id}'.")
+    return DownloadPlan(
+        repo_id=repo_id,
+        files=weights,
+        extra_files=support,
+        local_name=local_name,
+        sharded=False,
+        tts_engine=engine,
+    )

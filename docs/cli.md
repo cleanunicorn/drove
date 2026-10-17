@@ -24,13 +24,16 @@ drove config llama_server.n_gpu_layers -1
 drove models --help
 drove models list
 drove models download <repo>
+drove models download hexgrad/Kokoro-82M --name kokoro
 drove models delete <name>
 drove models info <name>
 drove models config <name>
 ```
 
 The `CAPS` column in `drove models list` shows model capabilities:
-`vision` (multimodal projection) and `stt` (speech-to-text).
+`vision` (multimodal projection), `stt` (speech-to-text), and `tts` (text-to-speech).
+TTS downloads preserve voice/tokenizer directories and configure the speech worker
+automatically; see [Text-to-speech](text-to-speech.md).
 
 ## Coding agent integration
 

@@ -10,8 +10,9 @@ if TYPE_CHECKING:
 
 BACKEND_LLAMA = "llama"
 BACKEND_ASR = "asr"
+BACKEND_TTS = "tts"
 
-VALID_BACKENDS = frozenset({BACKEND_LLAMA, BACKEND_ASR})
+VALID_BACKENDS = frozenset({BACKEND_LLAMA, BACKEND_ASR, BACKEND_TTS})
 
 
 def detect_backend(model_path: Path, model_cfg: ModelConfig) -> str:
@@ -27,6 +28,8 @@ def detect_backend(model_path: Path, model_cfg: ModelConfig) -> str:
             valid = ", ".join(sorted(VALID_BACKENDS))
             raise ValueError(f"Unknown backend '{model_cfg.backend}'. Valid backends: {valid}")
         return backend
+    if model_path.suffix.lower() == ".tts":
+        return BACKEND_TTS
     if model_path.suffix.lower() == ".onnx":
         return BACKEND_ASR
     return BACKEND_LLAMA
@@ -54,3 +57,18 @@ def infer_asr_model_type(ref: str) -> str | None:
     """
     stem = ref.rsplit("/", 1)[-1].strip().lower().removesuffix("-onnx")
     return _ASR_MODEL_TYPES.get(stem)
+
+
+# Repositories supported by the bundled Cathy engines. Unknown compatible repos
+# can be downloaded with an explicit --tts-engine option.
+_TTS_REPOS = {
+    "hexgrad/kokoro-82m": "kokoro",
+    "qwen/qwen3-tts-12hz-0.6b-customvoice": "qwen",
+    "resembleai/chatterbox-nano": "chatterbox",
+    "fishaudio/s1-mini": "fish",
+}
+
+
+def infer_tts_engine(repo_id: str) -> str | None:
+    """Infer a supported speech engine without importing ML dependencies."""
+    return _TTS_REPOS.get(repo_id.lower())

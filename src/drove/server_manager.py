@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import importlib.util
 import logging
+import os
 import re
 import shutil
 import signal
@@ -21,7 +22,13 @@ import psutil
 if TYPE_CHECKING:
     from drove.model_config import ModelConfig
 
-from drove.backend import BACKEND_ASR, BACKEND_LLAMA, detect_backend, infer_asr_model_type
+from drove.backend import (
+    BACKEND_ASR,
+    BACKEND_LLAMA,
+    BACKEND_TTS,
+    detect_backend,
+    infer_asr_model_type,
+)
 from drove.config import Config
 from drove.gguf import uses_sliding_window_attention
 from drove.model_config import (
@@ -36,6 +43,7 @@ from drove.model_store import ModelStore
 logger = logging.getLogger(__name__)
 
 HEALTH_CHECK_INTERVAL = 0.5  # seconds between health poll attempts
+STOP_TIMEOUT_SECONDS = 10.0
 
 
 _STDERR_MAX_BYTES = 256 * 1024  # keep last 256 KB of stderr
@@ -59,7 +67,7 @@ def _prompt_cache_slug(model_name: str) -> str:
     return f"{safe}-{digest}"
 
 
-def _estimate_model_memory(model_path: Path) -> int:
+def _estimate_model_memory(model_path: Path, model_cfg: ModelConfig | None = None) -> int:
     """Estimate the memory needed to serve a model, in bytes.
 
     Uses on-disk file size as a proxy for resident weight memory: all shards
@@ -68,6 +76,12 @@ def _estimate_model_memory(model_path: Path) -> int:
     counted, so budgets should leave headroom.
     """
     try:
+        if model_path.suffix.lower() == ".tts":
+            cfg = model_cfg if model_cfg is not None else load_model_config(model_path)
+            # Cached TTS weights live outside models_dir, so reserve an engine
+            # budget instead of estimating memory from the registration marker.
+            defaults = {"kokoro": 3072, "qwen": 4096, "chatterbox": 4096, "fish": 8192}
+            return (cfg.tts_memory_mb or defaults[cfg.tts_engine or "kokoro"]) * 1024**2
         if model_path.suffix.lower() == ".onnx":
             return sum(f.stat().st_size for f in model_path.parent.glob("*.onnx") if f.is_file())
         shard = _GGUF_SHARD_RE.match(model_path.name)
@@ -148,9 +162,22 @@ class _ModelInstance:
             mem = proc.memory_info()
             cpu_times = proc.cpu_times()
             elapsed = time.time() - proc.create_time()
-            cpu_pct = (cpu_times.user + cpu_times.system) / elapsed * 100 if elapsed > 0 else 0
+            rss = mem.rss
+            cpu_seconds = cpu_times.user + cpu_times.system
+            if self.backend == BACKEND_TTS:
+                # uv is only the supervisor; model allocations and synthesis
+                # CPU time belong to its Python worker and worker descendants.
+                for child in proc.children(recursive=True):
+                    try:
+                        child_mem = child.memory_info()
+                        child_cpu = child.cpu_times()
+                    except psutil.NoSuchProcess, psutil.AccessDenied:
+                        continue
+                    rss += child_mem.rss
+                    cpu_seconds += child_cpu.user + child_cpu.system
+            cpu_pct = cpu_seconds / elapsed * 100 if elapsed > 0 else 0
             return {
-                "memory_rss_bytes": mem.rss,
+                "memory_rss_bytes": rss,
                 "cpu_percent": round(cpu_pct, 1),
             }
         except psutil.NoSuchProcess, psutil.AccessDenied:
@@ -323,7 +350,10 @@ class ServerManager:
                 # Clean up stale instance if process died
                 await self._stop_instance(model_name)
             # Resolve before evicting so an unknown model cannot evict anything.
-            incoming_bytes = _estimate_model_memory(self._resolve_model(model_name))
+            model_path = self._resolve_model(model_name)
+            incoming_bytes = _estimate_model_memory(
+                model_path, self._effective_model_config(model_path)
+            )
             await self._evict_if_needed(incoming_bytes)
             await self._start(model_name)
             if claim:
@@ -425,12 +455,14 @@ class ServerManager:
 
     async def _start(self, model_name: str) -> None:
         model_path = self._resolve_model(model_name)
-        model_cfg = load_model_config(model_path)
+        model_cfg = self._effective_model_config(model_path)
         backend = detect_backend(model_path, model_cfg)
 
         port = _find_free_port()
         slot_save_path: Path | None = None
-        if backend == BACKEND_ASR:
+        if backend == BACKEND_TTS:
+            cmd = self._build_tts_command(model_name, model_path, model_cfg, port)
+        elif backend == BACKEND_ASR:
             cmd = self._build_asr_command(model_name, model_path, model_cfg, port)
         else:
             binary = self._config.llama_server_bin
@@ -453,16 +485,22 @@ class ServerManager:
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=backend == BACKEND_TTS,
         )
 
         config_mtimes = self._get_config_mtimes(model_path)
         inst = _ModelInstance(model_name, process, port, model_path, config_mtimes, backend)
-        inst.est_memory_bytes = _estimate_model_memory(model_path)
+        inst.est_memory_bytes = _estimate_model_memory(model_path, model_cfg)
         inst.start_stderr_reader()
         self._instances[model_name] = inst
 
         try:
             await self._wait_for_health(inst)
+        except asyncio.CancelledError:
+            # No idle watcher exists yet. A cancelled request/startup must not
+            # leave its model process running indefinitely.
+            await self._stop_instance(model_name)
+            raise
         except (RuntimeError, TimeoutError) as e:
             logger.error("Backend failed to start for model=%s: %s", model_name, e)
             await self._stop_instance(model_name)
@@ -484,6 +522,27 @@ class ServerManager:
 
         inst = self._instances.pop(model_name, None)
         if inst is None:
+            return
+
+        if inst.backend == BACKEND_TTS:
+            # uv supervises the Python worker. Signal its isolated process group,
+            # including when the supervisor has already exited but a child remains.
+            try:
+                os.killpg(inst.process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(inst.process.wait(), timeout=STOP_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning("TTS worker did not stop in time, killing its process group")
+            finally:
+                # A supervisor can exit before its children, so reap stragglers
+                # even when waiting for the supervisor succeeded.
+                try:
+                    os.killpg(inst.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            await inst.process.wait()
             return
 
         if not inst.is_running:
@@ -577,6 +636,59 @@ class ServerManager:
                 merged = merged.model_copy(update={"swa_full": True})
         args.extend(merged.to_llama_args())
         return args
+
+    def _effective_model_config(self, model_path: Path) -> ModelConfig:
+        return load_global_model_config(self._config.models_dir).model_copy(
+            update=load_model_config(model_path).to_dict()
+        )
+
+    def _build_tts_command(
+        self, model_name: str, model_path: Path, model_cfg: ModelConfig, port: int
+    ) -> list[str]:
+        """Run bundled Cathy engines in their compatible Python environment."""
+        model_cfg = load_global_model_config(self._config.models_dir).model_copy(
+            update=model_cfg.to_dict()
+        )
+        uv = shutil.which("uv")
+        if uv is None:
+            raise RuntimeError("Text-to-speech requires uv on PATH to manage Python 3.12 engines.")
+        runtime = Path(__file__).parent / "workers" / "tts_runtime"
+        engine = model_cfg.tts_engine or "kokoro"
+        # Cache environments outside the installed package; Drove's Python 3.14
+        # requirements must not leak into Cathy's Python 3.12 engine environments.
+        cmd = [
+            uv,
+            "run",
+            "--no-project",
+            "--python",
+            "3.12",
+            "--with-requirements",
+            str(runtime / f"{engine}.txt"),
+            "python",
+            str(runtime / "worker.py"),
+            "--engine",
+            engine,
+            "--model-name",
+            model_name,
+            "--host",
+            self._config.llama_server_host,
+            "--port",
+            str(port),
+            "--device",
+            model_cfg.tts_device or "auto",
+            "--voice",
+            model_cfg.tts_voice or "female",
+        ]
+        if model_cfg.tts_model_dir:
+            directory = Path(model_cfg.tts_model_dir).expanduser()
+            if not directory.is_absolute():
+                directory = model_path.parent / directory
+            cmd.extend(["--model-dir", str(directory.resolve())])
+        if model_cfg.tts_language:
+            cmd.extend(["--language", model_cfg.tts_language])
+        if model_cfg.tts_max_chunk_chars:
+            cmd.extend(["--max-chunk-chars", str(model_cfg.tts_max_chunk_chars)])
+        return cmd
 
     def _build_asr_command(
         self, model_name: str, model_path: Path, model_cfg: ModelConfig, port: int

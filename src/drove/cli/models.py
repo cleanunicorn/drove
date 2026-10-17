@@ -77,6 +77,13 @@ def _detect_capabilities(primary: Path) -> list[str]:
     download command auto-saves mmproj metadata and llama.cpp expects the
     file to live next to the primary model.
     """
+    if primary.suffix.lower() == ".tts":
+        return ["tts"]
+    try:
+        if load_model_config(primary).backend == "tts":
+            return ["tts"]
+    except Exception:
+        pass
     caps: list[str] = []
 
     # Vision: any mmproj-*.gguf file in the same directory, or mmproj set
@@ -111,6 +118,47 @@ def _detect_capabilities(primary: Path) -> list[str]:
 def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
     """Return (name, primary_path, total_bytes) for each model."""
     return [(e.name, e.primary, e.total_bytes) for e in ModelStore(models_dir).list()]
+
+
+@models_app.command("add-tts")
+def add_tts_model(
+    ctx: typer.Context,
+    name: Annotated[str, typer.Argument(help="Local model name, e.g. kokoro.")],
+    engine: Annotated[str, typer.Option(help="kokoro, qwen, chatterbox, or fish.")] = "kokoro",
+    voice: Annotated[
+        str | None, typer.Option(help="Default voice or reference WAV; inherits global settings.")
+    ] = None,
+    device: Annotated[
+        str | None, typer.Option(help="auto, cpu, cuda, or mps; inherits global settings.")
+    ] = None,
+) -> None:
+    """Register a Cathy text-to-speech engine (weights are cached on first use)."""
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or name in {".", ".."}:
+        raise typer.BadParameter(
+            "Use a simple local name containing letters, digits, dots or dashes."
+        )
+    try:
+        cfg = ModelConfig.model_validate(
+            {
+                "backend": "tts",
+                "tts_engine": engine,
+                "tts_voice": voice,
+                "tts_device": device,
+            }
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    models_dir = _models_dir(ctx)
+    directory = models_dir / name
+    if directory.exists() or (models_dir / f"{name}.gguf").exists():
+        raise typer.BadParameter(f"Model '{name}' already exists; use 'drove models config'.")
+    directory.mkdir(parents=True)
+    primary = directory / "model.tts"
+    save_model_config(primary, cfg)
+    primary.touch()
+    typer.echo(f"Registered {name} ({engine}). POST /v1/audio/speech with model='{name}'.")
 
 
 @models_app.command("list")
@@ -301,6 +349,8 @@ def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str 
         filter_onnx_quant,
     )
 
+    if plan.is_tts:
+        return None
     if plan.is_asr:
         variants = available_onnx_quants(plan.onnx_files)
         if len(variants) < 2:
@@ -387,7 +437,8 @@ def download_model(
                 "Format: 'org/repo' or 'org/repo:QUANT'. "
                 "Examples: unsloth/Qwen3-8B-GGUF  "
                 "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M  "
-                "istupakov/parakeet-tdt-0.6b-v3-onnx:int8"
+                "istupakov/parakeet-tdt-0.6b-v3-onnx:int8  "
+                "hexgrad/Kokoro-82M"
             )
         ),
     ],
@@ -396,6 +447,10 @@ def download_model(
         typer.Option("--name", "-n", help="Override local model name."),
     ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
+    tts_engine: Annotated[
+        str | None,
+        typer.Option(help="TTS engine for a compatible repo (auto-detected for known models)."),
+    ] = None,
 ) -> None:
     """Download a model from HuggingFace Hub.
 
@@ -414,6 +469,8 @@ def download_model(
         drove models download unsloth/Qwen3-8B-GGUF:Q8_0 --name qwen3-8b-q8
 
         drove models download istupakov/parakeet-tdt-0.6b-v3-onnx:int8  (speech-to-text)
+
+        drove models download hexgrad/Kokoro-82M --name kokoro  (text-to-speech)
     """
     from drove.downloader import (
         FileStatus,
@@ -426,7 +483,10 @@ def download_model(
 
     typer.echo(f"Resolving {model_ref} ...")
     try:
-        plan = resolve_download(model_ref, name_override=name)
+        if tts_engine is None:
+            plan = resolve_download(model_ref, name_override=name)
+        else:
+            plan = resolve_download(model_ref, name_override=name, tts_engine=tts_engine)
     except ValueError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
@@ -442,7 +502,7 @@ def download_model(
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
     all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
 
-    if all_complete:
+    if all_complete and not plan.is_tts:
         typer.echo(
             f"Model '{plan.local_name}' is already fully downloaded "
             f"at {plan.destination(models_dir)}."
@@ -451,7 +511,7 @@ def download_model(
 
     _print_download_plan(plan, models_dir, statuses)
 
-    if not yes:
+    if not yes and not all_complete:
         if has_existing:
             typer.confirm("Some files already exist. Resume download?", abort=True)
         else:
@@ -478,6 +538,9 @@ def download_model(
             quant=quant,
         ),
     )
+
+    if plan.is_tts:
+        typer.echo(f"  Text-to-speech auto-configured: {plan.tts_engine}")
 
     # Auto-configure speech-to-text models for the built-in ASR worker
     if plan.is_asr:

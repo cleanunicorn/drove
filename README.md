@@ -421,3 +421,15 @@ uv run mypy src/
 ```
 
 Found a bug or have an idea? Please use the issue templates: [Bug report](./.github/ISSUE_TEMPLATE/bug_report.md) · [Feature request](./.github/ISSUE_TEMPLATE/feature_request.md).
+
+## Text-to-speech
+
+Cathy’s local engines are available through the OpenAI `/v1/audio/speech` API.
+
+```bash
+drove models download hexgrad/Kokoro-82M --name kokoro
+drove serve
+```
+
+See [Text-to-speech](docs/text-to-speech.md) for OpenAI client examples,
+voices, formats, and engine setup.

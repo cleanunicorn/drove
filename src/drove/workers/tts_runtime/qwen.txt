@@ -1,0 +1,11 @@
+# Isolated dependencies; PyTorch caps and git pins retained from Cathy.
+fastapi>=0.135.2
+uvicorn>=0.42.0
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+kokoro>=0.9.4
+numpy>=1.26
+soundfile>=0.14.0
+torch>=2.6.0,<2.9
+tqdm>=4.70.0
+qwen-tts>=0.1.1
+torchaudio>=2.6.0,<2.9

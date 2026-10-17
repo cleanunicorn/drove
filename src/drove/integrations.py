@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from drove.backend import BACKEND_ASR, detect_backend
+from drove.backend import BACKEND_LLAMA, detect_backend
 from drove.config import Config
 from drove.gguf import read_model_metadata
 from drove.model_config import ModelConfig, load_global_model_config, load_model_config
@@ -179,9 +179,9 @@ def _chat_template(cfg: ModelConfig, gguf_template: str | None) -> str | None:
 
 
 def describe_model(config: Config, name: str, primary: Path) -> ModelSpec | None:
-    """Build a ModelSpec, or None for models agents cannot chat with (speech-to-text)."""
+    """Build a ModelSpec, or None for models agents cannot chat with (speech models)."""
     cfg = _effective_model_config(config, primary)
-    if detect_backend(primary, cfg) == BACKEND_ASR:
+    if detect_backend(primary, cfg) != BACKEND_LLAMA:
         return None
 
     meta = read_model_metadata(primary)

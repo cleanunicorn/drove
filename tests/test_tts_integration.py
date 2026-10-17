@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from drove.backend import BACKEND_TTS, detect_backend
 from drove.cli.models import _detect_capabilities, add_tts_model, models_app
@@ -206,6 +207,62 @@ def test_tts_global_settings_and_sidecar_precedence(tmp_path: Path) -> None:
             _estimate_model_memory(primary, manager._effective_model_config(primary))
             == 1024 * 1024**2
         )
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_registration_preserves_global_voice_and_device_defaults(
+    tmp_path: Path, explicit: bool
+) -> None:
+    save_global_model_config(tmp_path, ModelConfig(tts_device="cpu", tts_voice="af_sarah"))
+    args = ["add-tts", "kokoro"]
+    if explicit:
+        args += ["--device", "auto", "--voice", "female"]
+    config = Config(models_dir=tmp_path)
+    result = CliRunner().invoke(models_app, args, obj={"config": config})
+    assert result.exit_code == 0, result.output
+    primary = ModelStore(tmp_path).resolve("kokoro")
+    saved = load_model_config(primary)
+    assert saved.tts_device == ("auto" if explicit else None)
+    assert saved.tts_voice == ("female" if explicit else None)
+    with patch("shutil.which", return_value="/usr/bin/uv"):
+        cmd = ServerManager(config)._build_tts_command("kokoro", primary, saved, 9000)
+    assert cmd[cmd.index("--device") + 1] == ("auto" if explicit else "cpu")
+    assert cmd[cmd.index("--voice") + 1] == ("female" if explicit else "af_sarah")
+
+
+def test_tts_stats_include_worker_descendants(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    process = MagicMock(pid=100, returncode=None)
+    instance = _ModelInstance("tts", process, 9000, tmp_path / "model.tts", (0, 0), BACKEND_TTS)
+    supervisor = MagicMock()
+    child = MagicMock()
+    supervisor.children.return_value = [child]
+    supervisor.memory_info.return_value = SimpleNamespace(rss=100)
+    child.memory_info.return_value = SimpleNamespace(rss=10000)
+    supervisor.cpu_times.return_value = SimpleNamespace(user=1, system=1)
+    child.cpu_times.return_value = SimpleNamespace(user=7, system=1)
+    supervisor.create_time.return_value = 90
+    with patch("psutil.Process", return_value=supervisor), patch("time.time", return_value=100):
+        assert instance.get_process_stats() == {"memory_rss_bytes": 10100, "cpu_percent": 100.0}
+    supervisor.children.assert_called_once_with(recursive=True)
+
+
+async def test_cancelled_tts_startup_cleans_up_worker(tmp_path: Path) -> None:
+    register(tmp_path)
+    manager = ServerManager(Config(models_dir=tmp_path))
+    process = MagicMock(pid=12345, returncode=None, stdout=None, stderr=None)
+    process.wait = AsyncMock(return_value=0)
+    with (
+        patch("shutil.which", return_value="/usr/bin/uv"),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+        patch.object(manager, "_wait_for_health", AsyncMock(side_effect=asyncio.CancelledError)),
+        patch("drove.server_manager.os.killpg") as killpg,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await manager.ensure_running("kokoro")
+        assert not manager._instances
+        killpg.assert_any_call(12345, signal.SIGTERM)
 
 
 @pytest.mark.parametrize("supervisor_exited", [False, True])

@@ -162,9 +162,22 @@ class _ModelInstance:
             mem = proc.memory_info()
             cpu_times = proc.cpu_times()
             elapsed = time.time() - proc.create_time()
-            cpu_pct = (cpu_times.user + cpu_times.system) / elapsed * 100 if elapsed > 0 else 0
+            rss = mem.rss
+            cpu_seconds = cpu_times.user + cpu_times.system
+            if self.backend == BACKEND_TTS:
+                # uv is only the supervisor; model allocations and synthesis
+                # CPU time belong to its Python worker and worker descendants.
+                for child in proc.children(recursive=True):
+                    try:
+                        child_mem = child.memory_info()
+                        child_cpu = child.cpu_times()
+                    except psutil.NoSuchProcess, psutil.AccessDenied:
+                        continue
+                    rss += child_mem.rss
+                    cpu_seconds += child_cpu.user + child_cpu.system
+            cpu_pct = cpu_seconds / elapsed * 100 if elapsed > 0 else 0
             return {
-                "memory_rss_bytes": mem.rss,
+                "memory_rss_bytes": rss,
                 "cpu_percent": round(cpu_pct, 1),
             }
         except psutil.NoSuchProcess, psutil.AccessDenied:
@@ -483,6 +496,11 @@ class ServerManager:
 
         try:
             await self._wait_for_health(inst)
+        except asyncio.CancelledError:
+            # No idle watcher exists yet. A cancelled request/startup must not
+            # leave its model process running indefinitely.
+            await self._stop_instance(model_name)
+            raise
         except (RuntimeError, TimeoutError) as e:
             logger.error("Backend failed to start for model=%s: %s", model_name, e)
             await self._stop_instance(model_name)

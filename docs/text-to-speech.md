@@ -75,6 +75,10 @@ cache on first use. Deleting such a registration preserves the shared caches.
 `drove models config NAME tts_device cpu` (or `auto`, `cuda`, `mps`). `auto`
 uses CUDA when available, otherwise CPU.
 
+Omitting `--voice` or `--device` preserves inheritance from global model settings;
+without a global setting, the worker defaults to `female` and `auto`. Explicit
+registration options are saved as per-model overrides.
+
 Chatterbox and Fish's generated male/female reference clips use a separate
 Kokoro model and may download those auxiliary weights on first use. Configure
 a local reference WAV with `tts_voice /absolute/path/to/reference.wav` to avoid

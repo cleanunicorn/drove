@@ -125,8 +125,12 @@ def add_tts_model(
     ctx: typer.Context,
     name: Annotated[str, typer.Argument(help="Local model name, e.g. kokoro.")],
     engine: Annotated[str, typer.Option(help="kokoro, qwen, chatterbox, or fish.")] = "kokoro",
-    voice: Annotated[str, typer.Option(help="Default voice or a local reference WAV.")] = "female",
-    device: Annotated[str, typer.Option(help="auto, cpu, cuda, or mps.")] = "auto",
+    voice: Annotated[
+        str | None, typer.Option(help="Default voice or reference WAV; inherits global settings.")
+    ] = None,
+    device: Annotated[
+        str | None, typer.Option(help="auto, cpu, cuda, or mps; inherits global settings.")
+    ] = None,
 ) -> None:
     """Register a Cathy text-to-speech engine (weights are cached on first use)."""
     import re
@@ -152,8 +156,8 @@ def add_tts_model(
         raise typer.BadParameter(f"Model '{name}' already exists; use 'drove models config'.")
     directory.mkdir(parents=True)
     primary = directory / "model.tts"
-    primary.touch()
     save_model_config(primary, cfg)
+    primary.touch()
     typer.echo(f"Registered {name} ({engine}). POST /v1/audio/speech with model='{name}'.")
 
 

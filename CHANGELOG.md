@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Preserved global voice and device defaults when registering TTS models without explicit overrides, and published registrations only after saving configuration.
+- Included TTS worker descendants in reported memory and CPU usage instead of reporting only the runtime supervisor.
+- Cleaned up model workers when startup was cancelled before health checks completed.
+
 - Stopped TTS worker process groups during shutdown and eviction, including children left behind by the runtime supervisor.
 - Applied global model settings to TTS startup and memory reservations while preserving per-model overrides.
 - Accepted Kokoro voices present in the model beyond the curated presets, including configured defaults.

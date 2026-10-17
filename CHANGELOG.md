@@ -4,8 +4,10 @@
 
 ### Added
 
-- Redesigned CLI reports with consistent headings, responsive tables, grouped server metrics,
-  download resume states, and actionable empty states; preserved plain single-value config output.
+- Redesigned CLI reports around concise defaults: server activity, errors and idle-unload
+  countdowns; model capabilities and sizes; effective configuration; and download transfer
+  estimates. Added verbose diagnostic views and an option to reveal unset model parameters,
+  with consistent formatting and plain single-value config output preserved.
 
 
 ## v0.7.0 (2026-10-17)

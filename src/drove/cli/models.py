@@ -166,7 +166,10 @@ def add_tts_model(
 def list_models(
     ctx: typer.Context,
     verbose: Annotated[
-        bool, typer.Option("--verbose", "-V", help="Show download origin info.")
+        bool,
+        typer.Option(
+            "--verbose", "-V", help="Show storage, configuration, and download origin details."
+        ),
     ] = False,
 ) -> None:
     """List all downloaded models."""
@@ -174,23 +177,28 @@ def list_models(
     models = _iter_models(models_dir)
 
     out = console()
-    heading(out, "Models", str(models_dir))
+    heading(out, "Models", str(models_dir) if verbose else None)
     if not models:
         out.print("No models found.")
         hint(out, "Download a model: drove models download <org/repo[:QUANT]>")
         return
 
-    listing = table("NAME", "SIZE", "CAPS", "CONFIG")
+    listing = table("NAME", "CAPABILITY", "SIZE")
+    if verbose:
+        listing.add_column("CONFIG", overflow="fold")
     listing.columns[0].style = "cyan"
-    listing.columns[1].justify = "right"
+    listing.columns[2].justify = "right"
     for name, primary, total_bytes in models:
         has_cfg = config_path_for_model(primary).exists()
         caps = ", ".join(_detect_capabilities(primary)) or "text"
-        listing.add_row(
-            Text(name), _fmt_size(total_bytes), caps, "custom" if has_cfg else "defaults"
-        )
+        row = [Text(name), Text(caps), Text(_fmt_size(total_bytes))]
+        if verbose:
+            row.append(Text("custom" if has_cfg else "defaults"))
+        listing.add_row(*row)
     out.print(listing)
     hint(out, f"{len(models)} model(s) · {_fmt_size(sum(m[2] for m in models))} on disk")
+    if not verbose:
+        hint(out, "Inspect a model: drove models info <name>")
 
     if verbose:
         for name, primary, _ in models:
@@ -204,6 +212,10 @@ def list_models(
 def model_info(
     ctx: typer.Context,
     name: Annotated[str, typer.Argument(help="Model name.", autocompletion=_complete_model_name)],
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-V", help="Show local paths and the downloaded file inventory."),
+    ] = False,
 ) -> None:
     """Show info and configuration for a model."""
     models_dir = _models_dir(ctx)
@@ -222,26 +234,37 @@ def model_info(
     fields(
         out,
         [
-            ("Files", sum(f.is_file() for f in all_files)),
-            ("Size", _fmt_size(total_bytes)),
-            ("Primary", primary),
             ("Capabilities", ", ".join(_detect_capabilities(primary)) or "text"),
+            ("On disk", f"{_fmt_size(total_bytes)} · {sum(f.is_file() for f in all_files)} files"),
         ],
     )
     dl = load_download_info(primary)
     if dl:
-        section(out, "Download origin")
-        fields(out, [("Repository", dl.repo_id), *(("File", f) for f in dl.files)])
+        fields(out, [("Repository", dl.repo_id)])
+        if dl.quant:
+            fields(out, [("Quantization", dl.quant)])
+        if verbose:
+            section(out, "Downloaded files")
+            fields(out, (("File", f) for f in dl.files))
 
     cfg = load_model_config(primary)
     cfg_path = config_path_for_model(primary)
-    section(out, "Model parameters")
-    fields(out, [("Config", f"{cfg_path} ({'exists' if cfg_path.exists() else 'not set'})")])
+    if verbose:
+        section(out, "Storage")
+        fields(
+            out,
+            [
+                ("Primary", primary),
+                ("Config", f"{cfg_path} ({'exists' if cfg_path.exists() else 'not set'})"),
+            ],
+        )
+    section(out, "Model overrides")
     params = cfg.to_dict()
     if params:
         fields(out, params.items())
     else:
         hint(out, "No model-specific parameters set (using global defaults).")
+    hint(out, "See effective settings and sources: drove models config <name>")
 
 
 @models_app.command("delete")
@@ -375,6 +398,8 @@ def _print_download_plan(
     plan: DownloadPlan,
     models_dir: Path,
     statuses: dict[str, tuple[FileStatus, int]] | None = None,
+    *,
+    verbose: bool = False,
 ) -> None:
     from drove.downloader import FileStatus
 
@@ -389,6 +414,24 @@ def _print_download_plan(
             ("Files", f"{total_files} · {_fmt_size(plan.total_bytes)} total"),
         ],
     )
+    if statuses is not None:
+        all_files = {**plan.files, **plan.mmproj_files, **plan.extra_files}
+        remaining = 0
+        complete = 0
+        for fname, size in all_files.items():
+            status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
+            if status == FileStatus.COMPLETE:
+                complete += 1
+            else:
+                remaining += max(0, size - local_size)
+        fields(
+            out,
+            [("To download", f"~{_fmt_size(remaining)} · {complete}/{total_files} files complete")],
+        )
+    if not verbose:
+        hint(out, "Use --verbose to inspect every file and resume state.")
+        out.print()
+        return
     for title, files in [
         ("Model files", plan.files),
         ("Multimodal projection (vision)", plan.mmproj_files),
@@ -434,6 +477,9 @@ def download_model(
         typer.Option("--name", "-n", help="Override local model name."),
     ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-V", help="Show every download file and resume state.")
+    ] = False,
     tts_engine: Annotated[
         str | None,
         typer.Option(help="TTS engine for a compatible repo (auto-detected for known models)."),
@@ -496,7 +542,7 @@ def download_model(
         )
         raise typer.Exit(0)
 
-    _print_download_plan(plan, models_dir, statuses)
+    _print_download_plan(plan, models_dir, statuses, verbose=verbose)
 
     if not yes and not all_complete:
         if has_existing:
@@ -578,6 +624,9 @@ def model_config_cmd(
         typer.Argument(help="Config key to get/set.", autocompletion=_complete_model_config_key),
     ] = None,
     value: Annotated[str | None, typer.Argument(help="Value to set.")] = None,
+    show_all: Annotated[
+        bool, typer.Option("--all", help="Include unset parameters in the configuration report.")
+    ] = False,
     global_config: Annotated[
         bool,
         typer.Option(
@@ -656,6 +705,7 @@ def model_config_cmd(
                     ("config.toml", base.to_dict()),
                     ("_global.toml", cfg.to_dict()),
                 ],
+                show_all=show_all,
             )
             return
 
@@ -715,6 +765,7 @@ def model_config_cmd(
                 ("_global.toml", global_cfg.to_dict()),
                 (f"{name}.toml", model_cfg.to_dict()),
             ],
+            show_all=show_all,
         )
         return
 
@@ -744,6 +795,8 @@ def _base_model_config(ctx: typer.Context) -> ModelConfig:
 def _print_resolved_config(
     all_fields: dict[str, object],
     layers: list[tuple[str, dict[str, object]]],
+    *,
+    show_all: bool = False,
 ) -> None:
     """Print all ModelConfig fields with resolved values and their source.
 
@@ -752,6 +805,7 @@ def _print_resolved_config(
     """
     out = console()
     listing = table("PARAMETER", "VALUE", "SOURCE")
+    hidden = 0
     for field, default in all_fields.items():
         source = None
         value = default
@@ -759,9 +813,14 @@ def _print_resolved_config(
             if field in vals:
                 value = vals[field]
                 source = label
+        if value is None and not show_all:
+            hidden += 1
+            continue
         listing.add_row(
             Text(field),
             Text(str(value) if value is not None else "(not set)"),
             Text(source or ("default" if value is not None else "—")),
         )
     out.print(listing)
+    if hidden:
+        hint(out, f"{hidden} unset parameters hidden. Use --all to show them.")

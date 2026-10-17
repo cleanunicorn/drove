@@ -106,6 +106,9 @@ def status(
     ctx: typer.Context,
     host: Annotated[str | None, typer.Option(help="drove host (overrides config).")] = None,
     port: Annotated[int | None, typer.Option(help="drove port (overrides config).")] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-V", help="Show process, timing, and token details.")
+    ] = False,
     watch: Annotated[
         float | None,
         typer.Option(
@@ -129,15 +132,15 @@ def status(
             while True:
                 if console().is_terminal:
                     typer.clear()
-                _print_status(base, watch=True)
+                _print_status(base, watch=True, verbose=verbose)
                 time.sleep(watch)
         except KeyboardInterrupt:
             pass
     else:
-        _print_status(base)
+        _print_status(base, verbose=verbose)
 
 
-def _print_status(base: str, *, watch: bool = False) -> None:
+def _print_status(base: str, *, watch: bool = False, verbose: bool = False) -> None:
     """Fetch and print the server status.
 
     When *watch* is True, connection errors are printed but do not exit,
@@ -165,40 +168,74 @@ def _print_status(base: str, *, watch: bool = False) -> None:
     data = resp.json()
 
     out = console()
-    heading(out, "Server status", base)
     server = data["server"]
-    fields(
-        out,
-        [
-            ("State", "running"),
-            ("Uptime", _fmt_duration(server["uptime_seconds"])),
-            ("Listen", server["listen"]),
-            ("Endpoint", f"{base}/v1"),
-        ],
-    )
+    req = data["requests"]
+    tok = data["tokens"]
+    heading(out, "Server", f"{base}/v1")
+    summary = Text(f"running · up {_fmt_duration(server['uptime_seconds'])}", style="green")
+    summary.append(f" · {req['active']:,} active requests", style="bold" if req["active"] else "")
+    if req["errors"]:
+        summary.append(f" · {req['errors']:,} errors since startup", style="bold yellow")
+    out.print(summary)
 
     models = data.get("models", [])
     section(out, f"Loaded models · {len(models)}")
     if models:
-        listing = table("MODEL", "LOADED", "IDLE / LIMIT", "ACTIVE")
+        listing = table("MODEL", "ACTIVITY", "IDLE UNLOAD IN")
+        if verbose:
+            listing.add_column("LOADED", overflow="fold")
+            listing.add_column("IDLE / LIMIT", overflow="fold")
         listing.columns[0].style = "cyan"
         for model in models:
-            loaded = model.get("loaded_seconds")
-            listing.add_row(
-                Text(model["name"]),
-                _fmt_duration(loaded) if loaded is not None else "—",
-                f"{_fmt_duration(model.get('idle_seconds', 0))} / "
-                f"{_fmt_duration(model.get('idle_timeout_seconds', 0))}",
-                str(model.get("active_requests", 0)),
+            active = model.get("active_requests", 0)
+            idle = model.get("idle_seconds", 0)
+            timeout = model.get("idle_timeout_seconds")
+            unload = (
+                "—"
+                if active or timeout is None
+                else "due"
+                if idle >= timeout
+                else "~" + _fmt_duration(timeout - idle)
             )
+            row = [
+                Text(model["name"]),
+                Text(f"{active} active" if active else "idle"),
+                Text(unload),
+            ]
+            if verbose:
+                loaded = model.get("loaded_seconds")
+                row.extend(
+                    [
+                        Text(_fmt_duration(loaded) if loaded is not None else "—"),
+                        Text(
+                            f"{_fmt_duration(idle)} / "
+                            + (_fmt_duration(timeout) if timeout is not None else "—")
+                        ),
+                    ]
+                )
+            listing.add_row(*row)
         out.print(listing)
     else:
         hint(out, "No models loaded. Models start on the first request.")
 
+    if not verbose:
+        if req["total"]:
+            hint(out, f"{req['total']:,} requests since startup")
+        hint(out, "Use --verbose for process, timing, and token details.")
+        if watch:
+            hint(out, "Watching · Ctrl+C to stop")
+        return
+
+    section(out, "Connection")
+    fields(out, [("Listen", server["listen"])])
     proc = data.get("process")
     if proc:
         section(out, "Processes")
-        processes = {"server": proc} if "memory_rss_bytes" in proc else proc
+        processes = (
+            {models[0]["name"] if len(models) == 1 else "backend": proc}
+            if "memory_rss_bytes" in proc
+            else proc
+        )
         listing = table("PROCESS", "MEMORY (RSS)", "CPU")
         for name, stats in processes.items():
             if stats:
@@ -207,9 +244,7 @@ def _print_status(base: str, *, watch: bool = False) -> None:
                 )
         out.print(listing)
 
-    section(out, "Traffic")
-    req = data["requests"]
-    tok = data["tokens"]
+    section(out, "Traffic since startup")
     traffic: list[tuple[str, object]] = [
         (
             "Requests",

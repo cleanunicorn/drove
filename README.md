@@ -248,7 +248,7 @@ drove server status --watch    # refresh every 2s
 drove server status -w 5       # refresh every 5s
 ```
 
-It reports uptime, loaded models with idle timers, process memory/CPU, request counts, token throughput (tokens/sec), and time-to-first-token.
+The default view shows uptime, active requests, errors, and loaded models with approximate idle-unload countdowns. Add `--verbose` (`-V`) for process memory/CPU, token counts, throughput, and time-to-first-token.
 
 </details>
 
@@ -258,8 +258,8 @@ It reports uptime, loaded models with idle timers, process memory/CPU, request c
 <br>
 
 ```bash
-drove models list                            # NAME · SIZE · CAPS (vision/stt) · CONFIG
-drove models list -V                         # also show download origin
+drove models list                            # NAME · CAPABILITY · SIZE
+drove models list -V                         # also show storage, config, and download origin
 drove models info <name>                     # files, size, capabilities, effective config
 drove models download <org/repo[:QUANT]>     # pull from HuggingFace
 drove models download <ref> --name my-name   # override the local name

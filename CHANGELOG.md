@@ -1,10 +1,12 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Fixed
+## v0.8.4 (2026-10-17)
 
-- Captured transcription and speech request counts, audio duration, and processing time in server status, and kept audio responses out of text token timing statistics.
+### Bug Fixes
+
+- **stats**: Capture audio usage in server status
+  ([`d3c3702`](https://github.com/cleanunicorn/drove/commit/d3c3702b1447d0e7ab98713cafe50e927cc27782))
 
 
 ## v0.8.3 (2026-10-17)

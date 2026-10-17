@@ -1,12 +1,18 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Fixed
+## v0.8.3 (2026-10-17)
 
-- **cli**: `drove server status` now shows the real bind address when the server is
-  reachable from other machines (for example `listening on all interfaces
-  (0.0.0.0:7777)`), instead of only the `127.0.0.1` URL it connects to.
+### Bug Fixes
+
+- **cli**: Show the bind address when status is network-exposed
+  ([`6dadd1f`](https://github.com/cleanunicorn/drove/commit/6dadd1fdd0999c27070ea1b9553b8ec5ad42cc15))
+
+server status connects to 127.0.0.1 when listen_host is 0.0.0.0, so the heading URL hid that the
+  server is reachable from the LAN. Show a "listening on ..." line in the default view for any
+  non-loopback bind.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 
 ## v0.8.2 (2026-10-17)

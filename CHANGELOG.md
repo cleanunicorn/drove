@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.8.1 (2026-10-17)
+
+### Bug Fixes
+
+- **cli**: Use click.clear in status --watch
+  ([`feb463c`](https://github.com/cleanunicorn/drove/commit/feb463cb41cc815e54a1ae7751e27ba2e57057fb))
+
+typer.clear does not exist in current Typer releases, so --watch crashed with AttributeError on
+  terminals.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+
 ## v0.8.0 (2026-10-17)
 
 ### Features
@@ -10,11 +23,6 @@
 
 - **cli**: Redesign inspection output and status reports
   ([`dea5750`](https://github.com/cleanunicorn/drove/commit/dea5750f5797a0f48e89c244e40f31f874cdd106))
-
-### Fixed
-
-- Fixed `drove server status --watch` crashing with an `AttributeError` on terminals
-  because it called a screen-clear helper that newer Typer releases no longer provide.
 
 
 ## v0.7.0 (2026-10-17)

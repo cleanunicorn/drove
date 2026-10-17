@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -163,9 +164,19 @@ class Config(BaseSettings):
         path.write_bytes(tomli_w.dumps(data).encode())
 
 
+def resolve_config_path(path: Path | None = None) -> Path:
+    """Return the config file to use: *path*, else ``$DROVE_CONFIG``, else the default."""
+    if path is not None:
+        return path.expanduser()
+    env_path = os.environ.get("DROVE_CONFIG")
+    if env_path:
+        return Path(env_path).expanduser()
+    return DEFAULT_CONFIG_PATH
+
+
 def load_config(path: Path | None = None) -> Config:
     """Load config from TOML file (if it exists), then apply env var overrides."""
-    config_path = path or DEFAULT_CONFIG_PATH
+    config_path = resolve_config_path(path)
     _migrate_legacy_config(config_path)
     # Point the TOML source at the requested file by temporarily updating model_config
     Config.model_config["toml_file"] = str(config_path)

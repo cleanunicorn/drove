@@ -1,7 +1,7 @@
 # Getting started
 
-This guide takes you from a fresh install to serving text, vision, and
-speech-to-text models through one OpenAI-compatible endpoint. For the full
+This guide takes you from a fresh install to serving text, vision,
+speech-to-text, and text-to-speech models through one OpenAI-compatible endpoint. For the full
 reference on any topic, follow the links to the other docs.
 
 ## Prerequisites
@@ -11,7 +11,9 @@ reference on any topic, follow the links to the other docs.
   your `PATH` — required for text and vision (GGUF) models. Speech-to-text needs
   no extra binary.
 - `ffmpeg` (optional) — lets the speech-to-text worker accept compressed audio
-  (mp3, m4a, ogg…). Without it, upload WAV.
+  (mp3, m4a, ogg…), and lets text-to-speech return mp3/opus/aac/flac and change
+  speed. Without it, use WAV.
+- `espeak-ng` — required for text-to-speech. Qwen3-TTS also needs `sox`.
 
 ## 1. Install
 
@@ -66,8 +68,8 @@ own subdirectory, and partial downloads resume. List what you have:
 drove models list
 ```
 
-The `CAPS` column flags `vision` (multimodal) and `stt` (speech-to-text)
-models. See [Managing models](#managing-models) below for more.
+The `CAPABILITY` column flags `vision` (multimodal), `stt` (speech-to-text), and
+`tts` (text-to-speech) models. See [Managing models](#managing-models) below for more.
 
 ## 4. Run the server
 
@@ -80,6 +82,7 @@ Leave it running. The OpenAI-compatible API is now available at:
 - `GET  http://127.0.0.1:8080/v1/models`
 - `POST http://127.0.0.1:8080/v1/chat/completions`
 - `POST http://127.0.0.1:8080/v1/audio/transcriptions`
+- `POST http://127.0.0.1:8080/v1/audio/speech`
 - `GET  http://127.0.0.1:8080/status`
 
 Models load on the first request that names them and unload after the idle
@@ -143,6 +146,45 @@ curl http://127.0.0.1:8080/v1/audio/transcriptions \
 Full details — model types, quantization, `response_format` — in
 [Speech-to-text](./speech-to-text.md).
 
+## Text-to-speech
+
+drove synthesizes speech locally with the bundled Kokoro, Qwen3-TTS,
+Chatterbox-Nano, and Fish S1-mini engines. Each engine runs in its own Python 3.12
+environment, which `uv` builds the first time the model starts. That first
+start can take several minutes, so raise the startup timeout once:
+
+```bash
+drove config startup_timeout_seconds 1800
+drove models download hexgrad/Kokoro-82M --name kokoro
+```
+
+```bash
+curl http://127.0.0.1:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "kokoro", "input": "Hello from drove.", "voice": "af_heart", "response_format": "wav"}' \
+  --output hello.wav
+```
+
+With the OpenAI SDK:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="drove")
+
+with client.audio.speech.with_streaming_response.create(
+    model="kokoro",
+    input="The model woke up just to say this.",
+    voice="am_michael",
+    response_format="mp3",
+    speed=1.1,
+) as response:
+    response.stream_to_file("hello.mp3")
+```
+
+Voices, other engines, reference-voice cloning, and every request field are in
+[Text-to-speech](./text-to-speech.md).
+
 ## Vision / multimodal
 
 Multimodal GGUF models ship a companion `mmproj` projector. When you download
@@ -151,7 +193,7 @@ config, and flags the model with the `vision` capability:
 
 ```bash
 drove models download unsloth/gemma-3-12b-it-GGUF   # projector auto-detected
-drove models list                                   # CAPS shows "vision"
+drove models list                                   # CAPABILITY shows "vision"
 ```
 
 From there it's the standard OpenAI vision request — send image content parts to
@@ -161,8 +203,8 @@ projector loaded.
 ## Managing models
 
 ```bash
-drove models list                            # NAME · SIZE · CAPS · CONFIG
-drove models list -V                         # also show download origin
+drove models list                            # NAME · CAPABILITY · SIZE
+drove models list -V                         # also show storage, config, and download origin
 drove models info <name>                     # files, size, caps, effective config
 drove models download <org/repo[:QUANT]>     # pull from HuggingFace
 drove models download <ref> --name my-name   # override the local name
@@ -232,4 +274,5 @@ See the [CLI reference](./cli.md#coding-agent-integration) for options.
 - [Configuration](./configuration.md) — global settings, memory budget, eviction, per-model config.
 - [CLI reference](./cli.md) — every command and flag.
 - [Speech-to-text](./speech-to-text.md) — ASR model types, formats, SDK usage.
+- [Text-to-speech](./text-to-speech.md) — engines, voices, formats, SDK usage.
 - [Architecture](./architecture.md) — how the proxy and backends fit together.

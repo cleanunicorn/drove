@@ -285,6 +285,18 @@ def test_speech_to_text_models_are_skipped(tmp_path: Path) -> None:
         collect_model_specs(config, ["parakeet"])
 
 
+def test_text_to_speech_models_are_skipped(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _model(config.models_dir, "chat")
+    tts = config.models_dir / "kokoro"
+    tts.mkdir()
+    (tts / "model.tts").write_text("")
+
+    assert [s.id for s in collect_model_specs(config)] == ["chat"]
+    with pytest.raises(ValueError, match="is a text-to-speech model"):
+        collect_model_specs(config, ["kokoro"])
+
+
 def test_unknown_model_name_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         collect_model_specs(_config(tmp_path), ["missing"])

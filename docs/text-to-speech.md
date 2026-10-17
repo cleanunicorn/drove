@@ -9,10 +9,14 @@ downloads, as in Cathy.
 
 ## Quick start
 
-Install `uv` and `espeak-ng`, plus `ffmpeg` for compressed audio and speed
-conversion. Qwen also requires the `sox` system package.
+Install `uv` (it must be on `PATH` for the server) and `espeak-ng`, plus `ffmpeg`
+for compressed audio and speed conversion. Qwen also requires the `sox` system
+package. No drove extra is needed — engine dependencies live in their own
+environments.
 
 ```bash
+# First start installs the engine environment; give it time (see below)
+drove config startup_timeout_seconds 1800
 drove models download hexgrad/Kokoro-82M --name kokoro
 drove serve
 ```
@@ -42,6 +46,114 @@ with client.audio.speech.with_streaming_response.create(
 
 Synthesis completes before audio is sent. Streaming clients can consume that
 binary response; incremental synthesis and SSE events are not implemented.
+
+## Examples
+
+All examples assume `drove serve` on the default port and the models
+downloaded in [Registration and lifecycle](#registration-and-lifecycle).
+
+### Pick a voice and speed
+
+```bash
+# Kokoro preset, 20% faster (Kokoro changes speed natively, no ffmpeg needed)
+curl http://localhost:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"kokoro","input":"Faster, please.","voice":"bm_george","speed":1.2,"response_format":"wav"}' \
+  --output george.wav
+
+# Kokoro weighted blend of two voices
+curl http://localhost:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"kokoro","input":"Two voices, one speaker.","voice":"af_heart:2,af_bella:1","response_format":"wav"}' \
+  --output blend.wav
+
+# Qwen3-TTS named speaker
+curl http://localhost:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen-tts","input":"Hello, I am Vivian.","voice":"Vivian","response_format":"flac"}' \
+  --output vivian.flac
+```
+
+### Play audio without saving a file
+
+Raw PCM is mono, signed 16-bit little-endian at 24 kHz:
+
+```bash
+curl -s http://localhost:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"kokoro","input":"Straight to the speakers.","voice":"female","response_format":"pcm"}' \
+  | aplay -q -f S16_LE -r 24000 -c 1        # or: ffplay -nodisp -autoexit -f s16le -ar 24000 -ch_layout mono -
+```
+
+### Python, without streaming
+
+```python
+from pathlib import Path
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="drove")
+
+audio = client.audio.speech.create(
+    model="kokoro",
+    input="Read the whole thing, then hand it back.",
+    voice="af_heart",
+    response_format="wav",
+)
+Path("speech.wav").write_bytes(audio.content)
+```
+
+### JavaScript / TypeScript
+
+```js
+import fs from "node:fs";
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "http://localhost:8080/v1", apiKey: "drove" });
+
+const audio = await client.audio.speech.create({
+  model: "kokoro",
+  input: "Hello from Node.",
+  voice: "am_michael",
+  response_format: "mp3",
+});
+fs.writeFileSync("node.mp3", Buffer.from(await audio.arrayBuffer()));
+```
+
+### Clone a voice with Chatterbox or Fish
+
+Cloning engines speak with the reference voice chosen at registration. Clients
+then send `voice: "alloy"` (the registered default):
+
+```bash
+drove models add-tts narrator --engine chatterbox --voice /home/me/voices/narrator.wav
+
+# Fish also needs the transcript of the clip next to it: narrator.txt
+drove models add-tts narrator-fish --engine fish --voice /home/me/voices/narrator.wav
+```
+
+```bash
+curl http://localhost:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"narrator","input":"Chapter one.","voice":"alloy","response_format":"mp3"}' \
+  --output chapter1.mp3
+```
+
+For a downloaded model, set the reference with
+`drove models config chatterbox tts_voice /home/me/voices/narrator.wav`.
+
+### Errors
+
+Invalid requests return OpenAI-style JSON with HTTP 400:
+
+```bash
+curl -s http://localhost:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"kokoro","input":"Hi","voice":"alloy","stream_format":"sse"}'
+```
+
+```json
+{"error": {"message": "...", "type": "invalid_request_error", "param": null, "code": null}}
+```
 
 ## Registration and lifecycle
 

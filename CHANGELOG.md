@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Changed
+
+- **docs**: Documented text-to-speech across the README, getting-started guide, CLI
+  reference (`models add-tts`, `--tts-engine`), configuration reference (`tts_*` keys,
+  memory estimates, startup timeout), architecture notes, and agent guide, and added
+  curl, Python, JavaScript, playback, and voice-cloning examples.
+
+### Fixed
+
+- **cli**: `drove config KEY VALUE` and `drove init` now write to the file named by
+  `--config`; previously they always wrote to `~/.config/drove/config.toml`, replacing it
+  with the values from the `--config` file.
+- **config**: The `DROVE_CONFIG` environment variable now selects the config file, as
+  documented; it was previously ignored.
+- **integrate**: Naming a text-to-speech model now says it is a text-to-speech model
+  instead of calling it speech-to-text.
+
 
 ## v0.8.1 (2026-10-17)
 

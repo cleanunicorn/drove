@@ -74,7 +74,6 @@ drove config llama_server.n_gpu_layers -1
 drove models --help
 drove models list
 drove models download <repo>
-drove models download hexgrad/Kokoro-82M --name kokoro
 drove models delete <name>
 drove models info <name>
 drove models config <name>
@@ -82,8 +81,38 @@ drove models config <name>
 
 The `CAPABILITY` column in `drove models list` shows model capabilities:
 `vision` (multimodal projection), `stt` (speech-to-text), and `tts` (text-to-speech).
-TTS downloads preserve voice/tokenizer directories and configure the speech worker
-automatically; see [Text-to-speech](text-to-speech.md).
+
+### Text-to-speech models
+
+```bash
+# Download weights; the engine is detected for known repos
+drove models download hexgrad/Kokoro-82M --name kokoro
+drove models download Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice --name qwen-tts
+drove models download ResembleAI/chatterbox-nano --name chatterbox
+drove models download fishaudio/s1-mini --name fish
+
+# A compatible repo that is not auto-detected: name the engine
+drove models download <org/repo> --tts-engine kokoro
+
+# Register an engine without downloading; weights go to the Hugging Face cache on first use
+drove models add-tts kokoro-british --voice british-male
+drove models add-tts qwen-cpu --engine qwen --device cpu
+drove models add-tts narrator --engine chatterbox --voice /abs/path/narrator.wav
+
+# Change defaults later
+drove models config kokoro tts_voice af_bella
+drove models config kokoro tts_device cuda
+```
+
+| `models add-tts` option | Meaning |
+|--|--|
+| `--engine` | `kokoro` (default), `qwen`, `chatterbox`, or `fish`. |
+| `--voice` | Default voice, alias, or absolute reference WAV path. Omit to inherit the global setting (`female` otherwise). |
+| `--device` | `auto`, `cpu`, `cuda`, or `mps`. Omit to inherit the global setting (`auto` otherwise). |
+
+TTS downloads keep the voice and tokenizer directories and configure the speech
+worker automatically. TTS repos have no quantization tags. Voices, formats, and
+requests are covered in [Text-to-speech](text-to-speech.md).
 
 ## Coding agent integration
 
@@ -115,8 +144,8 @@ Each model entry carries its full setup:
   will use (the GGUF one, or a `--chat-template[-file]` override); `--no-jinja`
   turns both off and `--reasoning-budget 0` turns reasoning off.
 
-With no model names, every chat model is added (speech-to-text models are
-skipped) and models drove no longer has are removed from the provider. A
+With no model names, every chat model is added (speech-to-text and
+text-to-speech models are skipped) and models drove no longer has are removed from the provider. A
 removed model is also cleared from wherever it was selected (opencode/Kilo
 `model` and `small_model`, pi `defaultModel` and `enabledModels`). Keys you
 added to a model entry by hand are kept, at any depth. Only files that change

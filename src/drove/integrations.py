@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from drove.backend import BACKEND_LLAMA, detect_backend
+from drove.backend import BACKEND_LLAMA, BACKEND_TTS, detect_backend
 from drove.config import Config
 from drove.gguf import read_model_metadata
 from drove.model_config import ModelConfig, load_global_model_config, load_model_config
@@ -219,7 +219,7 @@ def collect_model_specs(config: Config, names: Iterable[str] | None = None) -> l
     """Describe the named models, or every chat-capable model when *names* is None.
 
     Raises FileNotFoundError for an unknown name and ValueError for a named
-    model agents cannot use (speech-to-text).
+    model agents cannot use (speech-to-text or text-to-speech).
     """
     store = ModelStore(config.models_dir)
     if names is None:
@@ -229,11 +229,12 @@ def collect_model_specs(config: Config, names: Iterable[str] | None = None) -> l
 
     result: list[ModelSpec] = []
     for name in names:
-        spec = describe_model(config, name, store.resolve(name))
+        primary = store.resolve(name)
+        spec = describe_model(config, name, primary)
         if spec is None:
-            raise ValueError(
-                f"Model '{name}' is a speech-to-text model; agents cannot chat with it."
-            )
+            backend = detect_backend(primary, _effective_model_config(config, primary))
+            kind = "text-to-speech" if backend == BACKEND_TTS else "speech-to-text"
+            raise ValueError(f"Model '{name}' is a {kind} model; agents cannot chat with it.")
         result.append(spec)
     return result
 

@@ -8,13 +8,13 @@
 ### Local models on demand.
 
 **drove wakes your models when a request comes in, and puts them back to sleep when they go idle.**
-One OpenAI-compatible endpoint in front of `llama.cpp` (text + vision) and a built-in ONNX worker (speech-to-text).
+One OpenAI-compatible endpoint in front of `llama.cpp` (text + vision), a built-in ONNX worker (speech-to-text), and local text-to-speech engines.
 
 <br>
 
 ![Python](https://img.shields.io/badge/python-3.14+-3776AB?logo=python&logoColor=white)
 ![OpenAI-compatible](https://img.shields.io/badge/API-OpenAI--compatible-412991?logo=openai&logoColor=white)
-![Backends](https://img.shields.io/badge/backends-llama.cpp%20%2B%20ONNX-C45A3A)
+![Backends](https://img.shields.io/badge/backends-llama.cpp%20%2B%20ONNX%20%2B%20TTS-C45A3A)
 
 [Quickstart](#-60-second-quickstart) · [Features](#-what-drove-does) · [How it works](#-how-it-works) · [Guides](#-guides) · [Commands](#-command-reference) · [Docs](./docs/README.md)
 
@@ -28,7 +28,7 @@ Running local models usually means babysitting a server per model, remembering f
 
 - **You** point any OpenAI SDK at `http://localhost:8080/v1`.
 - **drove** starts the right backend for the requested model on the first request, streams the response back, and shuts the process down after it goes idle — evicting least-recently-used models to stay inside a memory budget you set.
-- **One endpoint** serves text, vision, and speech-to-text models side by side.
+- **One endpoint** serves text, vision, speech-to-text, and text-to-speech models side by side.
 
 No daemon-per-model, no manual flags, no idle VRAM. Just ask for a model and it's there.
 
@@ -74,10 +74,11 @@ The model loads on that first request and unloads itself after the idle timeout.
 | 💤 **Lazy lifecycle** | Backends start on the first request and stop after an idle timeout — nothing runs while nothing is asking. |
 | 🧠 **Memory-aware eviction** | Keep multiple models hot within a `max_memory` budget; the least-recently-used idle model is evicted to make room. |
 | ⚡ **Prompt cache that survives sleep** | A woken model picks up the KV cache it had before it went idle, instead of re-processing the prompt. |
-| 🔌 **OpenAI-compatible** | Drop-in for any OpenAI SDK — `/v1/chat/completions`, `/v1/models`, `/v1/audio/transcriptions`. |
+| 🔌 **OpenAI-compatible** | Drop-in for any OpenAI SDK — `/v1/chat/completions`, `/v1/models`, `/v1/audio/transcriptions`, `/v1/audio/speech`. |
 | 📝 **Text generation** | Any GGUF model from HuggingFace, served through `llama-server` with per-model flags. |
 | 👁️ **Vision / multimodal** | Multimodal GGUF models with an `mmproj` projector are auto-detected and wired up on download. |
 | 🎙️ **Speech-to-text** | Serve ASR models like NVIDIA Parakeet through the built-in ONNX worker — no extra binary. |
+| 🔊 **Text-to-speech** | Synthesize speech locally with Kokoro, Qwen3-TTS, Chatterbox, or Fish S1-mini through `/v1/audio/speech`. |
 | 💬 **Terminal chat** | A TUI chat client with sessions and themes, pointed at drove *or* any remote OpenAI-compatible API. |
 | 🔍 **Observability** | Optional request/response logging with a TUI browser and a web UI for debugging. |
 | 📊 **Live status** | `drove server status` shows loaded models, memory, tokens/sec, and time-to-first-token. |
@@ -102,6 +103,7 @@ The model loads on that first request and unloads itself after the idle timeout.
      ├─ no  → start it (evict LRU model if over budget)
      │        • .gguf  → llama-server
      │        • .onnx  → built-in ONNX ASR worker
+     │        • .tts   → text-to-speech worker (Python 3.12, via uv)
      │        └─ wait for /health
      └─ yes → reuse it
                 │
@@ -112,7 +114,7 @@ The model loads on that first request and unloads itself after the idle timeout.
    idle past the timeout? → stop the backend, free the memory
 ```
 
-drove picks the backend **per model** from its file type — `.gguf` runs `llama-server`, `.onnx` runs the built-in ASR worker — so text, vision, and speech models share the same port and the same lifecycle. See [docs/architecture.md](./docs/architecture.md) for the full request flow.
+drove picks the backend **per model** from its file type — `.gguf` runs `llama-server`, `.onnx` runs the built-in ASR worker, a `.tts` registration runs the text-to-speech worker — so text, vision, and speech models share the same port and the same lifecycle. See [docs/architecture.md](./docs/architecture.md) for the full request flow.
 
 ---
 
@@ -154,7 +156,7 @@ Multimodal GGUF models ship a companion `mmproj` projector file. When you downlo
 
 ```bash
 drove models download unsloth/gemma-3-12b-it-GGUF        # projector auto-detected
-drove models list                                        # CAPS column shows "vision"
+drove models list                                        # CAPABILITY column shows "vision"
 ```
 
 From there it's the standard OpenAI vision request — send image content parts to `/v1/chat/completions` and drove forwards them to `llama-server` with the projector loaded.
@@ -185,6 +187,40 @@ curl http://localhost:8080/v1/audio/transcriptions \
 ```
 
 Speech-to-text support comes from the `asr` extra (included by `make install`; add `pip install 'drove[asr]'` for manual installs). `ffmpeg` is recommended so the worker accepts compressed audio (mp3, m4a, ogg…); without it, upload WAV. Full details — model types, quantization, `response_format` — in [docs/speech-to-text.md](./docs/speech-to-text.md).
+
+</details>
+
+<details>
+<summary><b>Text-to-speech (TTS)</b></summary>
+
+<br>
+
+drove synthesizes speech locally through the OpenAI `/v1/audio/speech` API, using the bundled Kokoro, Qwen3-TTS, Chatterbox-Nano, and Fish S1-mini engines (adapted from Cathy). Download the weights like any other model; the engine is detected from the repo:
+
+```bash
+drove models download hexgrad/Kokoro-82M --name kokoro
+drove models download Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice --name qwen-tts
+```
+
+```bash
+curl http://localhost:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "kokoro", "input": "Hello from drove.", "voice": "af_heart", "response_format": "wav"}' \
+  --output hello.wav
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="drove")
+
+with client.audio.speech.with_streaming_response.create(
+    model="qwen-tts", input="Local speech, no cloud.", voice="Ryan", response_format="mp3",
+) as response:
+    response.stream_to_file("ryan.mp3")
+```
+
+Engines run in their own Python 3.12 environments that `uv` builds on first use, so the first start can take minutes — raise the startup timeout once before trying it (`drove config startup_timeout_seconds 1800`). Install `espeak-ng` (and `ffmpeg` for mp3/opus/aac/flac or `speed`; `sox` for Qwen). Voices, formats, reference-voice cloning, and sidecar keys are in [docs/text-to-speech.md](./docs/text-to-speech.md).
 
 </details>
 
@@ -266,7 +302,7 @@ drove models download <ref> --name my-name   # override the local name
 drove models delete <name>                   # remove a model and its config
 ```
 
-**Downloads are smart.** A `:QUANT` tag (`:Q4_K_M` for GGUF, `:int8` for ONNX) fetches just that variant; without one, a repo with several variants shows a picker. Sharded models land in their own subdirectory, `mmproj` projectors and ASR model types are auto-configured, and partial downloads resume.
+**Downloads are smart.** A `:QUANT` tag (`:Q4_K_M` for GGUF, `:int8` for ONNX) fetches just that variant; without one, a repo with several variants shows a picker. Sharded models land in their own subdirectory, `mmproj` projectors, ASR model types, and TTS engines are auto-configured, and partial downloads resume.
 
 **Per-model configuration** layers on top of the global defaults (`config.toml` → global model defaults → per-model sidecar, highest wins):
 
@@ -343,7 +379,8 @@ Two independent limits decide when a loaded model is stopped to make room: **`ma
 | `drove chat [MODEL]` | Terminal chat — local or remote (`-e` endpoint, `-k` key, `-s` system, `-r` resume). |
 | `drove config [KEY] [VALUE]` | Show, get, or set global configuration. |
 | `drove models list [-V]` | List downloaded models and their capabilities. |
-| `drove models download REF` | Download from HuggingFace (`REF` = `org/repo[:QUANT]`, `-n` name, `-y` yes). |
+| `drove models download REF` | Download from HuggingFace (`REF` = `org/repo[:QUANT]`, `-n` name, `-y` yes, `--tts-engine` for other TTS repos). |
+| `drove models add-tts NAME` | Register a text-to-speech engine whose weights download on first use (`--engine`, `--voice`, `--device`). |
 | `drove models info NAME` | Show a model's files, size, caps, and effective config. |
 | `drove models config …` | Get/set per-model or global (`-g`) model parameters (`--unset` to remove). |
 | `drove models delete NAME` | Delete a model and its config (`-y` to skip confirmation). |
@@ -354,7 +391,7 @@ Two independent limits decide when a loaded model is stopped to make room: **`ma
 
 Global flags: `-c/--config <path>`, `-v/--verbose`, `--version`. Full CLI reference: [docs/cli.md](./docs/cli.md).
 
-**HTTP endpoints:** `GET /v1/models` · `POST /v1/chat/completions` · `POST /v1/audio/transcriptions` · `GET /status` · `GET /health`.
+**HTTP endpoints:** `GET /v1/models` · `POST /v1/chat/completions` · `POST /v1/audio/transcriptions` · `POST /v1/audio/speech` · `GET /status` · `GET /health`.
 
 ---
 
@@ -378,7 +415,7 @@ make install
 
 `make install` installs [`uv`](https://docs.astral.sh/uv/) if needed, then installs the `drove` CLI (with speech-to-text support) as a `uv` tool. Set `DROVE_EXTRAS=` for a minimal install.
 
-After installing, make sure the `uv` tool bin directory is on your `PATH` (heed any warning the installer prints). For text and vision models you also need **`llama-server`** from [llama.cpp](https://github.com/ggml-org/llama.cpp) on your `PATH` — speech-to-text needs no extra binary.
+After installing, make sure the `uv` tool bin directory is on your `PATH` (heed any warning the installer prints). For text and vision models you also need **`llama-server`** from [llama.cpp](https://github.com/ggml-org/llama.cpp) on your `PATH` — speech-to-text needs no extra binary. Text-to-speech needs `uv` on `PATH` (it builds the engines' Python 3.12 environments) and `espeak-ng`; `ffmpeg` adds compressed formats and speed changes, and Qwen also needs `sox`.
 
 ---
 
@@ -386,12 +423,13 @@ After installing, make sure the `uv` tool bin directory is on your `PATH` (heed 
 
 | | drove | Ollama | llama.cpp directly |
 |--|--|--|--|
-| Backend | llama.cpp + ONNX (ASR) | llama.cpp (forked) | llama.cpp |
+| Backend | llama.cpp + ONNX (ASR) + TTS engines | llama.cpp (forked) | llama.cpp |
 | Lazy model loading | yes | yes | no |
 | Multiple concurrent models | yes | yes | manual |
 | Memory-budget eviction | yes | partial | no |
 | OpenAI-compatible API | yes | yes | yes (server) |
 | Speech-to-text models | yes (built-in worker) | no | no |
+| Text-to-speech models | yes (Kokoro, Qwen3-TTS, Chatterbox, Fish) | no | no |
 | Direct llama-server flags | yes (per model) | partial | yes |
 | HuggingFace download + quant picker | yes | partial | manual |
 | Request/response observability | built-in | no | no |
@@ -406,6 +444,7 @@ After installing, make sure the `uv` tool bin directory is on your `PATH` (heed 
 - [Configuration](./docs/configuration.md)
 - [CLI reference](./docs/cli.md)
 - [Speech-to-text](./docs/speech-to-text.md)
+- [Text-to-speech](./docs/text-to-speech.md)
 - [Architecture](./docs/architecture.md)
 - In-repo docs index: [`docs/`](./docs/README.md) · Hosted target: `https://drove.dev/docs`
 
@@ -421,15 +460,3 @@ uv run mypy src/
 ```
 
 Found a bug or have an idea? Please use the issue templates: [Bug report](./.github/ISSUE_TEMPLATE/bug_report.md) · [Feature request](./.github/ISSUE_TEMPLATE/feature_request.md).
-
-## Text-to-speech
-
-Cathy’s local engines are available through the OpenAI `/v1/audio/speech` API.
-
-```bash
-drove models download hexgrad/Kokoro-82M --name kokoro
-drove serve
-```
-
-See [Text-to-speech](docs/text-to-speech.md) for OpenAI client examples,
-voices, formats, and engine setup.

@@ -12,6 +12,7 @@ import typer
 from drove.cli.completions import completions_app
 from drove.cli.integrate import integrate
 from drove.cli.models import _complete_model_name, models_app
+from drove.cli.output import console, fields, heading
 from drove.cli.server import server_app
 from drove.config import DEFAULT_CONFIG_PATH, Config, load_config
 
@@ -98,18 +99,15 @@ def config(
     conf = ctx.obj["config"]
 
     if key is None:
-        typer.echo(
-            f"Config file: {cfg_path} "
-            f"({'exists' if cfg_path.exists() else 'not found, using defaults'})"
-        )
-        typer.echo("")
-        flat = conf.model_dump()
-        for field, val in flat.items():
+        out = console()
+        heading(out, "Configuration", str(ctx.obj["config_path"]))
+        rows: list[tuple[str, object]] = []
+        for field, val in conf.model_dump().items():
             if isinstance(val, dict):
-                for subkey, subval in val.items():
-                    typer.echo(f"  {field}.{subkey} = {subval}")
+                rows.extend((f"{field}.{k}", v) for k, v in val.items())
             else:
-                typer.echo(f"  {field} = {val}")
+                rows.append((field, val))
+        fields(out, rows)
         return
 
     if value is None:

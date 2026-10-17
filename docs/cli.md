@@ -1,5 +1,55 @@
 # CLI reference
 
+## Output
+
+![Server status report](../assets/cli-status.svg)
+
+[See the verbose status view](../assets/cli-status-verbose.svg).
+
+Inspection commands use a shared layout with cyan headings, compact tables, and
+muted labels. Model names and paths wrap to fit the terminal and are printed
+literally, including brackets. Redirected output has no ANSI color codes;
+`NO_COLOR=1` disables color in the terminal too.
+
+Default reports prioritize the next decision; detail is available on demand:
+
+| Command | Default view | More detail |
+| --- | --- | --- |
+| `server status` | Endpoint, uptime, active requests, errors, loaded models, approximate idle-unload countdown | `--verbose` / `-V`: listen address, load/idle durations, backend memory/CPU, token counts, speed, first-token latency |
+| `models list` | Name, capability, size, total disk usage | `--verbose` / `-V`: storage directory, custom-config indicator, download origin/files |
+| `models info <name>` | Capabilities, size/file count, origin, quantization, explicit model overrides | `--verbose` / `-V`: local paths and downloaded file inventory |
+| `models config <name>` | Effective non-null values and their sources | `--all`: include unset parameters |
+| `models download <repo>` | Model, destination, file count, total size, approximate remaining transfer, completed-file count | `--verbose` / `-V`: every file and its resume state |
+
+These options follow the subcommand (for example, `drove server status -V`).
+The root `drove --verbose` option still controls debug logging.
+
+Status always shows nonzero errors, labeled as cumulative since server startup.
+An idle-unload countdown is approximate: active requests prevent idle unloading,
+and eviction or configuration changes can unload a model sooner. Busy models show
+`—`; expired timers show `due`. Download estimates use remote file sizes and local
+partial files; the actual transfer may vary with cache reuse or retries.
+
+`--watch` refreshes the screen only in a terminal; redirected watch output appends
+snapshots. Stop watching with Ctrl+C. An unused server stays concise:
+
+```text
+drove / Server
+http://127.0.0.1:8080/v1
+
+running · up 12m 4s · 0 active requests
+
+Loaded models · 0
+No models loaded. Models start on the first request.
+Use --verbose for process, timing, and token details.
+```
+
+Configuration reports retain explicit `0` and `false` values. Unset model
+parameters are hidden with a count and a hint to use `--all`. Global
+`drove config` continues to show all application settings, and single-value
+queries such as `drove config listen_port` remain plain values for shell scripts.
+Confirmation prompts and exit codes are unchanged.
+
 ## Core commands
 
 ```bash
@@ -30,7 +80,7 @@ drove models info <name>
 drove models config <name>
 ```
 
-The `CAPS` column in `drove models list` shows model capabilities:
+The `CAPABILITY` column in `drove models list` shows model capabilities:
 `vision` (multimodal projection), `stt` (speech-to-text), and `tts` (text-to-speech).
 TTS downloads preserve voice/tokenizer directories and configure the speech worker
 automatically; see [Text-to-speech](text-to-speech.md).

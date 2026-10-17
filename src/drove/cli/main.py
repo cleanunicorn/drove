@@ -14,7 +14,7 @@ from drove.cli.integrate import integrate
 from drove.cli.models import _complete_model_name, models_app
 from drove.cli.output import console, fields, heading
 from drove.cli.server import server_app
-from drove.config import DEFAULT_CONFIG_PATH, Config, load_config
+from drove.config import Config, load_config, resolve_config_path
 
 app = typer.Typer(
     name="drove",
@@ -57,8 +57,8 @@ def _root(
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     ctx.ensure_object(dict)
-    ctx.obj["config"] = load_config(config_file)
-    ctx.obj["config_path"] = config_file or DEFAULT_CONFIG_PATH
+    ctx.obj["config_path"] = resolve_config_path(config_file)
+    ctx.obj["config"] = load_config(ctx.obj["config_path"])
 
 
 def _complete_config_key(ctx: typer.Context, incomplete: str) -> list[str]:
@@ -95,7 +95,7 @@ def config(
 
         drove config idle_timeout_seconds 3600    # set a value
     """
-    cfg_path = DEFAULT_CONFIG_PATH
+    cfg_path: Path = ctx.obj["config_path"]
     conf = ctx.obj["config"]
 
     if key is None:
@@ -429,7 +429,7 @@ def init_config(
 
     Writes to ~/.config/drove/config.toml (or the path from --config / DROVE_CONFIG).
     """
-    cfg_path = DEFAULT_CONFIG_PATH
+    cfg_path: Path = ctx.obj["config_path"]
     conf = ctx.obj["config"]
 
     if cfg_path.exists() and not force:

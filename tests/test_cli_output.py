@@ -303,3 +303,60 @@ def test_model_info_storage_is_opt_in(tmp_path: Path, monkeypatch: pytest.Monkey
     assert compact.exit_code == full.exit_code == 0
     assert "Capabilities" in compact.stdout and "On disk" in compact.stdout
     assert "Primary" not in compact.stdout and "Primary" in full.stdout
+
+
+@pytest.fixture
+def default_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the default config path into tmp so a regression can't touch the real one."""
+    default = tmp_path / "default" / "config.toml"
+    default.parent.mkdir()
+    default.write_text('listen_port = 7777\ntui_theme = "gruvbox"\n')
+    monkeypatch.setattr("drove.config.DEFAULT_CONFIG_PATH", default)
+    # Also catch a CLI module that imported the constant by name.
+    monkeypatch.setattr("drove.cli.main.DEFAULT_CONFIG_PATH", default, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DROVE_CONFIG", raising=False)
+    return default
+
+
+def test_config_set_writes_to_config_option(tmp_path: Path, default_config: Path) -> None:
+    custom = tmp_path / "custom.toml"
+    original = default_config.read_text()
+    runner = CliRunner()
+    assert runner.invoke(app, ["-c", str(custom), "init"]).exit_code == 0
+
+    result = runner.invoke(app, ["-c", str(custom), "config", "startup_timeout_seconds", "1800"])
+
+    assert result.exit_code == 0, result.output
+    assert "startup_timeout_seconds = 1800" in custom.read_text()
+    assert default_config.read_text() == original
+    read_back = runner.invoke(app, ["-c", str(custom), "config", "startup_timeout_seconds"])
+    assert read_back.stdout == "1800\n"
+
+
+def test_config_set_writes_to_drove_config_env(
+    tmp_path: Path, default_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom = tmp_path / "env.toml"
+    custom.write_text("idle_timeout_seconds = 60\n")
+    original = default_config.read_text()
+    monkeypatch.setenv("DROVE_CONFIG", str(custom))
+
+    result = CliRunner().invoke(app, ["config", "max_loaded_models", "3"])
+
+    assert result.exit_code == 0, result.output
+    written = custom.read_text()
+    assert "max_loaded_models = 3" in written
+    assert "idle_timeout_seconds = 60" in written
+    assert default_config.read_text() == original
+
+
+def test_config_set_without_custom_file_refuses(tmp_path: Path, default_config: Path) -> None:
+    missing = tmp_path / "missing.toml"
+    original = default_config.read_text()
+
+    result = CliRunner().invoke(app, ["-c", str(missing), "config", "listen_port", "9000"])
+
+    assert result.exit_code == 1
+    assert not missing.exists()
+    assert default_config.read_text() == original

@@ -37,7 +37,10 @@ stopped):
   number of bytes.
 
 The memory used by a model is estimated from its on-disk file size (all shards
-for sharded GGUF models, all `.onnx` files for speech-to-text models). Context
+for sharded GGUF models, all `.onnx` files for speech-to-text models).
+Text-to-speech models reserve a fixed per-engine estimate instead — 3 GiB for
+Kokoro, 4 GiB for Qwen3-TTS and Chatterbox, 8 GiB for Fish — which the
+`tts_memory_mb` model key overrides. Context
 (KV cache) and runtime overhead are not counted, so leave some headroom below
 your real RAM/VRAM limit. A model whose estimate alone exceeds `max_memory` is
 still started (after evicting everything else) rather than refused.
@@ -87,7 +90,7 @@ Notes:
 - A cache file the server refuses — because `ctx_size`, `cache_type_k/v` or the
   slot count changed since it was written — is deleted rather than retried.
 - The cache is an optimization: every failure to save or restore is logged and
-  otherwise ignored, and speech-to-text models skip it entirely.
+  otherwise ignored, and speech-to-text and text-to-speech models skip it entirely.
 
 ## Per-model config
 
@@ -146,5 +149,43 @@ From the CLI the value is split shell-style:
 drove models config mymodel extra_args "--lora /models/adapter.gguf"
 ```
 
-Drove-specific keys (never passed to llama-server): `backend` (`llama` or `asr`),
-`asr_model`, `asr_quantization` — see [Speech-to-text](./speech-to-text.md).
+Drove-specific keys (never passed to llama-server): `backend` (`llama`, `asr`, or
+`tts`), `asr_model`, `asr_quantization` — see [Speech-to-text](./speech-to-text.md) —
+and the text-to-speech keys below.
+
+### Text-to-speech keys
+
+`drove models download` and `drove models add-tts` write these for you; set them
+by hand or with `drove models config <name> <key> <value>` to change them.
+
+| Key | Meaning |
+|--|--|
+| `tts_engine` | `kokoro`, `qwen`, `chatterbox`, or `fish`. |
+| `tts_voice` | Default voice: a preset (`af_heart`, `Ryan`, …), an alias (`male`, `female`, `british-male`, `british-female`), a Kokoro blend (`af_heart:2,af_bella:1`), or an absolute reference WAV path. Defaults to `female`. |
+| `tts_device` | `auto` (CUDA if available, else CPU), `cpu`, `cuda`, or `mps`. Defaults to `auto`. |
+| `tts_model_dir` | Directory with downloaded weights, relative to the sidecar or absolute. Unset means the Hugging Face cache. |
+| `tts_language` | Qwen3-TTS language, e.g. `English`. |
+| `tts_max_chunk_chars` | Maximum characters synthesized per chunk (at least 150). |
+| `tts_memory_mb` | Memory reserved against `max_memory` while the model is loaded. |
+
+```toml
+# ~/.local/share/drove/models/qwen-tts.toml
+backend = "tts"
+tts_engine = "qwen"
+tts_model_dir = "."
+tts_voice = "Ryan"
+tts_language = "English"
+tts_device = "cuda"
+tts_memory_mb = 6144
+```
+
+These keys also work as global model defaults (`drove models config tts_device cpu`),
+and per-model sidecars take precedence.
+
+The first start of each engine installs its Python environment and may download
+weights, which can take longer than the default `startup_timeout_seconds` (300).
+Raise it before first use:
+
+```bash
+drove config startup_timeout_seconds 1800
+```

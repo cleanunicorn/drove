@@ -8,7 +8,7 @@ import pytest
 import tomli_w
 from pydantic import ValidationError
 
-from drove.config import load_config, parse_size
+from drove.config import load_config, parse_size, resolve_config_path
 
 
 def test_defaults(tmp_path: Path) -> None:
@@ -107,3 +107,23 @@ def test_max_memory_survives_save_and_reload(tmp_path: Path) -> None:
     reloaded = load_config(cfg_file)
     assert reloaded.max_memory == "16GiB"
     assert reloaded.max_memory_bytes == 16 * 1024**3
+
+
+def test_resolve_config_path_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    default = tmp_path / "default.toml"
+    monkeypatch.setattr("drove.config.DEFAULT_CONFIG_PATH", default)
+    monkeypatch.delenv("DROVE_CONFIG", raising=False)
+    assert resolve_config_path() == default
+
+    monkeypatch.setenv("DROVE_CONFIG", str(tmp_path / "env.toml"))
+    assert resolve_config_path() == tmp_path / "env.toml"
+    assert resolve_config_path(tmp_path / "flag.toml") == tmp_path / "flag.toml"
+
+
+def test_load_config_reads_drove_config_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = tmp_path / "custom.toml"
+    cfg.write_text(tomli_w.dumps({"listen_port": 9123}))
+    monkeypatch.setenv("DROVE_CONFIG", str(cfg))
+    assert load_config().listen_port == 9123

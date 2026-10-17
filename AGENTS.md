@@ -5,7 +5,7 @@ Guidance for AI agents (and humans) contributing to **drove**.
 `drove` is a llama.cpp server manager and proxy — like ollama, but wrapping
 `llama-server` directly. It lazily starts a backend on the first request for a
 model (`.gguf` → `llama-server`, `.onnx` speech-to-text → a built-in ASR
-worker), proxies OpenAI-format API traffic to it, evicts models LRU-first when
+worker, `.tts` text-to-speech → a bundled TTS worker), proxies OpenAI-format API traffic to it, evicts models LRU-first when
 the model-count or memory budget is hit, and shuts each one down after a
 configurable idle timeout. A change is "done" when `make lint`, `make
 typecheck`, and `make test` pass and `CHANGELOG.md` carries an entry for it.
@@ -30,7 +30,11 @@ here.
   `PATH` — required to *serve* GGUF models; **not** required to run the tests
   (they fake the subprocesses).
 - **ffmpeg** (optional) — lets the ASR worker accept compressed audio (mp3,
-  m4a, ogg…); without it, WAV only.
+  m4a, ogg…) and the TTS worker return mp3/opus/aac/flac or change speed;
+  without it, WAV only.
+- **espeak-ng** (and **sox** for Qwen3-TTS) — only to *serve* text-to-speech;
+  the TTS worker also needs `uv` on `PATH` to build its Python 3.12 engine
+  environments. Not required to run the tests.
 - **`gh` CLI** — for pull requests.
 - **Linux or macOS** — `make install` refuses other OSes.
 
@@ -271,21 +275,27 @@ src/drove/
                        + DROVE_* env overrides — the ONLY place env is read
   model_config.py      Per-model sidecar TOMLs → llama-server args (ctx_size,
                        n_gpu_layers, cache_*, extra_args passthrough, backend,
-                       asr_model, asr_quantization)
+                       asr_model, asr_quantization, tts_*)
   model_store.py       The single authority for resolving/listing models on disk
   backend.py           Picks the backend per model: .gguf → llama-server,
-                       .onnx → built-in ASR worker (overridable via `backend`)
+                       .onnx → built-in ASR worker, .tts → TTS worker
+                       (overridable via `backend`); known TTS repos → engine
   server_manager.py    Subprocess lifecycle (asyncio.subprocess): lazy start,
                        /health wait, idle shutdown, LRU-first + memory-budget
                        eviction, prompt-cache save/restore across sleep-wake
   workers/asr.py       Built-in ONNX speech-to-text worker (python -m
                        drove.workers.asr); onnx-asr comes with the optional
                        `drove[asr]` extra
+  workers/tts_runtime/ Text-to-speech worker (worker.py) and the Kokoro, Qwen3-TTS,
+                       Chatterbox, Fish engines (engines.py), adapted from Cathy
+                       (CATHY-LICENSE); run by `uv run --python 3.12` with the
+                       per-engine <engine>.txt requirements, never imported by drove
   proxy.py             FastAPI reverse proxy: extracts the model from JSON or
                        multipart bodies, ensures the backend is running,
                        forwards via httpx, resets the idle timer, records
                        observe logs when enabled
-  downloader.py        HuggingFace downloads (GGUF + ONNX, quantization prompts)
+  downloader.py        HuggingFace downloads (GGUF + ONNX + TTS repos, quantization
+                       prompts)
   converter.py         HF → GGUF conversion
   integrations.py      Registers models with pi, opencode, and Kilo Code; merges
                        a drove provider into each agent's JSON config, inferring
@@ -297,12 +307,13 @@ src/drove/
   sessions.py, tui.py, tools.py, stats.py Chat TUI app, session persistence,
                        tool execution, token/process metrics
   cli/                 Typer CLI: main.py (config, chat, observe, init),
-                       models.py (list, download, delete, info, config),
+                       models.py (list, download, add-tts, delete, info, config),
                        server.py (serve — default, status), integrate.py
                        (agent registration), completions.py
 tests/                 pytest suite, one file per module
 docs/                  architecture.md, configuration.md, deploy.md (release
-                       process), getting-started.md, cli.md, speech-to-text.md
+                       process), getting-started.md, cli.md, speech-to-text.md,
+                       text-to-speech.md
 .github/workflows/     install.yml (make install smoke), pr-title.yml,
                        release.yml (semantic-release), claude.yml (@claude)
 ```
@@ -319,7 +330,8 @@ Request flow:
 Client → FastAPI proxy (drove port)
            → ServerManager.ensure_running(model)
                → if not running: spawn backend subprocess
-                   (GGUF → llama-server, ONNX speech-to-text → python -m drove.workers.asr)
+                   (GGUF → llama-server, ONNX speech-to-text → python -m drove.workers.asr,
+                    .tts text-to-speech → uv run --python 3.12 … tts_runtime/worker.py)
                → wait for backend /health
            → httpx reverse proxy → backend port
            → reset inactivity timer
@@ -383,7 +395,8 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   `test_model_store.py`, `test_backend.py`, `test_asr_worker.py`,
   `test_downloader.py`, `test_gguf.py`, `test_prompt_cache.py`,
   `test_observe.py`, `test_observe_web.py`, `test_proxy_observe.py`,
-  `test_cli_models.py`.
+  `test_cli_models.py`, and the text-to-speech suites `test_tts_worker.py`,
+  `test_tts_integration.py`, `test_tts_download.py`.
 - **What to cover:** happy path + error paths; lifecycle and eviction changes
   ship with regression tests for the race they fix (the existing suites set
   the bar).
@@ -398,10 +411,13 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   keep it that way.
 - The proxy listens on `0.0.0.0` by default — it is LAN-exposed. Treat every
   proxied payload as external input.
-- Model names and config tokens (`backend`, `asr_model`, `asr_quantization`)
-  end up on subprocess command lines; they are validated against allowlists
-  (`VALID_BACKENDS`, safe-token shape checks) — keep new ones validated the
-  same way.
+- Model names and config tokens (`backend`, `asr_model`, `asr_quantization`,
+  `tts_*`) end up on subprocess command lines; they are validated against
+  allowlists (`VALID_BACKENDS`, `Literal` fields such as `tts_engine` and
+  `tts_device`, safe-token shape checks) — keep new ones validated the same way.
+- TTS reference voices are fixed by trusted local config; cloning engines
+  reject any request voice other than the configured default (`alloy`), so API
+  callers can never point the server at an arbitrary file. Don't regress this.
 - ASR uploads are capped at 100 MB (HTTP 413 past it) and ffmpeg stderr is
   never echoed back to clients (generic error instead). Don't regress these.
 

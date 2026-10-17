@@ -1,13 +1,15 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Added
+## v0.8.0 (2026-10-17)
 
-- Redesigned CLI reports around concise defaults: server activity, errors and idle-unload
-  countdowns; model capabilities and sizes; effective configuration; and download transfer
-  estimates. Added verbose diagnostic views and an option to reveal unset model parameters,
-  with consistent formatting and plain single-value config output preserved.
+### Features
+
+- **cli**: Prioritize concise summaries and optional diagnostics
+  ([`f787a10`](https://github.com/cleanunicorn/drove/commit/f787a10fb09ff8d34366d3d13a9338c00339380f))
+
+- **cli**: Redesign inspection output and status reports
+  ([`dea5750`](https://github.com/cleanunicorn/drove/commit/dea5750f5797a0f48e89c244e40f31f874cdd106))
 
 
 ## v0.7.0 (2026-10-17)

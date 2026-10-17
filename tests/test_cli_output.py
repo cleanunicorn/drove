@@ -216,7 +216,12 @@ def test_status_default_prioritizes_activity_and_errors(monkeypatch: pytest.Monk
         "models": [
             {"name": "busy", "active_requests": 2, "idle_seconds": 99, "idle_timeout_seconds": 60},
             {"name": "idle", "active_requests": 0, "idle_seconds": 10, "idle_timeout_seconds": 60},
-            {"name": "due", "active_requests": 0, "idle_seconds": 61, "idle_timeout_seconds": 60},
+            {
+                "name": "expired",
+                "active_requests": 0,
+                "idle_seconds": 60,
+                "idle_timeout_seconds": 60,
+            },
         ],
         "requests": {"total": 10, "active": 2, "errors": 3},
         "tokens": {"prompt": 100, "completion": 50, "total": 150},
@@ -230,6 +235,10 @@ def test_status_default_prioritizes_activity_and_errors(monkeypatch: pytest.Monk
     assert "~50s" in result.stdout
     busy = next(line for line in result.stdout.splitlines() if "busy" in line)
     assert "2 active" in busy and "—" in busy and "due" not in busy
+    expired = next(line for line in result.stdout.splitlines() if "expired" in line)
+    assert expired.split()[-1] == "due"  # idle == timeout is already expired
+    idle = next(line for line in result.stdout.splitlines() if line.split()[:1] == ["idle"])
+    assert idle.split()[-1] == "~50s"
     assert "Tokens" not in result.stdout and "Processes" not in result.stdout
     assert "0.0.0.0" not in result.stdout
     detailed = runner.invoke(app, ["server", "status", "--verbose"])

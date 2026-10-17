@@ -266,7 +266,14 @@ def create_tts_app(engine: SpeechEngine, model_name: str) -> FastAPI:
         except Exception:
             logger.exception("Speech synthesis failed")
             return error("Speech synthesis failed; check the server logs.", 500)
-        return Response(data, media_type=FORMATS[body.response_format][2])
+        duration = len(pcm) / (2 * rate)
+        if not engine.native_speed:
+            duration /= body.speed
+        return Response(
+            data,
+            media_type=FORMATS[body.response_format][2],
+            headers={"X-Drove-Audio-Seconds": str(duration)},
+        )
 
     return app
 

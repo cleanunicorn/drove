@@ -391,3 +391,22 @@ def test_config_set_without_custom_file_refuses(tmp_path: Path, default_config: 
     assert result.exit_code == 1
     assert not missing.exists()
     assert default_config.read_text() == original
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_status_displays_audio(monkeypatch: pytest.MonkeyPatch, capsys, verbose: bool) -> None:
+    data = {
+        "server": {"uptime_seconds": 65, "listen": "127.0.0.1:8080"},
+        "requests": {"total": 3, "active": 0, "errors": 0},
+        "tokens": {"prompt": 0, "completion": 0, "total": 0},
+        "audio": {
+            "transcriptions": {"requests": 2, "audio_seconds": 12.5, "processing_seconds": 1.2},
+            "speech": {"requests": 1, "audio_seconds": 3.5, "processing_seconds": 2.1},
+        },
+    }
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: Mock(json=lambda: data))
+    _print_status("http://localhost:8080", verbose=verbose)
+    output = capsys.readouterr().out
+    assert "Transcription" in output and "Speech" in output
+    assert "12.5s audio" in output and "3.5s audio" in output
+    assert "1.2s processing" in output and "2.1s processing" in output

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from drove.config import Config
@@ -239,3 +240,48 @@ def test_proxy_forwards_speech_json_and_binary_audio_intact(tmp_path: Path) -> N
     assert len(sent_requests) == 1
     assert sent_requests[0].url.path == "/v1/audio/speech"
     assert json.loads(sent_requests[0].content) == body
+
+
+@pytest.mark.parametrize("endpoint", ["transcriptions", "speech"])
+@pytest.mark.parametrize("status", [200, 400])
+@pytest.mark.parametrize("duration", ["2.5", "nan", "-1", "invalid", None])
+def test_audio_status(tmp_path: Path, endpoint: str, status: int, duration: str | None) -> None:
+    app = create_app(make_config(tmp_path))
+    headers = {"content-type": "audio/wav" if endpoint == "speech" else "application/json"}
+    if duration is not None:
+        headers["x-drove-audio-seconds"] = duration
+
+    async def send(request: httpx.Request, **kwargs: object) -> httpx.Response:
+        # Advance the clock before returning headers: inference happens before streaming.
+        clock[0] += 4
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = status
+        response.headers = httpx.Headers(headers)
+        response.aiter_raw = lambda: aiter([b"audio or transcript"])
+        return response
+
+    clock = [100.0]
+    with (
+        patch.object(app.state.manager, "ensure_running", new_callable=AsyncMock),
+        patch("httpx.AsyncClient.send", side_effect=send),
+        patch("drove.proxy.time.monotonic", side_effect=lambda: clock[0]),
+        TestClient(app) as client,
+    ):
+        if endpoint == "speech":
+            response = client.post("/v1/audio/speech", json={"model": "voice", "input": "hi"})
+        else:
+            response = client.post(
+                "/v1/audio/transcriptions",
+                files={"file": ("audio.wav", b"audio")},
+                data={"model": "asr"},
+            )
+        data = client.get("/status").json()
+    assert response.status_code == status
+    assert response.content == b"audio or transcript"
+    metrics = data["audio"][endpoint]
+    assert metrics["requests"] == (1 if status == 200 else 0)
+    assert metrics["audio_seconds"] == (2.5 if status == 200 and duration == "2.5" else 0)
+    assert metrics["processing_seconds"] == (4 if status == 200 else 0)
+    assert data["tokens"]["total"] == 0
+    assert data["tokens"]["ttft"]["last_seconds"] is None
+    assert data["requests"]["active"] == 0

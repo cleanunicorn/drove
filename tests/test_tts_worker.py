@@ -55,6 +55,7 @@ class SpeechApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_wav_is_binary_and_preserves_samples(self) -> None:
         response = await self.speech(speed=1.5)
         self.assertEqual(response.status_code, 200)
+        self.assertAlmostEqual(float(response.headers["x-drove-audio-seconds"]), 0.1)
         self.assertEqual(response.headers["content-type"], "audio/wav")
         with wave.open(io.BytesIO(response.content)) as wav:
             self.assertEqual(
@@ -69,6 +70,16 @@ class SpeechApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "audio/pcm")
         self.assertEqual(response.content, PCM)
+
+    async def test_duration_accounts_for_speed_conversion(self) -> None:
+        self.engine.native_speed = False
+        with (
+            patch("shutil.which", return_value="/bin/ffmpeg"),
+            patch("drove.workers.tts_runtime.worker.encode_audio", return_value=b"encoded"),
+        ):
+            response = await self.speech(speed=2, response_format="mp3")
+        self.assertEqual(response.status_code, 200)
+        self.assertAlmostEqual(float(response.headers["x-drove-audio-seconds"]), 0.05)
 
     async def test_health(self) -> None:
         self.assertEqual(

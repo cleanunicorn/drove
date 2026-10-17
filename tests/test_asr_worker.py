@@ -56,6 +56,7 @@ def test_transcribe_json_default() -> None:
             data={"model": "parakeet"},
         )
     assert resp.status_code == 200
+    assert float(resp.headers["x-drove-audio-seconds"]) == pytest.approx(0.5)
     assert resp.json() == {"text": "the quick brown fox"}
     assert len(engine.paths) == 1
 
@@ -69,6 +70,7 @@ def test_transcribe_text_format() -> None:
             data={"response_format": "text"},
         )
     assert resp.status_code == 200
+    assert float(resp.headers["x-drove-audio-seconds"]) == pytest.approx(0.5)
     assert resp.text == "plain text result"
 
 

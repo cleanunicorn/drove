@@ -22,6 +22,11 @@ Default reports prioritize the next decision; detail is available on demand:
 | `models download <repo>` | Model, destination, file count, total size, approximate remaining transfer, completed-file count | `--verbose` / `-V`: every file and its resume state |
 
 These options follow the subcommand (for example, `drove server status -V`).
+
+Audio traffic in `drove server status` includes successful transcription and speech
+request counts, audio seconds, and processing seconds since startup. Processing time
+includes the backend request and response transfer, excluding model startup. Audio
+duration is reported by the bundled workers for all supported response formats.
 The root `drove --verbose` option still controls debug logging.
 
 Status always shows nonzero errors, labeled as cumulative since server startup.

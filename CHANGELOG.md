@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Captured transcription and speech request counts, audio duration, and processing time in server status, and kept audio responses out of text token timing statistics.
+
 
 ## v0.8.3 (2026-10-17)
 

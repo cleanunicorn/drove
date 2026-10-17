@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Added
+
+- Redesigned CLI reports with consistent headings, responsive tables, grouped server metrics,
+  download resume states, and actionable empty states; preserved plain single-value config output.
+
 
 ## v0.7.0 (2026-10-17)
 

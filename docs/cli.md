@@ -1,5 +1,44 @@
 # CLI reference
 
+## Output
+
+![Server status report](../assets/cli-status.svg)
+
+Inspection commands use a shared layout with cyan headings, compact tables, and
+muted labels. Model names and paths wrap to fit the terminal and are printed
+literally, including brackets. Redirected output has no ANSI color codes;
+`NO_COLOR=1` disables color in the terminal too.
+
+`drove models list` includes model count and total disk usage. `CONFIG` distinguishes
+`custom` sidecars from `defaults`; `CAPS` shows `text`, `vision`, `stt`, or `tts`.
+`drove models info` groups files, capabilities, download origin, and model parameters.
+Download plans show each file's `pending`, `complete`, or percentage-local state.
+
+`drove server status` groups connection details, loaded models and idle limits,
+process memory/CPU, and traffic metrics. `--watch` refreshes the screen only in a
+terminal; redirected watch output appends snapshots. Stop watching with Ctrl+C.
+For example:
+
+```text
+drove / Server status
+http://127.0.0.1:8080
+
+State     running
+Uptime    12m 4s
+Listen    0.0.0.0:8080
+Endpoint  http://127.0.0.1:8080/v1
+
+Loaded models · 0
+No models loaded. Models start on the first request.
+
+Traffic
+Requests  0 total · 0 active · 0 errors
+Tokens    0 in · 0 out · 0 total
+```
+
+Single-value queries such as `drove config listen_port` remain plain values for
+shell scripts. Command flags, confirmation prompts, and exit codes are unchanged.
+
 ## Core commands
 
 ```bash

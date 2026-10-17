@@ -10,7 +10,10 @@ from typing import Annotated
 import click
 import typer
 import uvicorn
+from rich.text import Text
 from typer.core import TyperCommand
+
+from drove.cli.output import console, fields, heading, hint, section, table
 
 server_app = typer.Typer(
     help="Manage the drove server.",
@@ -50,11 +53,19 @@ def _server_default(
 
     cfg_path: Path = ctx.obj["config_path"]
 
-    typer.echo(f"Starting drove on {config.listen_host}:{config.listen_port}")
-    typer.echo(f"Models directory: {config.models_dir}")
-    typer.echo(f"Idle timeout: {config.idle_timeout_seconds}s")
-    if cfg_path.exists():
-        typer.echo(f"Config file: {cfg_path} (watching for changes)")
+    out = console()
+    heading(out, "Starting server")
+    fields(
+        out,
+        [
+            ("Listen", f"{config.listen_host}:{config.listen_port}"),
+            ("Endpoint", f"{_base_url(ctx, host, port)}/v1"),
+            ("Models", config.models_dir),
+            ("Idle timeout", _fmt_duration(config.idle_timeout_seconds)),
+            ("Config", f"{cfg_path} (watching for changes)" if cfg_path.exists() else "defaults"),
+        ],
+    )
+    out.print()
 
     fastapi_app = create_app(config, config_path=cfg_path if cfg_path.exists() else None)
     uvicorn.run(
@@ -116,7 +127,8 @@ def status(
     if watch is not None:
         try:
             while True:
-                typer.clear()
+                if console().is_terminal:
+                    typer.clear()
                 _print_status(base, watch=True)
                 time.sleep(watch)
         except KeyboardInterrupt:
@@ -137,7 +149,10 @@ def _print_status(base: str, *, watch: bool = False) -> None:
         resp = httpx.get(f"{base}/status", timeout=5.0)
         resp.raise_for_status()
     except httpx.ConnectError:
-        typer.echo("Server is not running.")
+        out = console()
+        heading(out, "Server status", base)
+        out.print(Text("Server is not running.", style="yellow"))
+        hint(out, "Start the server: drove server")
         if not watch:
             raise typer.Exit(1)
         return
@@ -149,65 +164,72 @@ def _print_status(base: str, *, watch: bool = False) -> None:
 
     data = resp.json()
 
-    # Server
+    out = console()
+    heading(out, "Server status", base)
     server = data["server"]
-    typer.echo(f"Server:    running ({_fmt_duration(server['uptime_seconds'])} uptime)")
-    typer.echo(f"Listen:    {server['listen']}")
-    typer.echo(f"Endpoint:  {base}/v1")
+    fields(
+        out,
+        [
+            ("State", "running"),
+            ("Uptime", _fmt_duration(server["uptime_seconds"])),
+            ("Listen", server["listen"]),
+            ("Endpoint", f"{base}/v1"),
+        ],
+    )
 
-    # Models
     models = data.get("models", [])
+    section(out, f"Loaded models · {len(models)}")
     if models:
-        typer.echo(f"Models:    {len(models)} loaded")
+        listing = table("MODEL", "LOADED", "IDLE / LIMIT", "ACTIVE")
+        listing.columns[0].style = "cyan"
         for model in models:
-            typer.echo(f"  - {model['name']}")
-            if model.get("loaded_seconds") is not None:
-                typer.echo(f"    Loaded:  {_fmt_duration(model['loaded_seconds'])} ago")
-            idle = model.get("idle_seconds", 0)
-            timeout = model.get("idle_timeout_seconds", 0)
-            typer.echo(f"    Idle:    {_fmt_duration(idle)} / {_fmt_duration(timeout)}")
-            if model.get("active_requests", 0) > 0:
-                typer.echo(f"    Active:  {model['active_requests']} request(s)")
+            loaded = model.get("loaded_seconds")
+            listing.add_row(
+                Text(model["name"]),
+                _fmt_duration(loaded) if loaded is not None else "—",
+                f"{_fmt_duration(model.get('idle_seconds', 0))} / "
+                f"{_fmt_duration(model.get('idle_timeout_seconds', 0))}",
+                str(model.get("active_requests", 0)),
+            )
+        out.print(listing)
     else:
-        typer.echo("Models:    (none loaded)")
+        hint(out, "No models loaded. Models start on the first request.")
 
-    # Process
     proc = data.get("process")
     if proc:
-        if "memory_rss_bytes" in proc:
-            rss = _fmt_bytes(proc["memory_rss_bytes"])
-            typer.echo(f"Process:   {rss} RSS, {proc['cpu_percent']}% CPU")
-        else:
-            for name, pstats in proc.items():
-                if pstats:
-                    rss = _fmt_bytes(pstats["memory_rss_bytes"])
-                    cpu = pstats["cpu_percent"]
-                    typer.echo(f"Process ({name}): {rss} RSS, {cpu}% CPU")
+        section(out, "Processes")
+        processes = {"server": proc} if "memory_rss_bytes" in proc else proc
+        listing = table("PROCESS", "MEMORY (RSS)", "CPU")
+        for name, stats in processes.items():
+            if stats:
+                listing.add_row(
+                    Text(name), _fmt_bytes(stats["memory_rss_bytes"]), f"{stats['cpu_percent']}%"
+                )
+        out.print(listing)
 
-    # Requests
+    section(out, "Traffic")
     req = data["requests"]
-    typer.echo(f"Requests:  {req['total']} total, {req['active']} active, {req['errors']} errors")
-
-    # Tokens
     tok = data["tokens"]
-    if tok["total"] > 0:
-        typer.echo(
-            f"Tokens:    {tok['prompt']} in / {tok['completion']} out ({tok['total']} total)"
-        )
-        speed = tok.get("speed", {})
-        if speed.get("last_tok_per_sec") is not None:
-            parts = [f"{speed['last_tok_per_sec']} tok/s (last)"]
-            if speed.get("avg_tok_per_sec") is not None:
-                parts.append(f"{speed['avg_tok_per_sec']} tok/s (avg)")
-            typer.echo(f"Speed:     {', '.join(parts)}")
-        ttft = tok.get("ttft", {})
-        if ttft.get("last_seconds") is not None:
-            parts = [f"{ttft['last_seconds']:.3f}s (last)"]
-            if ttft.get("avg_seconds") is not None:
-                parts.append(f"{ttft['avg_seconds']:.3f}s (avg)")
-            typer.echo(f"TTFT:      {', '.join(parts)}")
-    else:
-        typer.echo("Tokens:    (none)")
+    traffic: list[tuple[str, object]] = [
+        (
+            "Requests",
+            f"{req['total']:,} total · {req['active']:,} active · {req['errors']:,} errors",
+        ),
+        ("Tokens", f"{tok['prompt']:,} in · {tok['completion']:,} out · {tok['total']:,} total"),
+    ]
+    for label, metrics, last, avg, unit, precision in [
+        ("Speed", tok.get("speed", {}), "last_tok_per_sec", "avg_tok_per_sec", "tok/s", 1),
+        ("TTFT", tok.get("ttft", {}), "last_seconds", "avg_seconds", "s", 3),
+    ]:
+        if metrics.get(last) is not None:
+            value = f"{metrics[last]:.{precision}f} {unit} last"
+            if metrics.get(avg) is not None:
+                value += f" · {metrics[avg]:.{precision}f} {unit} avg"
+            traffic.append((label, value))
+    fields(out, traffic)
+    if watch:
+        out.print()
+        hint(out, "Watching · Ctrl+C to stop")
 
 
 def _fmt_bytes(b: int) -> str:

@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- **cli**: `drove server status` now shows the real bind address when the server is
+  reachable from other machines (for example `listening on all interfaces
+  (0.0.0.0:7777)`), instead of only the `127.0.0.1` URL it connects to.
+
 
 ## v0.8.2 (2026-10-17)
 

@@ -15,7 +15,7 @@ Default reports prioritize the next decision; detail is available on demand:
 
 | Command | Default view | More detail |
 | --- | --- | --- |
-| `server status` | Endpoint, uptime, active requests, errors, loaded models, approximate idle-unload countdown | `--verbose` / `-V`: listen address, load/idle durations, backend memory/CPU, token counts, speed, first-token latency |
+| `server status` | Endpoint, uptime, active requests, errors, network exposure (non-loopback bind only), loaded models, approximate idle-unload countdown | `--verbose` / `-V`: listen address, load/idle durations, backend memory/CPU, token counts, speed, first-token latency |
 | `models list` | Name, capability, size, total disk usage | `--verbose` / `-V`: storage directory, custom-config indicator, download origin/files |
 | `models info <name>` | Capabilities, size/file count, origin, quantization, explicit model overrides | `--verbose` / `-V`: local paths and downloaded file inventory |
 | `models config <name>` | Effective non-null values and their sources | `--all`: include unset parameters |
@@ -25,6 +25,10 @@ These options follow the subcommand (for example, `drove server status -V`).
 The root `drove --verbose` option still controls debug logging.
 
 Status always shows nonzero errors, labeled as cumulative since server startup.
+The endpoint URL is the address `status` connects to, so a `0.0.0.0` bind shows as
+`127.0.0.1`. When the server listens on anything other than loopback — the default
+`listen_host = "0.0.0.0"` included — a `listening on …` line shows the real bind
+address, because the server is reachable from other machines.
 An idle-unload countdown is approximate: active requests prevent idle unloading,
 and eviction or configuration changes can unload a model sooner. Busy models show
 `—`; expired timers show `due`. Download estimates use remote file sizes and local
@@ -38,6 +42,7 @@ drove / Server
 http://127.0.0.1:8080/v1
 
 running · up 12m 4s · 0 active requests
+listening on all interfaces (0.0.0.0:8080)
 
 Loaded models · 0
 No models loaded. Models start on the first request.

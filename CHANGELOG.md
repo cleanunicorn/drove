@@ -1,23 +1,39 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Fixed
+## v0.7.0 (2026-10-17)
 
-- Preserved global voice and device defaults when registering TTS models without explicit overrides, and published registrations only after saving configuration.
-- Included TTS worker descendants in reported memory and CPU usage instead of reporting only the runtime supervisor.
-- Cleaned up model workers when startup was cancelled before health checks completed.
+### Bug Fixes
 
-- Stopped TTS worker process groups during shutdown and eviction, including children left behind by the runtime supervisor.
-- Applied global model settings to TTS startup and memory reservations while preserving per-model overrides.
-- Accepted Kokoro voices present in the model beyond the curated presets, including configured defaults.
-- Required matching transcripts for custom Fish reference recordings instead of using the generated preset transcript.
+- **audio**: Address TTS lifecycle, configuration, and voice review issues
+  ([`6b5b160`](https://github.com/cleanunicorn/drove/commit/6b5b16083973c097aaf19ed18ce239f0989428cd))
 
-### Added
+- **audio**: Preserve TTS defaults and clean up cancelled startup
+  ([`948c339`](https://github.com/cleanunicorn/drove/commit/948c3397966d98428ed4b0b659ea2e17b7f61165))
 
-- Added TTS downloads through `drove models download`, with resume support, preserved voice/tokenizer files, automatic configuration, and workers that load the downloaded weights.
+### Features
 
-- Integrated Cathy’s four local speech engines with model registration, lazy worker startup, and an OpenAI-compatible `/v1/audio/speech` API.
+- **audio**: Integrate Cathy engines with the OpenAI speech API
+  ([`1916920`](https://github.com/cleanunicorn/drove/commit/1916920aeaec9d5e5d73cce0cc755ca818851f15))
+
+Add managed, isolated Python 3.12 workers for Kokoro, Qwen, Chatterbox, and Fish, with OpenAI speech
+  requests and binary audio responses.
+
+Validation: 19 worker tests passed; proxy and model lifecycle smoke checks passed using Python 3.12
+  with syntax compatibility adjustments in a temporary copy. Full format/lint/typecheck/test gates
+  and real synthesis remain unverified because the sandbox blocks Python 3.14 and model/dependency
+  downloads.
+
+- **models**: Integrate TTS downloads with model management
+  ([`6efed55`](https://github.com/cleanunicorn/drove/commit/6efed55132f32e973ade1c32673be3df7e3ca6b5))
+
+Recognize Cathy engine repositories in models download, preserve nested voice and tokenizer files,
+  resume downloads, and configure workers to load local checkpoints. Support compatible repositories
+  through --tts-engine.
+
+Validate with make fmt, make lint, make typecheck, and make test (361 passed), plus the 19 speech
+  worker tests under Python 3.12 and live metadata resolution for all four canonical TTS
+  repositories.
 
 
 ## v0.6.0 (2026-10-13)

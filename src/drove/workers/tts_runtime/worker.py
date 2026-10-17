@@ -14,6 +14,7 @@ import subprocess
 import threading
 import wave
 from importlib import import_module
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from fastapi import FastAPI, Request
@@ -63,6 +64,7 @@ class CathyEngine:
         device: str,
         language: str | None = None,
         max_chunk_chars: int | None = None,
+        model_dir: Path | None = None,
     ) -> None:
         self.engines = import_module(f"{__package__}.engines" if __package__ else "engines")
         torch = import_module("torch")
@@ -72,17 +74,32 @@ class CathyEngine:
         self.default_voice = voice
         self.native_speed = name == "kokoro"
         self.engine: Any = self.engines.build_engine(
-            name, voice, 1.0, device, language, max_chunk_chars,
+            name,
+            voice,
+            1.0,
+            device,
+            language,
+            max_chunk_chars,
+            model_dir,
         )
 
     def _voice(self, voice: str) -> str:
         # These aliases select local voices; they do not replicate OpenAI voices.
         aliases = {
-            "alloy": self.default_voice, "default": self.default_voice,
-            "echo": "male", "onyx": "male", "ash": "male", "ballad": "male",
-            "cedar": "male", "verse": "male", "fable": "british-male",
-            "nova": "female", "shimmer": "female", "coral": "female",
-            "sage": "female", "marin": "female",
+            "alloy": self.default_voice,
+            "default": self.default_voice,
+            "echo": "male",
+            "onyx": "male",
+            "ash": "male",
+            "ballad": "male",
+            "cedar": "male",
+            "verse": "male",
+            "fable": "british-male",
+            "nova": "female",
+            "shimmer": "female",
+            "coral": "female",
+            "sage": "female",
+            "marin": "female",
         }
         voice = aliases.get(voice, voice)
         if self.name == "kokoro":
@@ -160,8 +177,18 @@ def encode_audio(pcm: bytes, rate: int, fmt: str, speed: float = 1.0) -> bytes:
         )
     container, codec, _ = FORMATS[fmt]
     cmd = [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", str(rate),
-        "-ac", "1", "-i", "pipe:0",
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "s16le",
+        "-ar",
+        str(rate),
+        "-ac",
+        "1",
+        "-i",
+        "pipe:0",
     ]
     if speed != 1.0:
         cmd.extend(["-af", _tempo_filters(speed)])
@@ -181,10 +208,18 @@ def create_tts_app(engine: SpeechEngine, model_name: str) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, exc: RequestValidationError) -> JSONResponse:
-        return JSONResponse(status_code=400, content={"error": {
-            "message": "Invalid speech request: " + "; ".join(e["msg"] for e in exc.errors()),
-            "type": "invalid_request_error", "param": None, "code": None,
-        }})
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "Invalid speech request: "
+                    + "; ".join(e["msg"] for e in exc.errors()),
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": None,
+                }
+            },
+        )
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -193,11 +228,17 @@ def create_tts_app(engine: SpeechEngine, model_name: str) -> FastAPI:
     @app.post("/v1/audio/speech")
     def speech(body: SpeechRequest) -> Response:
         def error(message: str, status: int = 400) -> JSONResponse:
-            return JSONResponse(status_code=status, content={"error": {
-                "message": message,
-                "type": "invalid_request_error" if status < 500 else "server_error",
-                "param": None, "code": None,
-            }})
+            return JSONResponse(
+                status_code=status,
+                content={
+                    "error": {
+                        "message": message,
+                        "type": "invalid_request_error" if status < 500 else "server_error",
+                        "param": None,
+                        "code": None,
+                    }
+                },
+            )
 
         if body.model != model_name:
             return error("This worker does not serve the requested model.", 404)
@@ -214,7 +255,10 @@ def create_tts_app(engine: SpeechEngine, model_name: str) -> FastAPI:
             with lock:
                 pcm, rate = engine.synthesize(body.input, body.voice, body.speed)
                 data = encode_audio(
-                    pcm, rate, body.response_format, 1.0 if engine.native_speed else body.speed,
+                    pcm,
+                    rate,
+                    body.response_format,
+                    1.0 if engine.native_speed else body.speed,
                 )
         except ValueError as exc:
             return error(str(exc))
@@ -234,11 +278,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--voice", default="female")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
+    parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--language")
     parser.add_argument("--max-chunk-chars", type=int)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
-    engine = CathyEngine(args.engine, args.voice, args.device, args.language, args.max_chunk_chars)
+    engine = CathyEngine(
+        args.engine,
+        args.voice,
+        args.device,
+        args.language,
+        args.max_chunk_chars,
+        args.model_dir,
+    )
     app = create_tts_app(engine, args.model_name)
     import uvicorn
 

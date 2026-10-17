@@ -427,7 +427,7 @@ Found a bug or have an idea? Please use the issue templates: [Bug report](./.git
 Cathy’s local engines are available through the OpenAI `/v1/audio/speech` API.
 
 ```bash
-drove models add-tts kokoro --engine kokoro
+drove models download hexgrad/Kokoro-82M --name kokoro
 drove serve
 ```
 

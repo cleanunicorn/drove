@@ -21,10 +21,20 @@ class DownloadInfo(BaseModel):
 
 
 #: Config keys that drove consumes itself; excluded from llama-server args.
-_DROVE_ONLY_FIELDS = frozenset({
-    "backend", "asr_model", "asr_quantization", "tts_engine", "tts_voice",
-    "tts_device", "tts_language", "tts_max_chunk_chars", "tts_memory_mb",
-})
+_DROVE_ONLY_FIELDS = frozenset(
+    {
+        "backend",
+        "asr_model",
+        "asr_quantization",
+        "tts_engine",
+        "tts_voice",
+        "tts_device",
+        "tts_model_dir",
+        "tts_language",
+        "tts_max_chunk_chars",
+        "tts_memory_mb",
+    }
+)
 
 #: Boolean keys llama-server exposes as a ``--flag`` / ``--no-flag`` pair, where
 #: ``false`` must emit the negated flag instead of omitting the argument.
@@ -111,6 +121,7 @@ class ModelConfig(BaseModel):
 
     tts_engine: Literal["kokoro", "qwen", "chatterbox", "fish"] | None = None
     tts_voice: str | None = None
+    tts_model_dir: str | None = None  # relative to the model sidecar, or absolute
     tts_device: Literal["auto", "cpu", "cuda", "mps"] | None = None
     tts_language: str | None = None
     tts_max_chunk_chars: int | None = Field(default=None, ge=150)

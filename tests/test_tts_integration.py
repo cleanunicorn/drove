@@ -17,10 +17,14 @@ from drove.server_manager import ServerManager, _estimate_model_memory
 
 def register(tmp_path: Path, name: str = "kokoro", **kwargs: str) -> Path:
     ctx = typer.Context(
-        typer.main.get_command(models_app), obj={"config": Config(models_dir=tmp_path)},
+        typer.main.get_command(models_app),
+        obj={"config": Config(models_dir=tmp_path)},
     )
     add_tts_model(
-        ctx, name, kwargs.get("engine", "kokoro"), kwargs.get("voice", "female"),
+        ctx,
+        name,
+        kwargs.get("engine", "kokoro"),
+        kwargs.get("voice", "female"),
         kwargs.get("device", "cpu"),
     )
     return ModelStore(tmp_path).resolve(name)
@@ -55,10 +59,15 @@ def test_registration_does_not_overwrite_models(tmp_path: Path) -> None:
     assert primary.with_suffix(".toml").read_bytes() == before
 
 
-@pytest.mark.parametrize("key,value", [
-    ("tts_engine", "bad"), ("tts_device", "--bad"),
-    ("tts_memory_mb", "0"), ("tts_max_chunk_chars", "100"),
-])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("tts_engine", "bad"),
+        ("tts_device", "--bad"),
+        ("tts_memory_mb", "0"),
+        ("tts_max_chunk_chars", "100"),
+    ],
+)
 def test_tts_settings_validated(tmp_path: Path, key: str, value: str) -> None:
     primary = register(tmp_path)
     with pytest.raises(ValueError):
@@ -67,8 +76,14 @@ def test_tts_settings_validated(tmp_path: Path, key: str, value: str) -> None:
 
 def test_tts_config_is_never_sent_to_llama() -> None:
     cfg = ModelConfig(
-        backend="tts", tts_engine="kokoro", tts_voice="female", tts_device="cpu",
-        tts_language="English", tts_max_chunk_chars=400, tts_memory_mb=2048, ctx_size=4096,
+        backend="tts",
+        tts_engine="kokoro",
+        tts_voice="female",
+        tts_device="cpu",
+        tts_language="English",
+        tts_max_chunk_chars=400,
+        tts_memory_mb=2048,
+        ctx_size=4096,
     )
     assert cfg.to_llama_args() == ["--ctx-size", "4096"]
 
@@ -110,10 +125,17 @@ async def test_lazy_start_and_managed_shutdown_use_tts_worker(tmp_path: Path) ->
     process.stdout = None
     process.stderr = None
     process.wait = AsyncMock(return_value=0)
-    with patch("shutil.which", return_value="/usr/bin/uv"), patch(
-        "asyncio.create_subprocess_exec", AsyncMock(return_value=process),
-    ) as spawn, patch.object(manager, "_wait_for_health", AsyncMock()), patch(
-        "drove.server_manager._find_free_port", return_value=9000,
+    with (
+        patch("shutil.which", return_value="/usr/bin/uv"),
+        patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(return_value=process),
+        ) as spawn,
+        patch.object(manager, "_wait_for_health", AsyncMock()),
+        patch(
+            "drove.server_manager._find_free_port",
+            return_value=9000,
+        ),
     ):
         try:
             await manager.ensure_running("kokoro", claim=True)

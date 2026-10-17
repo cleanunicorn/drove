@@ -26,6 +26,7 @@ def engine_available(name: str) -> bool:
 
     return importlib.util.find_spec(ENGINE_IMPORTS[name]) is not None
 
+
 # Curated subset of Kokoro's built-in voices. Prefix encodes language/gender:
 # a=American, b=British English; f=female, m=male.
 KOKORO_VOICES = {
@@ -257,7 +258,14 @@ class KokoroEngine:
 
     sr = 24_000
 
-    def __init__(self, voice: str, speed: float, device: str, language: str | None = None) -> None:
+    def __init__(
+        self,
+        voice: str,
+        speed: float,
+        device: str,
+        language: str | None = None,
+        model_dir: Path | None = None,
+    ) -> None:
         # Kokoro's language follows the voice prefix (see KOKORO_INTL);
         # --language is a qwen option.
         _quiet()
@@ -265,8 +273,30 @@ class KokoroEngine:
 
         voice = KOKORO_ALIASES.get(voice, voice)
         lang_code = voice[0]  # Kokoro convention: voice prefix picks the language
+        self.model_dir = model_dir
+        options: dict[str, Any] = {}
+        if model_dir is not None:
+            KModel = import_module("kokoro").KModel
+            checkpoint = model_dir / "kokoro-v1_0.pth"
+            if not checkpoint.is_file():
+                candidates = sorted(model_dir.glob("*.pth"))
+                if len(candidates) != 1:
+                    raise ValueError("Expected a Kokoro .pth checkpoint in the downloaded model.")
+                checkpoint = candidates[0]
+            options["model"] = (
+                KModel(
+                    repo_id="hexgrad/Kokoro-82M",
+                    config=str(model_dir / "config.json"),
+                    model=str(checkpoint),
+                )
+                .to(device)
+                .eval()
+            )
         self.pipeline = KPipeline(
-            lang_code=lang_code, repo_id="hexgrad/Kokoro-82M", device=device
+            lang_code=lang_code,
+            repo_id="hexgrad/Kokoro-82M",
+            device=device,
+            **options,
         )
         self.voice = self._resolve(voice)
         self.speed = speed
@@ -274,7 +304,7 @@ class KokoroEngine:
     def _resolve(self, spec: str) -> Any:
         """Support weighted blends like 'af_heart:2,af_bella:1'."""
         if ":" not in spec:
-            return spec
+            return self._load_voice(spec) if self.model_dir is not None else spec
 
         torch = import_module("torch")
 
@@ -283,9 +313,17 @@ class KokoroEngine:
             name, _, weight = part.partition(":")
             names.append(name.strip())
             weights.append(float(weight or 1))
-        packs = torch.stack([self.pipeline.load_single_voice(n) for n in names])
+        packs = torch.stack([self._load_voice(n) for n in names])
         w = torch.tensor(weights, dtype=packs.dtype) / sum(weights)
         return torch.sum(packs * w.reshape(-1, *[1] * (packs.dim() - 1)), dim=0)
+
+    def _load_voice(self, name: str) -> Any:
+        if self.model_dir is not None:
+            voice = self.model_dir / "voices" / f"{name}.pt"
+            if not voice.is_file():
+                raise ValueError(f"Voice '{name}' is absent from the downloaded model.")
+            return self.pipeline.load_single_voice(str(voice))
+        return self.pipeline.load_single_voice(name)
 
     def paragraph(self, text: str) -> Any:
         for _, _, audio in self.pipeline(text, voice=self.voice, speed=self.speed):
@@ -302,15 +340,21 @@ class QwenEngine:
     # margin below where it starts to wander.
     chunk_limit = 800
 
-    def __init__(self, voice: str, speed: float, device: str, language: str | None = None) -> None:
+    def __init__(
+        self,
+        voice: str,
+        speed: float,
+        device: str,
+        language: str | None = None,
+        model_dir: Path | None = None,
+    ) -> None:
         self.language = language or "English"
         _quiet()
         import shutil
 
         if shutil.which("sox") is None:
             sys.exit(
-                "error: the qwen engine needs the sox system package "
-                "(e.g. sudo apt install sox)"
+                "error: the qwen engine needs the sox system package (e.g. sudo apt install sox)"
             )
         try:
             Qwen3TTSModel = import_module("qwen_tts").Qwen3TTSModel
@@ -324,7 +368,7 @@ class QwenEngine:
             sys.exit(f"error: unknown qwen speaker {voice!r}; options: {', '.join(QWEN_SPEAKERS)}")
         self.voice = voice
         self.model = Qwen3TTSModel.from_pretrained(
-            "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+            str(model_dir) if model_dir is not None else "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
             device_map=device,
             dtype=torch.bfloat16,
         )
@@ -383,17 +427,26 @@ class ChatterboxEngine(ClonedVoiceMixin):
     # cope with until someone runs the same profile on it.
     chunk_limit = 400
 
-    def __init__(self, voice: str, speed: float, device: str, language: str | None = None) -> None:
+    def __init__(
+        self,
+        voice: str,
+        speed: float,
+        device: str,
+        language: str | None = None,
+        model_dir: Path | None = None,
+    ) -> None:
         _quiet()
         try:
             ChatterboxTurboTTS = import_module("chatterbox.tts_turbo").ChatterboxTurboTTS
         except ImportError:
-            sys.exit(
-                "error: chatterbox engine not installed in the drove TTS runtime"
-            )
+            sys.exit("error: chatterbox engine not installed in the drove TTS runtime")
 
         self.clip = str(self.reference_clip(voice, device))
-        self.model = ChatterboxTurboTTS.from_pretrained(device=device, nano=True)
+        self.model = (
+            ChatterboxTurboTTS.from_local(model_dir, device=device, nano=True)
+            if model_dir is not None
+            else ChatterboxTurboTTS.from_pretrained(device=device, nano=True)
+        )
         self.sr = self.model.sr
 
     def paragraph(self, text: str) -> Any:
@@ -416,7 +469,14 @@ class FishEngine(ClonedVoiceMixin):
     # headroom and stays well clear of the truncation region.
     chunk_limit = 600
 
-    def __init__(self, voice: str, speed: float, device: str, language: str | None = None) -> None:
+    def __init__(
+        self,
+        voice: str,
+        speed: float,
+        device: str,
+        language: str | None = None,
+        model_dir: Path | None = None,
+    ) -> None:
         _quiet()
         try:
             fish_speech = import_module("fish_speech")
@@ -438,7 +498,7 @@ class FishEngine(ClonedVoiceMixin):
 
         _tqdm = import_module("tqdm").tqdm
 
-        _t2s = import_module("fish_speech.models.text2semantic.inference")
+        _t2s: Any = import_module("fish_speech.models.text2semantic.inference")
 
         _t2s.tqdm = partial(_tqdm, disable=True)
 
@@ -451,14 +511,14 @@ class FishEngine(ClonedVoiceMixin):
         snapshot_download = import_module("huggingface_hub").snapshot_download
 
         clip = self.reference_clip(voice, device)
-        self.reference = ServeReferenceAudio(
-            audio=clip.read_bytes(), text=REFERENCE_TEXT
-        )
+        self.reference = ServeReferenceAudio(audio=clip.read_bytes(), text=REFERENCE_TEXT)
 
         GatedRepoError = import_module("huggingface_hub.errors").GatedRepoError
 
         try:
-            checkpoints = Path(snapshot_download("fishaudio/s1-mini"))
+            checkpoints = (
+                model_dir if model_dir is not None else Path(snapshot_download("fishaudio/s1-mini"))
+            )
         except GatedRepoError:
             set_token = (
                 "setx HF_TOKEN hf_yourtoken   (then open a NEW terminal)"
@@ -540,6 +600,7 @@ def build_engine(
     device: str,
     language: str | None = None,
     max_chunk_chars: int | None = None,
+    model_dir: Path | None = None,
 ) -> Any:
     classes: dict[str, Any] = {
         "kokoro": KokoroEngine,
@@ -547,7 +608,7 @@ def build_engine(
         "chatterbox": ChatterboxEngine,
         "fish": FishEngine,
     }
-    engine: Any = classes[name](voice or "male", speed, device, language)
+    engine: Any = classes[name](voice or "male", speed, device, language, model_dir)
     if max_chunk_chars is not None:
         # Kokoro has no chunk_limit: it hands whole paragraphs to KPipeline,
         # which chunks internally.

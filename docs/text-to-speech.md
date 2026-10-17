@@ -2,7 +2,8 @@
 
 Drove integrates Cathy's local Kokoro, Qwen3-TTS, Chatterbox-Nano, and Fish
 S1-mini engines behind the OpenAI speech API. Synthesis stays on your machine.
-Dependencies and weights download on first use and are cached for later runs.
+Download weights ahead of time with `drove models download`, just as for GGUF
+and ONNX models. Engine dependencies are installed on first use.
 Fish requires accepting its model license and authenticating Hugging Face
 downloads, as in Cathy.
 
@@ -12,7 +13,7 @@ Install `uv` and `espeak-ng`, plus `ffmpeg` for compressed audio and speed
 conversion. Qwen also requires the `sox` system package.
 
 ```bash
-drove models add-tts kokoro --engine kokoro --voice female
+drove models download hexgrad/Kokoro-82M --name kokoro
 drove serve
 ```
 
@@ -44,19 +45,46 @@ binary response; incremental synthesis and SSE events are not implemented.
 
 ## Registration and lifecycle
 
-`drove models add-tts NAME --engine ENGINE` registers `kokoro` (default),
-`qwen`, `chatterbox`, or `fish`. `--voice` selects the startup voice;
-`--device auto|cpu|cuda|mps` selects hardware (`auto` uses CUDA when available,
-otherwise CPU). Registrations contain a `model.tts` marker and a normal
-`model.toml` sidecar under Drove's model directory. Existing `models list`,
-`info`, `config`, and `delete` commands work with them. Speech models are
-excluded from chat-agent integrations. Deleting a registration preserves the
-shared Hugging Face and uv caches.
+The regular download command recognizes these repositories automatically:
+
+```bash
+drove models download hexgrad/Kokoro-82M --name kokoro
+drove models download Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice --name qwen-tts
+drove models download ResembleAI/chatterbox-nano --name chatterbox
+drove models download fishaudio/s1-mini --name fish
+```
+
+The standard confirmation, progress display, resume behavior, and `--yes`
+option apply. Complete files are skipped on subsequent runs. TTS quantization
+tags are not supported; use `--tts-engine kokoro|qwen|chatterbox|fish` for an
+otherwise compatible repository that is not in the automatic detection table.
+
+Downloads keep the repository's directory structure, including voice packs and
+nested tokenizer files. A `model.tts` entry and a normal `model.toml` sidecar
+configure the engine and `tts_model_dir = "."`. Workers load the downloaded
+checkpoints and Kokoro voices directly from this directory. `models list`,
+`info`, `config`, `delete`, repository aliases, and `/v1/models` work normally.
+Deleting a downloaded model removes its managed files. Speech models are
+excluded from chat-agent integrations.
+
+You can also use `drove models add-tts NAME --engine ENGINE` to register an
+engine whose weights download automatically into the shared Hugging Face
+cache on first use. Deleting such a registration preserves the shared caches.
+`--voice` and `--device` set its startup defaults. For downloaded models, use
+`drove models config NAME tts_voice female` and
+`drove models config NAME tts_device cpu` (or `auto`, `cuda`, `mps`). `auto`
+uses CUDA when available, otherwise CPU.
+
+Chatterbox and Fish's generated male/female reference clips use a separate
+Kokoro model and may download those auxiliary weights on first use. Configure
+a local reference WAV with `tts_voice /absolute/path/to/reference.wav` to avoid
+that step. Dependency installation and auxiliary engine assets are separate
+from downloading the primary model weights.
 
 Drove starts the worker on the first request and applies its existing health
 checks, concurrent request claims, idle shutdown, model-count limit, and LRU
 eviction. Prompt/KV caches apply only to llama models. Memory budgeting uses
-estimated reservations for cache-managed weights: 3 GiB for Kokoro, 4 GiB for
+estimated reservations for loaded engines: 3 GiB for Kokoro, 4 GiB for
 Qwen/Chatterbox, and 8 GiB for Fish. Set `tts_memory_mb` for your hardware;
 these are estimates rather than hard allocation limits.
 
@@ -116,6 +144,7 @@ Sidecar example:
 ```toml
 backend = "tts"
 tts_engine = "kokoro"
+tts_model_dir = "."  # set automatically by models download
 tts_voice = "female"
 tts_device = "auto"
 # tts_language = "English"      # Qwen language

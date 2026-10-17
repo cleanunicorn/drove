@@ -136,9 +136,14 @@ def add_tts_model(
             "Use a simple local name containing letters, digits, dots or dashes."
         )
     try:
-        cfg = ModelConfig.model_validate({
-            "backend": "tts", "tts_engine": engine, "tts_voice": voice, "tts_device": device,
-        })
+        cfg = ModelConfig.model_validate(
+            {
+                "backend": "tts",
+                "tts_engine": engine,
+                "tts_voice": voice,
+                "tts_device": device,
+            }
+        )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     models_dir = _models_dir(ctx)
@@ -340,6 +345,8 @@ def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str 
         filter_onnx_quant,
     )
 
+    if plan.is_tts:
+        return None
     if plan.is_asr:
         variants = available_onnx_quants(plan.onnx_files)
         if len(variants) < 2:
@@ -426,7 +433,8 @@ def download_model(
                 "Format: 'org/repo' or 'org/repo:QUANT'. "
                 "Examples: unsloth/Qwen3-8B-GGUF  "
                 "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M  "
-                "istupakov/parakeet-tdt-0.6b-v3-onnx:int8"
+                "istupakov/parakeet-tdt-0.6b-v3-onnx:int8  "
+                "hexgrad/Kokoro-82M"
             )
         ),
     ],
@@ -435,6 +443,10 @@ def download_model(
         typer.Option("--name", "-n", help="Override local model name."),
     ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
+    tts_engine: Annotated[
+        str | None,
+        typer.Option(help="TTS engine for a compatible repo (auto-detected for known models)."),
+    ] = None,
 ) -> None:
     """Download a model from HuggingFace Hub.
 
@@ -453,6 +465,8 @@ def download_model(
         drove models download unsloth/Qwen3-8B-GGUF:Q8_0 --name qwen3-8b-q8
 
         drove models download istupakov/parakeet-tdt-0.6b-v3-onnx:int8  (speech-to-text)
+
+        drove models download hexgrad/Kokoro-82M --name kokoro  (text-to-speech)
     """
     from drove.downloader import (
         FileStatus,
@@ -465,7 +479,10 @@ def download_model(
 
     typer.echo(f"Resolving {model_ref} ...")
     try:
-        plan = resolve_download(model_ref, name_override=name)
+        if tts_engine is None:
+            plan = resolve_download(model_ref, name_override=name)
+        else:
+            plan = resolve_download(model_ref, name_override=name, tts_engine=tts_engine)
     except ValueError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
@@ -481,7 +498,7 @@ def download_model(
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
     all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
 
-    if all_complete:
+    if all_complete and not plan.is_tts:
         typer.echo(
             f"Model '{plan.local_name}' is already fully downloaded "
             f"at {plan.destination(models_dir)}."
@@ -490,7 +507,7 @@ def download_model(
 
     _print_download_plan(plan, models_dir, statuses)
 
-    if not yes:
+    if not yes and not all_complete:
         if has_existing:
             typer.confirm("Some files already exist. Resume download?", abort=True)
         else:
@@ -517,6 +534,9 @@ def download_model(
             quant=quant,
         ),
     )
+
+    if plan.is_tts:
+        typer.echo(f"  Text-to-speech auto-configured: {plan.tts_engine}")
 
     # Auto-configure speech-to-text models for the built-in ASR worker
     if plan.is_asr:

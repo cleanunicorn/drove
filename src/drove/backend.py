@@ -57,3 +57,18 @@ def infer_asr_model_type(ref: str) -> str | None:
     """
     stem = ref.rsplit("/", 1)[-1].strip().lower().removesuffix("-onnx")
     return _ASR_MODEL_TYPES.get(stem)
+
+
+# Repositories supported by the bundled Cathy engines. Unknown compatible repos
+# can be downloaded with an explicit --tts-engine option.
+_TTS_REPOS = {
+    "hexgrad/kokoro-82m": "kokoro",
+    "qwen/qwen3-tts-12hz-0.6b-customvoice": "qwen",
+    "resembleai/chatterbox-nano": "chatterbox",
+    "fishaudio/s1-mini": "fish",
+}
+
+
+def infer_tts_engine(repo_id: str) -> str | None:
+    """Infer a supported speech engine without importing ML dependencies."""
+    return _TTS_REPOS.get(repo_id.lower())

@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added TTS downloads through `drove models download`, with resume support, preserved voice/tokenizer files, automatic configuration, and workers that load the downloaded weights.
+
 - Integrated Cathy’s four local speech engines with model registration, lazy worker startup, and an OpenAI-compatible `/v1/audio/speech` API.
 
 

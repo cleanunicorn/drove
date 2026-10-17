@@ -41,10 +41,16 @@ class SpeechApiTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
 
     async def speech(self, **overrides: object) -> httpx.Response:
-        return await self.client.post("/v1/audio/speech", json={
-            "model": "kokoro", "input": "Hello world.", "voice": "alloy",
-            "response_format": "wav", **overrides,
-        })
+        return await self.client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "kokoro",
+                "input": "Hello world.",
+                "voice": "alloy",
+                "response_format": "wav",
+                **overrides,
+            },
+        )
 
     async def test_wav_is_binary_and_preserves_samples(self) -> None:
         response = await self.speech(speed=1.5)
@@ -52,7 +58,8 @@ class SpeechApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["content-type"], "audio/wav")
         with wave.open(io.BytesIO(response.content)) as wav:
             self.assertEqual(
-                (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()), (1, 2, 24000),
+                (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()),
+                (1, 2, 24000),
             )
             self.assertEqual(wav.readframes(wav.getnframes()), PCM)
         self.assertEqual(self.engine.calls, [("Hello world.", "alloy", 1.5)])
@@ -65,14 +72,23 @@ class SpeechApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_health(self) -> None:
         self.assertEqual(
-            (await self.client.get("/health")).json(), {"status": "ok", "model": "kokoro"},
+            (await self.client.get("/health")).json(),
+            {"status": "ok", "model": "kokoro"},
         )
 
     async def test_invalid_requests_do_not_run_engine(self) -> None:
         cases = [
-            {"input": ""}, {"input": " \n "}, {"input": "x" * 4097}, {"input": 12},
-            {"voice": ""}, {"speed": 0.24}, {"speed": 4.01}, {"response_format": "json"},
-            {"instructions": "Whisper"}, {"stream_format": "sse"}, {"unknown": True},
+            {"input": ""},
+            {"input": " \n "},
+            {"input": "x" * 4097},
+            {"input": 12},
+            {"voice": ""},
+            {"speed": 0.24},
+            {"speed": 4.01},
+            {"response_format": "json"},
+            {"instructions": "Whisper"},
+            {"stream_format": "sse"},
+            {"unknown": True},
         ]
         for case in cases:
             with self.subTest(case=case):
@@ -100,29 +116,47 @@ class SpeechApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.engine.calls)
 
     async def test_default_output_is_mp3(self) -> None:
-        with patch("shutil.which", return_value="/bin/ffmpeg"), patch(
-            "drove.workers.tts_runtime.worker.encode_audio", return_value=b"mp3 bytes",
-        ) as encode:
-            response = await self.client.post("/v1/audio/speech", json={
-                "model": "kokoro", "input": "Hello", "voice": "alloy",
-            })
+        with (
+            patch("shutil.which", return_value="/bin/ffmpeg"),
+            patch(
+                "drove.workers.tts_runtime.worker.encode_audio",
+                return_value=b"mp3 bytes",
+            ) as encode,
+        ):
+            response = await self.client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "kokoro",
+                    "input": "Hello",
+                    "voice": "alloy",
+                },
+            )
         self.assertEqual(response.headers["content-type"], "audio/mpeg")
         self.assertEqual(response.content, b"mp3 bytes")
         encode.assert_called_once_with(PCM, 24000, "mp3", 1.0)
 
     async def test_errors_do_not_expose_engine_internals(self) -> None:
-        with patch.object(
-            self.engine, "synthesize", side_effect=RuntimeError("/private/model/path"),
-        ), self.assertLogs("drove.workers.tts_runtime.worker", level="ERROR"):
+        with (
+            patch.object(
+                self.engine,
+                "synthesize",
+                side_effect=RuntimeError("/private/model/path"),
+            ),
+            self.assertLogs("drove.workers.tts_runtime.worker", level="ERROR"),
+        ):
             response = await self.speech()
         self.assertEqual(response.status_code, 500)
         self.assertNotIn("/private", response.text)
 
     async def test_engine_without_native_speed_uses_audio_conversion(self) -> None:
         self.engine.native_speed = False
-        with patch("shutil.which", return_value="/bin/ffmpeg"), patch(
-            "drove.workers.tts_runtime.worker.encode_audio", return_value=b"audio",
-        ) as encode:
+        with (
+            patch("shutil.which", return_value="/bin/ffmpeg"),
+            patch(
+                "drove.workers.tts_runtime.worker.encode_audio",
+                return_value=b"audio",
+            ) as encode,
+        ):
             response = await self.speech(speed=0.25)
         self.assertEqual(response.status_code, 200)
         encode.assert_called_once_with(PCM, 24000, "wav", 0.25)
@@ -144,7 +178,12 @@ class CathyVoiceTests(unittest.TestCase):
 
     def test_voice_paths_invalid_weights_and_wrong_language_rejected(self) -> None:
         for voice in (
-            "/tmp/voice.pt", "../voice", "af_heart:-1", "af_heart:nan", "af_heart:inf", "bf_emma",
+            "/tmp/voice.pt",
+            "../voice",
+            "af_heart:-1",
+            "af_heart:nan",
+            "af_heart:inf",
+            "bf_emma",
         ):
             with self.subTest(voice=voice), self.assertRaises(ValueError):
                 self.engine._voice(voice)
@@ -180,10 +219,14 @@ class AudioEncodingTests(unittest.TestCase):
                 encode_audio(PCM, 44100, "pcm")
 
     def test_encoder_failure_is_sanitized(self) -> None:
-        with patch("shutil.which", return_value="/bin/ffmpeg"), patch(
-            "subprocess.run",
-            return_value=subprocess.CompletedProcess([], 1, b"", b"/private/path"),
-        ), self.assertLogs("drove.workers.tts_runtime.worker", level="ERROR"):
+        with (
+            patch("shutil.which", return_value="/bin/ffmpeg"),
+            patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess([], 1, b"", b"/private/path"),
+            ),
+            self.assertLogs("drove.workers.tts_runtime.worker", level="ERROR"),
+        ):
             with self.assertRaisesRegex(RuntimeError, "^Failed to encode speech audio.$"):
                 encode_audio(PCM, 24000, "mp3")
 
@@ -197,7 +240,8 @@ class AudioEncodingTests(unittest.TestCase):
                     args += ["-f", "s16le", "-ar", "24000", "-ac", "1"]
                 decoded = subprocess.run(
                     args + ["-i", "pipe:0", "-f", "s16le", "pipe:1"],
-                    input=data, capture_output=True,
+                    input=data,
+                    capture_output=True,
                 )
                 self.assertEqual(decoded.returncode, 0, decoded.stderr)
                 self.assertTrue(decoded.stdout)

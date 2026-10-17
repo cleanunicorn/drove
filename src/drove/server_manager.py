@@ -604,13 +604,33 @@ class ServerManager:
         # Cache environments outside the installed package; Drove's Python 3.14
         # requirements must not leak into Cathy's Python 3.12 engine environments.
         cmd = [
-            uv, "run", "--no-project", "--python", "3.12",
-            "--with-requirements", str(runtime / f"{engine}.txt"),
-            "python", str(runtime / "worker.py"), "--engine", engine,
-            "--model-name", model_name, "--host", self._config.llama_server_host,
-            "--port", str(port), "--device", model_cfg.tts_device or "auto",
-            "--voice", model_cfg.tts_voice or "female",
+            uv,
+            "run",
+            "--no-project",
+            "--python",
+            "3.12",
+            "--with-requirements",
+            str(runtime / f"{engine}.txt"),
+            "python",
+            str(runtime / "worker.py"),
+            "--engine",
+            engine,
+            "--model-name",
+            model_name,
+            "--host",
+            self._config.llama_server_host,
+            "--port",
+            str(port),
+            "--device",
+            model_cfg.tts_device or "auto",
+            "--voice",
+            model_cfg.tts_voice or "female",
         ]
+        if model_cfg.tts_model_dir:
+            directory = Path(model_cfg.tts_model_dir).expanduser()
+            if not directory.is_absolute():
+                directory = model_path.parent / directory
+            cmd.extend(["--model-dir", str(directory.resolve())])
         if model_cfg.tts_language:
             cmd.extend(["--language", model_cfg.tts_language])
         if model_cfg.tts_max_chunk_chars:

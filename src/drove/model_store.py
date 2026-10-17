@@ -141,6 +141,6 @@ class ModelStore:
         ggufs = sorted(f for f in files if f.suffix.lower() == ".gguf")
         onnx = sorted(f for f in files if f.suffix.lower() == ".onnx")
         tts = sorted(f for f in files if f.suffix.lower() == ".tts")
-        primary = (tts or ggufs or onnx or sorted(files) or [None])[0]
-        if primary:
-            results.append(ModelEntry(name, primary, total))
+        candidates = tts or ggufs or onnx or sorted(files)
+        if candidates:
+            results.append(ModelEntry(name, candidates[0], total))

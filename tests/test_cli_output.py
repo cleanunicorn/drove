@@ -33,6 +33,11 @@ def test_reports_preserve_literal_values_at_narrow_width() -> None:
     assert "\x1b" not in rendered
 
 
+def _unwrapped(text: str) -> str:
+    """Drop whitespace so assertions survive Rich wrapping long values."""
+    return "".join(text.split())
+
+
 def test_model_list_empty_and_populated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
     runner = CliRunner()
@@ -49,9 +54,24 @@ def test_model_list_empty_and_populated(tmp_path: Path, monkeypatch: pytest.Monk
     detailed = runner.invoke(app, ["models", "list", "--verbose"])
     assert detailed.exit_code == 0
     assert "defaults" in detailed.stdout
-    assert str(tmp_path) in detailed.stdout
+    assert _unwrapped(str(tmp_path)) in _unwrapped(detailed.stdout)
     assert "1 model(s)" in result.stdout
     assert "\x1b" not in result.stdout
+
+
+def test_model_list_verbose_wraps_long_storage_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models_dir = tmp_path / ("long-directory-" * 6)
+    models_dir.mkdir()
+    (models_dir / "model.gguf").write_bytes(b"GGUF")
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(models_dir))
+    monkeypatch.setenv("COLUMNS", "40")
+    detailed = CliRunner().invoke(app, ["models", "list", "--verbose"])
+    assert detailed.exit_code == 0
+    assert str(models_dir) not in detailed.stdout  # wrapped across lines at 40 columns
+    assert _unwrapped(str(models_dir)) in _unwrapped(detailed.stdout)
+    assert str(models_dir) not in CliRunner().invoke(app, ["models", "list"]).stdout
 
 
 def test_config_single_value_remains_plain(monkeypatch: pytest.MonkeyPatch) -> None:

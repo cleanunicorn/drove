@@ -1,23 +1,23 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Changed
+## v0.8.2 (2026-10-17)
 
-- **docs**: Documented text-to-speech across the README, getting-started guide, CLI
-  reference (`models add-tts`, `--tts-engine`), configuration reference (`tts_*` keys,
-  memory estimates, startup timeout), architecture notes, and agent guide, and added
-  curl, Python, JavaScript, playback, and voice-cloning examples.
+### Bug Fixes
 
-### Fixed
+- **cli**: Honor --config and DROVE_CONFIG when saving config
+  ([`36ad604`](https://github.com/cleanunicorn/drove/commit/36ad604c88164afe5682403b02709a3248247c39))
 
-- **cli**: `drove config KEY VALUE` and `drove init` now write to the file named by
-  `--config`; previously they always wrote to `~/.config/drove/config.toml`, replacing it
-  with the values from the `--config` file.
-- **config**: The `DROVE_CONFIG` environment variable now selects the config file, as
-  documented; it was previously ignored.
-- **integrate**: Naming a text-to-speech model now says it is a text-to-speech model
-  instead of calling it speech-to-text.
+drove config KEY VALUE and drove init always saved to ~/.config/drove/config.toml, even with
+  --config, overwriting the real file with the values loaded from the --config file. DROVE_CONFIG
+  was documented but never read. Resolve the config path once in config.py (--config, then
+  DROVE_CONFIG, then the default) and use it everywhere.
+
+Also name text-to-speech models correctly in drove integrate errors, and document text-to-speech
+  across the README, getting-started, CLI, configuration, architecture, and agent docs, with
+  examples.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 
 ## v0.8.1 (2026-10-17)

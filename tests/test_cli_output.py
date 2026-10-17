@@ -148,6 +148,44 @@ def test_status_offline_exit_and_watch_retry(monkeypatch: pytest.MonkeyPatch) ->
     _print_status("http://localhost:8080", watch=True)  # Does not exit the refresh loop.
 
 
+def _watch_status(monkeypatch: pytest.MonkeyPatch, *, terminal: bool) -> tuple[Mock, str]:
+    """Run `server status --watch` for two snapshots; return the clear mock and output."""
+    data = {
+        "server": {"uptime_seconds": 65, "listen": "0.0.0.0:8080"},
+        "models": [],
+        "requests": {"total": 0, "active": 0, "errors": 0},
+        "tokens": {"prompt": 0, "completion": 0, "total": 0},
+    }
+    clear = Mock()
+    stream = StringIO()
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: Mock(json=lambda: data))
+    monkeypatch.setattr("drove.cli.server.typer.clear", clear)
+    monkeypatch.setattr(
+        "drove.cli.server.time.sleep", Mock(side_effect=[None, KeyboardInterrupt()])
+    )
+    if terminal:
+        monkeypatch.setattr(
+            "drove.cli.server.console",
+            lambda: Console(file=stream, force_terminal=True, color_system=None),
+        )
+    result = CliRunner().invoke(app, ["server", "status", "--watch", "0.1"])
+    assert result.exit_code == 0
+    return clear, (stream.getvalue() if terminal else result.stdout)
+
+
+def test_status_watch_does_not_clear_redirected_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear, output = _watch_status(monkeypatch, terminal=False)
+    clear.assert_not_called()
+    assert output.count("running · up 1m") == 2  # two snapshots before the interrupt
+    assert "\x1b" not in output
+
+
+def test_status_watch_clears_terminal_each_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear, output = _watch_status(monkeypatch, terminal=True)
+    assert clear.call_count == 2
+    assert output.count("running · up 1m") == 2
+
+
 def test_download_report_preserves_names_and_resume_status(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -131,7 +131,7 @@ def status(
         try:
             while True:
                 if console().is_terminal:
-                    typer.clear()
+                    click.clear()
                 _print_status(base, watch=True, verbose=verbose)
                 time.sleep(watch)
         except KeyboardInterrupt:

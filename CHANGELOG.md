@@ -11,6 +11,11 @@
 - **cli**: Redesign inspection output and status reports
   ([`dea5750`](https://github.com/cleanunicorn/drove/commit/dea5750f5797a0f48e89c244e40f31f874cdd106))
 
+### Fixed
+
+- Fixed `drove server status --watch` crashing with an `AttributeError` on terminals
+  because it called a screen-clear helper that newer Typer releases no longer provide.
+
 
 ## v0.7.0 (2026-10-17)
 

@@ -9,6 +9,11 @@
   estimates. Added verbose diagnostic views and an option to reveal unset model parameters,
   with consistent formatting and plain single-value config output preserved.
 
+### Fixed
+
+- Fixed `drove server status --watch` crashing with an `AttributeError` on terminals
+  because it called a screen-clear helper that newer Typer releases no longer provide.
+
 
 ## v0.7.0 (2026-10-17)
 

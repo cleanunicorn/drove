@@ -159,7 +159,7 @@ def _watch_status(monkeypatch: pytest.MonkeyPatch, *, terminal: bool) -> tuple[M
     clear = Mock()
     stream = StringIO()
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: Mock(json=lambda: data))
-    monkeypatch.setattr("drove.cli.server.typer.clear", clear)
+    monkeypatch.setattr("drove.cli.server.click.clear", clear)
     monkeypatch.setattr(
         "drove.cli.server.time.sleep", Mock(side_effect=[None, KeyboardInterrupt()])
     )

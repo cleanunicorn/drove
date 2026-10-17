@@ -10,8 +10,9 @@ if TYPE_CHECKING:
 
 BACKEND_LLAMA = "llama"
 BACKEND_ASR = "asr"
+BACKEND_TTS = "tts"
 
-VALID_BACKENDS = frozenset({BACKEND_LLAMA, BACKEND_ASR})
+VALID_BACKENDS = frozenset({BACKEND_LLAMA, BACKEND_ASR, BACKEND_TTS})
 
 
 def detect_backend(model_path: Path, model_cfg: ModelConfig) -> str:
@@ -27,6 +28,8 @@ def detect_backend(model_path: Path, model_cfg: ModelConfig) -> str:
             valid = ", ".join(sorted(VALID_BACKENDS))
             raise ValueError(f"Unknown backend '{model_cfg.backend}'. Valid backends: {valid}")
         return backend
+    if model_path.suffix.lower() == ".tts":
+        return BACKEND_TTS
     if model_path.suffix.lower() == ".onnx":
         return BACKEND_ASR
     return BACKEND_LLAMA

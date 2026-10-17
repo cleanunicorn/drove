@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Added
+
+- Integrated Cathy’s four local speech engines with model registration, lazy worker startup, and an OpenAI-compatible `/v1/audio/speech` API.
+
 
 ## v0.6.0 (2026-10-13)
 

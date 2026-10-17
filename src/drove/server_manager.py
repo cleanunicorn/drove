@@ -21,7 +21,13 @@ import psutil
 if TYPE_CHECKING:
     from drove.model_config import ModelConfig
 
-from drove.backend import BACKEND_ASR, BACKEND_LLAMA, detect_backend, infer_asr_model_type
+from drove.backend import (
+    BACKEND_ASR,
+    BACKEND_LLAMA,
+    BACKEND_TTS,
+    detect_backend,
+    infer_asr_model_type,
+)
 from drove.config import Config
 from drove.gguf import uses_sliding_window_attention
 from drove.model_config import (
@@ -68,6 +74,12 @@ def _estimate_model_memory(model_path: Path) -> int:
     counted, so budgets should leave headroom.
     """
     try:
+        if model_path.suffix.lower() == ".tts":
+            cfg = load_model_config(model_path)
+            # Cached TTS weights live outside models_dir, so reserve an engine
+            # budget instead of estimating memory from the registration marker.
+            defaults = {"kokoro": 3072, "qwen": 4096, "chatterbox": 4096, "fish": 8192}
+            return (cfg.tts_memory_mb or defaults[cfg.tts_engine or "kokoro"]) * 1024**2
         if model_path.suffix.lower() == ".onnx":
             return sum(f.stat().st_size for f in model_path.parent.glob("*.onnx") if f.is_file())
         shard = _GGUF_SHARD_RE.match(model_path.name)
@@ -430,7 +442,9 @@ class ServerManager:
 
         port = _find_free_port()
         slot_save_path: Path | None = None
-        if backend == BACKEND_ASR:
+        if backend == BACKEND_TTS:
+            cmd = self._build_tts_command(model_name, model_path, model_cfg, port)
+        elif backend == BACKEND_ASR:
             cmd = self._build_asr_command(model_name, model_path, model_cfg, port)
         else:
             binary = self._config.llama_server_bin
@@ -577,6 +591,31 @@ class ServerManager:
                 merged = merged.model_copy(update={"swa_full": True})
         args.extend(merged.to_llama_args())
         return args
+
+    def _build_tts_command(
+        self, model_name: str, model_path: Path, model_cfg: ModelConfig, port: int
+    ) -> list[str]:
+        """Run bundled Cathy engines in their compatible Python environment."""
+        uv = shutil.which("uv")
+        if uv is None:
+            raise RuntimeError("Text-to-speech requires uv on PATH to manage Python 3.12 engines.")
+        runtime = Path(__file__).parent / "workers" / "tts_runtime"
+        engine = model_cfg.tts_engine or "kokoro"
+        # Cache environments outside the installed package; Drove's Python 3.14
+        # requirements must not leak into Cathy's Python 3.12 engine environments.
+        cmd = [
+            uv, "run", "--no-project", "--python", "3.12",
+            "--with-requirements", str(runtime / f"{engine}.txt"),
+            "python", str(runtime / "worker.py"), "--engine", engine,
+            "--model-name", model_name, "--host", self._config.llama_server_host,
+            "--port", str(port), "--device", model_cfg.tts_device or "auto",
+            "--voice", model_cfg.tts_voice or "female",
+        ]
+        if model_cfg.tts_language:
+            cmd.extend(["--language", model_cfg.tts_language])
+        if model_cfg.tts_max_chunk_chars:
+            cmd.extend(["--max-chunk-chars", str(model_cfg.tts_max_chunk_chars)])
+        return cmd
 
     def _build_asr_command(
         self, model_name: str, model_path: Path, model_cfg: ModelConfig, port: int

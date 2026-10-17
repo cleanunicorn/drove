@@ -14,3 +14,5 @@ This directory contains the in-repo documentation for `drove`.
 ## Documentation status
 
 The hosted docs site at `https://drove.dev/docs` is planned. Until then, these markdown docs are the canonical documentation source in this repository.
+
+- [Text-to-speech](text-to-speech.md) — Cathy engines and the OpenAI speech API.

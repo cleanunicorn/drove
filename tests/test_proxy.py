@@ -206,3 +206,36 @@ def test_proxy_forwards_multipart_body_intact(tmp_path: Path) -> None:
 async def aiter(items: list[bytes]):  # type: ignore[return]
     for item in items:
         yield item
+
+
+def test_proxy_forwards_speech_json_and_binary_audio_intact(tmp_path: Path) -> None:
+    import json
+
+    config = make_config(tmp_path)
+    app = create_app(config)
+    manager = app.state.manager
+    audio = b"RIFF\x00\xff\x80WAVE\x00\x01"
+    fake_response = MagicMock(spec=httpx.Response)
+    fake_response.status_code = 200
+    fake_response.headers = httpx.Headers({"content-type": "audio/wav"})
+    fake_response.aiter_raw = lambda: aiter([audio[:7], audio[7:]])
+    sent_requests: list[httpx.Request] = []
+
+    async def fake_send(request: httpx.Request, **kwargs: object) -> httpx.Response:
+        sent_requests.append(request)
+        return fake_response
+
+    body = {"model": "kokoro", "input": "Hello.", "voice": "alloy", "response_format": "wav"}
+    with (
+        patch.object(manager, "ensure_running", new_callable=AsyncMock) as ensure,
+        patch("httpx.AsyncClient.send", side_effect=fake_send),
+    ):
+        with TestClient(app) as client:
+            response = client.post("/v1/audio/speech", json=body)
+    ensure.assert_awaited_once_with("kokoro", claim=True)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/wav"
+    assert response.content == audio
+    assert len(sent_requests) == 1
+    assert sent_requests[0].url.path == "/v1/audio/speech"
+    assert json.loads(sent_requests[0].content) == body

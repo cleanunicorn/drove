@@ -8,7 +8,7 @@ from pathlib import Path
 
 from drove.model_config import resolve_model_alias
 
-_MODEL_EXTS = frozenset({".gguf", ".onnx", ".safetensors", ".bin", ".pt"})
+_MODEL_EXTS = frozenset({".gguf", ".onnx", ".safetensors", ".bin", ".pt", ".tts"})
 
 
 @dataclass(frozen=True)
@@ -107,6 +107,9 @@ class ModelStore:
         """
         subdir = self._dir / name
         if subdir.is_dir():
+            tts = sorted(subdir.glob("*.tts"))
+            if tts:
+                return tts[0]
             ggufs = sorted(subdir.rglob("*.gguf"))
             if ggufs:
                 return ggufs[0]
@@ -137,6 +140,7 @@ class ModelStore:
         total = sum(f.stat().st_size for f in files)
         ggufs = sorted(f for f in files if f.suffix.lower() == ".gguf")
         onnx = sorted(f for f in files if f.suffix.lower() == ".onnx")
-        primary = ggufs[0] if ggufs else onnx[0] if onnx else sorted(files)[0] if files else None
+        tts = sorted(f for f in files if f.suffix.lower() == ".tts")
+        primary = (tts or ggufs or onnx or sorted(files) or [None])[0]
         if primary:
             results.append(ModelEntry(name, primary, total))

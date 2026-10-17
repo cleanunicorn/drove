@@ -77,6 +77,13 @@ def _detect_capabilities(primary: Path) -> list[str]:
     download command auto-saves mmproj metadata and llama.cpp expects the
     file to live next to the primary model.
     """
+    if primary.suffix.lower() == ".tts":
+        return ["tts"]
+    try:
+        if load_model_config(primary).backend == "tts":
+            return ["tts"]
+    except Exception:
+        pass
     caps: list[str] = []
 
     # Vision: any mmproj-*.gguf file in the same directory, or mmproj set
@@ -111,6 +118,38 @@ def _detect_capabilities(primary: Path) -> list[str]:
 def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
     """Return (name, primary_path, total_bytes) for each model."""
     return [(e.name, e.primary, e.total_bytes) for e in ModelStore(models_dir).list()]
+
+
+@models_app.command("add-tts")
+def add_tts_model(
+    ctx: typer.Context,
+    name: Annotated[str, typer.Argument(help="Local model name, e.g. kokoro.")],
+    engine: Annotated[str, typer.Option(help="kokoro, qwen, chatterbox, or fish.")] = "kokoro",
+    voice: Annotated[str, typer.Option(help="Default voice or a local reference WAV.")] = "female",
+    device: Annotated[str, typer.Option(help="auto, cpu, cuda, or mps.")] = "auto",
+) -> None:
+    """Register a Cathy text-to-speech engine (weights are cached on first use)."""
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or name in {".", ".."}:
+        raise typer.BadParameter(
+            "Use a simple local name containing letters, digits, dots or dashes."
+        )
+    try:
+        cfg = ModelConfig.model_validate({
+            "backend": "tts", "tts_engine": engine, "tts_voice": voice, "tts_device": device,
+        })
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    models_dir = _models_dir(ctx)
+    directory = models_dir / name
+    if directory.exists() or (models_dir / f"{name}.gguf").exists():
+        raise typer.BadParameter(f"Model '{name}' already exists; use 'drove models config'.")
+    directory.mkdir(parents=True)
+    primary = directory / "model.tts"
+    primary.touch()
+    save_model_config(primary, cfg)
+    typer.echo(f"Registered {name} ({engine}). POST /v1/audio/speech with model='{name}'.")
 
 
 @models_app.command("list")

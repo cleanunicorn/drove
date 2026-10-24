@@ -1,0 +1,112 @@
+# Managing models
+
+[Docs](./README.md) / Managing models
+
+Download a model, find the name clients should use, and tune its runtime
+settings. Run [Getting started](./getting-started.md) first if drove is not
+installed.
+
+## Download and name a model
+
+```bash
+drove models download unsloth/Qwen3-8B-GGUF:Q4_K_M --name qwen
+```
+
+A download reference is `org/repo` or `org/repo:QUANT`. Without a quantization
+tag, repositories with several variants show a picker. Partial downloads
+resume; rerun the same command after an interrupted transfer. Sharded weights
+are kept together, and multimodal projectors are detected automatically.
+
+`--name qwen` gives the download a stable local name. Without `--name`, the name
+is derived from the repository and selected quantization, such as
+`unsloth/Qwen3-8B-GGUF:Q4_K_M`. Always check the result:
+
+```bash
+drove models list
+drove models info qwen
+```
+
+Use the exact `NAME` from the list as the API `model` value or chat argument.
+The server's `GET /v1/models` returns the same local names as `id` values.
+Repository aliases can resolve to downloaded variants, but explicit local names
+avoid ambiguity when you keep more than one quantization.
+
+Downloads live under `~/.local/share/drove/models/` by default. Set `models_dir`
+in the [global configuration](./configuration.md) to use another disk.
+
+## Inspect what is installed
+
+| Command | Use it to… |
+| --- | --- |
+| `drove models list` | See names, capabilities, size, and total disk use |
+| `drove models list -V` | Include storage paths and download origins |
+| `drove models info qwen` | Inspect capabilities, quantization, and explicit overrides |
+| `drove models info qwen -V` | Include local files and paths |
+| `drove models config qwen` | See effective settings and the source of each value |
+| `drove models config qwen --all` | Include unset model parameters |
+
+Capabilities include `vision`, `stt` (speech-to-text), and `tts`
+(text-to-speech). Listing or inspecting a model does not load it into memory.
+
+## Set runtime parameters
+
+Set an override for one model:
+
+```bash
+drove models config qwen ctx_size 8192
+drove models config qwen n_gpu_layers -1
+```
+
+Set a default shared by all models, then remove an individual override to
+inherit it:
+
+```bash
+drove models config --global ctx_size 16384
+drove models config qwen --unset ctx_size
+drove models config qwen
+```
+
+Effective values are resolved in this order, highest priority first:
+
+1. The model's sidecar TOML file.
+2. `_global.toml` in the models directory.
+3. Supported defaults in `config.toml` under `[llama_server]` (`n_gpu_layers`, `threads`).
+4. The backend's own defaults for unset parameters.
+
+A sidecar sits beside the primary model file with its extension changed to
+`.toml`; for example, `model.gguf` uses `model.toml`. Downloaded models live in
+directories, while legacy flat `qwen.gguf` files use a sibling `qwen.toml`.
+Prefer the CLI so you do not need to locate the primary file yourself. Changes to startup arguments
+apply the next time the backend starts; a running process keeps its current
+arguments. Stop and restart the proxy to apply them immediately.
+
+Only declared model keys are recognized; unknown TOML keys are ignored.
+For a llama-server flag drove does not expose, use `extra_args`:
+
+```bash
+drove models config qwen extra_args "--no-webui"
+```
+
+See [Configuration](./configuration.md#per-model-config) for the supported keys
+and [resource limits](./configuration.md#model-eviction) for memory budgeting.
+
+## Speech models
+
+- [Speech-to-text](./speech-to-text.md) uses ONNX exports and the `asr` extra.
+- [Text-to-speech](./text-to-speech.md) detects supported engines on download,
+  or registers them with `drove models add-tts` for first-use downloads.
+
+They share the proxy's idle timeout and eviction limits with text models.
+
+## Delete a model
+
+```bash
+drove models delete qwen
+```
+
+The command asks for confirmation before removing local model files and their
+configuration. `--yes` skips the prompt. Do not delete a model while it is
+serving requests; stop the proxy first. After changing your inventory, rerun
+`drove integrate <agent>` if you use a coding agent.
+
+[Docs](./README.md) · [Text and vision](./text-and-vision.md) · [Configuration](./configuration.md)

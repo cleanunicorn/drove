@@ -1,5 +1,7 @@
 # Text-to-speech
 
+[Docs](./README.md) / Text-to-speech
+
 Drove integrates Cathy's local Kokoro, Qwen3-TTS, Chatterbox-Nano, and Fish
 S1-mini engines, plus KittenTTS 2, behind the OpenAI speech API. Synthesis stays on your machine.
 Download weights ahead of time with `drove models download`, just as for GGUF
@@ -7,7 +9,13 @@ and ONNX models. Engine dependencies are installed on first use.
 Fish requires accepting its model license and authenticating Hugging Face
 downloads, as in Cathy.
 
+[Quick start](#quick-start) · [Examples](#examples) · [Lifecycle](#registration-and-lifecycle) ·
+[API fields](#api-contract) · [Voices](#voices) · [KittenTTS 2](#kittentts-2)
+
 ## Quick start
+
+[Install drove](./getting-started.md#1-install) and run `drove init` if you have
+not already. Text-to-speech does not require llama-server or the ASR extra.
 
 Install `uv` (it must be on `PATH` for the server) and `espeak-ng`, plus `ffmpeg`
 for compressed audio and speed conversion. Qwen also requires the `sox` system
@@ -18,23 +26,25 @@ environments.
 # First start installs the engine environment; give it time (see below)
 drove config startup_timeout_seconds 1800
 drove models download hexgrad/Kokoro-82M --name kokoro
-drove serve
+drove serve --host 127.0.0.1
 ```
 
+Leave the server running. In another terminal:
+
 ```bash
-curl http://localhost:8080/v1/audio/speech \
+curl http://127.0.0.1:8080/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"kokoro","input":"Hello from Drove.","voice":"alloy","response_format":"wav"}' \
   --output speech.wav
 ```
 
-The official OpenAI client works with the same base URL used for chat and
-transcription:
+Install `openai` in your client environment. The official client uses the same
+base URL as chat and transcription:
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="local")
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="local")
 with client.audio.speech.with_streaming_response.create(
     model="kokoro",
     input="Hello from Drove.",
@@ -56,19 +66,19 @@ downloaded in [Registration and lifecycle](#registration-and-lifecycle).
 
 ```bash
 # Kokoro preset, 20% faster (Kokoro changes speed natively, no ffmpeg needed)
-curl http://localhost:8080/v1/audio/speech \
+curl http://127.0.0.1:8080/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"kokoro","input":"Faster, please.","voice":"bm_george","speed":1.2,"response_format":"wav"}' \
   --output george.wav
 
 # Kokoro weighted blend of two voices
-curl http://localhost:8080/v1/audio/speech \
+curl http://127.0.0.1:8080/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"kokoro","input":"Two voices, one speaker.","voice":"af_heart:2,af_bella:1","response_format":"wav"}' \
   --output blend.wav
 
 # Qwen3-TTS named speaker
-curl http://localhost:8080/v1/audio/speech \
+curl http://127.0.0.1:8080/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"qwen-tts","input":"Hello, I am Vivian.","voice":"Vivian","response_format":"flac"}' \
   --output vivian.flac
@@ -79,7 +89,7 @@ curl http://localhost:8080/v1/audio/speech \
 Raw PCM is mono, signed 16-bit little-endian at 24 kHz:
 
 ```bash
-curl -s http://localhost:8080/v1/audio/speech \
+curl -s http://127.0.0.1:8080/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"kokoro","input":"Straight to the speakers.","voice":"female","response_format":"pcm"}' \
   | aplay -q -f S16_LE -r 24000 -c 1        # or: ffplay -nodisp -autoexit -f s16le -ar 24000 -ch_layout mono -
@@ -91,7 +101,7 @@ curl -s http://localhost:8080/v1/audio/speech \
 from pathlib import Path
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="drove")
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="drove")
 
 audio = client.audio.speech.create(
     model="kokoro",
@@ -108,7 +118,7 @@ Path("speech.wav").write_bytes(audio.content)
 import fs from "node:fs";
 import OpenAI from "openai";
 
-const client = new OpenAI({ baseURL: "http://localhost:8080/v1", apiKey: "drove" });
+const client = new OpenAI({ baseURL: "http://127.0.0.1:8080/v1", apiKey: "drove" });
 
 const audio = await client.audio.speech.create({
   model: "kokoro",
@@ -132,7 +142,7 @@ drove models add-tts narrator-fish --engine fish --voice /home/me/voices/narrato
 ```
 
 ```bash
-curl http://localhost:8080/v1/audio/speech \
+curl http://127.0.0.1:8080/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"narrator","input":"Chapter one.","voice":"alloy","response_format":"mp3"}' \
   --output chapter1.mp3
@@ -146,7 +156,7 @@ For a downloaded model, set the reference with
 Invalid requests return OpenAI-style JSON with HTTP 400:
 
 ```bash
-curl -s http://localhost:8080/v1/audio/speech \
+curl -s http://127.0.0.1:8080/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"kokoro","input":"Hi","voice":"alloy","stream_format":"sse"}'
 ```
@@ -302,7 +312,7 @@ drove serve
 ```
 
 ```bash
-curl http://localhost:8080/v1/audio/speech \
+curl http://127.0.0.1:8080/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"kitten","input":"[joyful] We won <laugh> I can (((hardly))) believe it!","voice":"Kiki","response_format":"wav"}' \
   --output kitten.wav
@@ -399,3 +409,5 @@ Drove preserves the model's `LICENSE.md` and `speaker/LICENSE` on download.
 The speaker embedding model has separate MIT terms, and auxiliary codec
 assets have their own upstream terms. The code license does not grant rights
 to all model weights.
+
+[Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)

@@ -33,6 +33,8 @@ _DROVE_ONLY_FIELDS = frozenset(
         "tts_language",
         "tts_max_chunk_chars",
         "tts_memory_mb",
+        "tts_normalize",
+        "tts_preset",
     }
 )
 
@@ -119,12 +121,14 @@ class ModelConfig(BaseModel):
     asr_model: str | None = None  # onnx-asr model type, e.g. "nemo-parakeet-tdt-0.6b-v3"
     asr_quantization: str | None = None  # e.g. "int8"
 
-    tts_engine: Literal["kokoro", "qwen", "chatterbox", "fish"] | None = None
+    tts_engine: Literal["kokoro", "qwen", "chatterbox", "fish", "kitten"] | None = None
     tts_voice: str | None = None
     tts_model_dir: str | None = None  # relative to the model sidecar, or absolute
     tts_device: Literal["auto", "cpu", "cuda", "mps"] | None = None
     tts_language: str | None = None
     tts_max_chunk_chars: int | None = Field(default=None, ge=150)
+    tts_normalize: bool | None = None  # Kitten: default false for multilingual safety
+    tts_preset: Literal["stable", "expressive"] | None = None
     tts_memory_mb: int | None = Field(default=None, gt=0)
 
     def to_llama_args(self) -> list[str]:

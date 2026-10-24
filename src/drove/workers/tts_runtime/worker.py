@@ -66,6 +66,8 @@ class CathyEngine:
         language: str | None = None,
         max_chunk_chars: int | None = None,
         model_dir: Path | None = None,
+        normalize: bool = False,
+        preset: str = "stable",
     ) -> None:
         self.engines = import_module(f"{__package__}.engines" if __package__ else "engines")
         torch = import_module("torch")
@@ -83,6 +85,10 @@ class CathyEngine:
             max_chunk_chars,
             model_dir,
         )
+
+        if name == "kitten":
+            self.engine.normalize = normalize
+            self.engine.preset = preset
 
     def _voice(self, voice: str) -> str:
         # These aliases select local voices; they do not replicate OpenAI voices.
@@ -122,6 +128,17 @@ class CathyEngine:
             if voice not in self.engines.QWEN_SPEAKERS:
                 raise ValueError("Unknown Qwen speaker; use a documented speaker or male/female.")
             return voice
+        if self.name == "kitten":
+            # A request may choose only enumerated built-ins. Reference paths
+            # come exclusively from startup config, never from API input.
+            if self.engine.reference is not None:
+                if voice != self.default_voice:
+                    raise ValueError("Use voice='alloy' for the configured reference voice.")
+                return voice
+            voice = self.engines.KITTEN_ALIASES.get(voice, voice)
+            if voice not in self.engine.model.available_voices:
+                raise ValueError("Unknown KittenTTS built-in voice.")
+            return voice
         # Only trusted local config may select a reference file on this server.
         if voice != self.default_voice:
             raise ValueError(
@@ -134,7 +151,7 @@ class CathyEngine:
         if self.name == "kokoro":
             self.engine.voice = self.engine._resolve(voice)
             self.engine.speed = speed
-        elif self.name == "qwen":
+        elif self.name in {"qwen", "kitten"}:
             self.engine.voice = voice
         np = import_module("numpy")
         chunks = [np.asarray(chunk).reshape(-1) for chunk in self.engine.paragraph(text)]
@@ -280,7 +297,9 @@ def create_tts_app(engine: SpeechEngine, model_name: str) -> FastAPI:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="drove local text-to-speech worker")
-    parser.add_argument("--engine", choices=("kokoro", "qwen", "chatterbox", "fish"), required=True)
+    parser.add_argument(
+        "--engine", choices=("kokoro", "qwen", "chatterbox", "fish", "kitten"), required=True
+    )
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, required=True)
@@ -289,6 +308,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--language")
     parser.add_argument("--max-chunk-chars", type=int)
+    parser.add_argument("--normalize", action="store_true")
+    parser.add_argument("--preset", choices=("stable", "expressive"), default="stable")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     engine = CathyEngine(
@@ -298,6 +319,8 @@ def main(argv: list[str] | None = None) -> None:
         args.language,
         args.max_chunk_chars,
         args.model_dir,
+        args.normalize,
+        args.preset,
     )
     app = create_tts_app(engine, args.model_name)
     import uvicorn

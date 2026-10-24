@@ -1,0 +1,8 @@
+# KittenTTS 2 runs separately from Drove and the Cathy engines.
+fastapi>=0.135.2
+uvicorn>=0.42.0
+kittenml==0.9.6
+numpy>=1.26
+soundfile>=0.14.0
+torch>=2.6.0,<2.9
+torchaudio>=2.6.0,<2.9

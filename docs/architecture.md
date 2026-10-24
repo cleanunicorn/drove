@@ -20,7 +20,7 @@ Client → FastAPI proxy (drove port)
 - `src/drove/backend.py` — picks the backend for a model (llama-server, ASR worker, or TTS worker)
 - `src/drove/workers/asr.py` — built-in ONNX speech-to-text worker
 - `src/drove/workers/tts_runtime/` — text-to-speech worker (`worker.py`), the Kokoro, Qwen3-TTS,
-  Chatterbox, and Fish engines (`engines.py`), and one pinned requirements file per engine
+  Chatterbox, Fish, and KittenTTS 2 engines (`engines.py`), and one pinned requirements file per engine
 - `src/drove/config.py` — global config loading + defaults
 - `src/drove/model_config.py` — per-model config parsing
 - `src/drove/cli/` — Typer CLI

@@ -125,7 +125,9 @@ def _iter_models(models_dir: Path) -> list[tuple[str, Path, int]]:
 def add_tts_model(
     ctx: typer.Context,
     name: Annotated[str, typer.Argument(help="Local model name, e.g. kokoro.")],
-    engine: Annotated[str, typer.Option(help="kokoro, qwen, chatterbox, or fish.")] = "kokoro",
+    engine: Annotated[
+        str, typer.Option(help="kokoro, qwen, chatterbox, fish, or kitten.")
+    ] = "kokoro",
     voice: Annotated[
         str | None, typer.Option(help="Default voice or reference WAV; inherits global settings.")
     ] = None,
@@ -543,6 +545,12 @@ def download_model(
         raise typer.Exit(0)
 
     _print_download_plan(plan, models_dir, statuses, verbose=verbose)
+    if plan.tts_engine == "kitten":
+        typer.echo(
+            "KittenTTS 2 weights: Stellon Labs Community License (not Apache 2.0). "
+            "Commercial use requires registration; revenue/funding limits and attribution apply.\n"
+            "https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md"
+        )
 
     if not yes and not all_complete:
         if has_existing:

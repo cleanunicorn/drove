@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Added
+
+- Added local KittenTTS 2 speech generation through the usual model download and speech API workflows, with built-in multilingual voices, configured voice cloning, expression controls, CPU support, and license guidance.
+
 
 ## v0.8.4 (2026-10-17)
 

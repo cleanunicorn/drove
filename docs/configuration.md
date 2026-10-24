@@ -39,7 +39,7 @@ stopped):
 The memory used by a model is estimated from its on-disk file size (all shards
 for sharded GGUF models, all `.onnx` files for speech-to-text models).
 Text-to-speech models reserve a fixed per-engine estimate instead — 3 GiB for
-Kokoro, 4 GiB for Qwen3-TTS and Chatterbox, 8 GiB for Fish — which the
+Kokoro, 4 GiB for Qwen3-TTS and Chatterbox, 8 GiB for Fish, 6 GiB for KittenTTS 2 — which the
 `tts_memory_mb` model key overrides. Context
 (KV cache) and runtime overhead are not counted, so leave some headroom below
 your real RAM/VRAM limit. A model whose estimate alone exceeds `max_memory` is
@@ -160,12 +160,14 @@ by hand or with `drove models config <name> <key> <value>` to change them.
 
 | Key | Meaning |
 |--|--|
-| `tts_engine` | `kokoro`, `qwen`, `chatterbox`, or `fish`. |
+| `tts_engine` | `kokoro`, `qwen`, `chatterbox`, `fish`, or `kitten`. |
 | `tts_voice` | Default voice: a preset (`af_heart`, `Ryan`, …), an alias (`male`, `female`, `british-male`, `british-female`), a Kokoro blend (`af_heart:2,af_bella:1`), or an absolute reference WAV path. Defaults to `female`. |
 | `tts_device` | `auto` (CUDA if available, else CPU), `cpu`, `cuda`, or `mps`. Defaults to `auto`. |
 | `tts_model_dir` | Directory with downloaded weights, relative to the sidecar or absolute. Unset means the Hugging Face cache. |
 | `tts_language` | Qwen3-TTS language, e.g. `English`. |
 | `tts_max_chunk_chars` | Maximum characters synthesized per chunk (at least 150). |
+| `tts_normalize` | KittenTTS 2 English text normalization. Defaults to false for multilingual text. |
+| `tts_preset` | KittenTTS 2 decoding: `stable` (default) or `expressive`. |
 | `tts_memory_mb` | Memory reserved against `max_memory` while the model is loaded. |
 
 ```toml

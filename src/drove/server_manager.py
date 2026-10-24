@@ -80,7 +80,13 @@ def _estimate_model_memory(model_path: Path, model_cfg: ModelConfig | None = Non
             cfg = model_cfg if model_cfg is not None else load_model_config(model_path)
             # Cached TTS weights live outside models_dir, so reserve an engine
             # budget instead of estimating memory from the registration marker.
-            defaults = {"kokoro": 3072, "qwen": 4096, "chatterbox": 4096, "fish": 8192}
+            defaults = {
+                "kokoro": 3072,
+                "qwen": 4096,
+                "chatterbox": 4096,
+                "fish": 8192,
+                "kitten": 6144,
+            }
             return (cfg.tts_memory_mb or defaults[cfg.tts_engine or "kokoro"]) * 1024**2
         if model_path.suffix.lower() == ".onnx":
             return sum(f.stat().st_size for f in model_path.parent.glob("*.onnx") if f.is_file())
@@ -688,6 +694,11 @@ class ServerManager:
             cmd.extend(["--language", model_cfg.tts_language])
         if model_cfg.tts_max_chunk_chars:
             cmd.extend(["--max-chunk-chars", str(model_cfg.tts_max_chunk_chars)])
+        if engine == "kitten":
+            if model_cfg.tts_normalize:
+                cmd.append("--normalize")
+            if model_cfg.tts_preset:
+                cmd.extend(["--preset", model_cfg.tts_preset])
         return cmd
 
     def _build_asr_command(

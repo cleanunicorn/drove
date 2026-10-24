@@ -74,6 +74,7 @@ def test_registration_does_not_overwrite_models(tmp_path: Path) -> None:
     "key,value",
     [
         ("tts_engine", "bad"),
+        ("tts_preset", "--bad"),
         ("tts_device", "--bad"),
         ("tts_memory_mb", "0"),
         ("tts_max_chunk_chars", "100"),
@@ -106,7 +107,7 @@ def test_tts_memory_accounts_for_cached_weights(tmp_path: Path) -> None:
     assert _estimate_model_memory(primary) == 5120 * 1024**2
 
 
-@pytest.mark.parametrize("engine", ["kokoro", "qwen", "chatterbox", "fish"])
+@pytest.mark.parametrize("engine", ["kokoro", "qwen", "chatterbox", "fish", "kitten"])
 def test_each_engine_uses_an_isolated_compatible_environment(tmp_path: Path, engine: str) -> None:
     primary = register(tmp_path, engine=engine)
     manager = ServerManager(Config(models_dir=tmp_path))
@@ -127,9 +128,10 @@ def test_missing_uv_has_actionable_error(tmp_path: Path) -> None:
         manager._build_tts_command("kokoro", primary, load_model_config(primary), 9000)
 
 
-async def test_lazy_start_and_managed_shutdown_use_tts_worker(tmp_path: Path) -> None:
+@pytest.mark.parametrize("engine", ["kokoro", "kitten"])
+async def test_lazy_start_and_managed_shutdown_use_tts_worker(tmp_path: Path, engine: str) -> None:
     primary = register(tmp_path)
-    save_model_config(primary, ModelConfig(backend="tts", tts_engine="kokoro"))
+    save_model_config(primary, ModelConfig(backend="tts", tts_engine=engine))
     save_global_model_config(
         tmp_path, ModelConfig(tts_device="cpu", tts_voice="af_sarah", tts_memory_mb=512)
     )

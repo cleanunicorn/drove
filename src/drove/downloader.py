@@ -430,8 +430,8 @@ def _validate_relative_path(value: str) -> None:
 
 
 def _resolve_tts_download(repo_id: str, engine: str, name: str | None) -> DownloadPlan:
-    if engine not in {"kokoro", "qwen", "chatterbox", "fish"}:
-        raise ValueError("Unknown TTS engine. Use kokoro, qwen, chatterbox, or fish.")
+    if engine not in {"kokoro", "qwen", "chatterbox", "fish", "kitten"}:
+        raise ValueError("Unknown TTS engine. Use kokoro, qwen, chatterbox, fish, or kitten.")
     local_name = name or repo_id
     _validate_relative_path(local_name)
     info = HfApi().model_info(repo_id, files_metadata=True)
@@ -441,6 +441,19 @@ def _resolve_tts_download(repo_id: str, engine: str, name: str | None) -> Downlo
         path = file.rfilename
         _validate_relative_path(path)
         suffix = PurePosixPath(path).suffix.lower()
+        if engine == "kitten":
+            # The pinned Python runtime uses packed LM weights. C++ bundles,
+            # alternate LM packings and optional decoders add unused gigabytes.
+            if path.startswith(("cpp/", "decoders/")):
+                continue
+            if path.startswith("lm/") and suffix in _TTS_WEIGHT_EXTS:
+                if path != "lm/model-ternary.safetensors":
+                    continue
+            # Built-in references and speaker embeddings are needed at runtime;
+            # keep license/attribution files alongside the downloaded weights.
+            if suffix in {".wav", ".npy", ".npz", ".md"} or PurePosixPath(path).name == "LICENSE":
+                support[path] = file.size or 0
+                continue
         if suffix in _TTS_WEIGHT_EXTS:
             weights[path] = file.size or 0
         elif suffix in _TTS_SUPPORT_EXTS:

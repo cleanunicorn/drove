@@ -1,7 +1,7 @@
 # Text-to-speech
 
 Drove integrates Cathy's local Kokoro, Qwen3-TTS, Chatterbox-Nano, and Fish
-S1-mini engines behind the OpenAI speech API. Synthesis stays on your machine.
+S1-mini engines, plus KittenTTS 2, behind the OpenAI speech API. Synthesis stays on your machine.
 Download weights ahead of time with `drove models download`, just as for GGUF
 and ONNX models. Engine dependencies are installed on first use.
 Fish requires accepting its model license and authenticating Hugging Face
@@ -164,11 +164,12 @@ drove models download hexgrad/Kokoro-82M --name kokoro
 drove models download Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice --name qwen-tts
 drove models download ResembleAI/chatterbox-nano --name chatterbox
 drove models download fishaudio/s1-mini --name fish
+drove models download KittenML/kitten-tts-2 --name kitten
 ```
 
 The standard confirmation, progress display, resume behavior, and `--yes`
 option apply. Complete files are skipped on subsequent runs. TTS quantization
-tags are not supported; use `--tts-engine kokoro|qwen|chatterbox|fish` for an
+tags are not supported; use `--tts-engine kokoro|qwen|chatterbox|fish|kitten` for an
 otherwise compatible repository that is not in the automatic detection table.
 
 Downloads keep the repository's directory structure, including voice packs and
@@ -201,7 +202,7 @@ Drove starts the worker on the first request and applies its existing health
 checks, concurrent request claims, idle shutdown, model-count limit, and LRU
 eviction. Prompt/KV caches apply only to llama models. Memory budgeting uses
 estimated reservations for loaded engines: 3 GiB for Kokoro, 4 GiB for
-Qwen/Chatterbox, and 8 GiB for Fish. Set `tts_memory_mb` for your hardware;
+Qwen/Chatterbox, 6 GiB for Kitten, and 8 GiB for Fish. Set `tts_memory_mb` for your hardware;
 these are estimates rather than hard allocation limits.
 
 Cathy's PyTorch cap requires Python 3.12; Drove continues to use Python 3.14.
@@ -211,6 +212,12 @@ separate Cathy installation is needed. First-use dependency and model downloads
 can exceed Drove's default 300-second startup timeout. Increase
 `startup_timeout_seconds` in global configuration before first use, for example
 to `1800`. Later starts reuse the caches.
+
+Speech responses are buffered until synthesis finishes. The proxy allows
+`600` seconds for speech synthesis by default, separately from worker startup.
+For longer CPU jobs, increase it with `drove config speech_timeout_seconds 3600`
+and increase your client's request timeout as needed. Internal text chunking
+does not send partial responses or reset this wait.
 
 ## API contract
 
@@ -281,3 +288,114 @@ tts_device = "auto"
 Cathy's ebook parsing, chapter/checkpoint handling, and audiobook CLI remain
 separate. The integrated engine source retains its MIT license in
 `src/drove/workers/tts_runtime/CATHY-LICENSE`.
+
+## KittenTTS 2
+
+Powered by KittenML. Drove uses the `kittenml==0.9.6` Python/PyTorch backend
+in an isolated Python 3.12 environment. A dedicated GPU is optional:
+
+```bash
+drove config startup_timeout_seconds 1800
+drove models download KittenML/kitten-tts-2 --name kitten
+drove models config kitten tts_device cpu
+drove serve
+```
+
+```bash
+curl http://localhost:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"kitten","input":"[joyful] We won <laugh> I can (((hardly))) believe it!","voice":"Kiki","response_format":"wav"}' \
+  --output kitten.wav
+```
+
+`alloy` selects the configured default (`female` → `Bella`); `male` selects
+`Bruno`. Built-in names such as `Luna`, `WeatherPresenterCheerful`, `German`,
+`SpanishAbuela`, and `JapaneseTrainConductor` select voices directly. The
+current model's `voices/voices.json` lists available names and transcripts;
+voices determine the accent/language, rather than `tts_language` (Qwen only).
+The model card currently lists named voices in 16 languages. Drove passes
+Unicode text unchanged and defaults `tts_normalize` to false so the upstream
+English normalizer cannot rewrite non-English dates and numbers. For English
+number/currency expansion, set `drove models config kitten tts_normalize true`.
+
+Expression markup in `input` reaches the model unchanged: one leading emotion
+(`[angry]`, `[contemplative]`, `[excited]`, `[joyful]`, `[mundane]`, `[nervous]`,
+`[sad]`, `[stern]`, `[surprised]`, `[tender]`), inline events (`<gasp>`,
+`<giggle>`, `<growl>`, `<gulp>`, `<laugh>`, `<pause>`, `<scoff>`, `<sigh>`,
+`<sob>`, `<um>`), and `(((emphasis)))`. These controls are beta and do not
+promise a particular delivery. Set `tts_preset` to `expressive` for more
+variation or `stable` (default) for stability. Unrecognized tags may be spoken.
+Free-form API `instructions` remain unsupported. Kitten handles sentence
+chunking internally; `tts_max_chunk_chars` overrides its native chunk target.
+Responses are buffered and speeds other than 1 require ffmpeg.
+
+For cloning, choose a trusted local WAV (5–30 seconds of one speaker) in the
+sidecar and supply a UTF-8 transcript with the same stem, e.g. `speaker.txt`:
+
+```bash
+drove models config kitten tts_voice /home/me/voices/speaker.wav
+# speaker.txt contains the words actually spoken in speaker.wav
+```
+
+Clients then send `voice: "alloy"`. Drove requires the transcript rather than
+implicitly downloading/running Whisper; missing or empty transcripts prevent
+startup. Requests cannot choose arbitrary reference paths or switch to a
+built-in voice while a cloned reference is configured. Register a separate
+model to use built-in voices at the same time.
+
+### CPU, memory, and downloads
+
+The Python backend works on CPU, but upstream's real-time CPU claim concerns
+its separate optimized C++ runtime. Drove does not integrate that runtime or
+the MLX/vLLM backends, and does not promise real-time CPU synthesis. Latency
+depends on processor, thread count, text length, and reference voice; initial
+startup includes dependency downloads, unpacking weights, and codec loading.
+Plan for at least about **6 GiB of available RAM** per worker (upstream
+Python guidance), with additional headroom for startup and concurrent system
+work. Packed storage is unpacked to bf16 in memory. Drove reserves 6144 MiB
+for eviction decisions; `tts_memory_mb` adjusts this estimate and is not a
+hard memory limit.
+
+A CPU smoke run on 2026-10-24 used Linux x86_64 on an AMD EPYC 9V74
+virtual machine (5 visible vCPUs), four PyTorch threads, PyTorch 2.8.0+cpu,
+`kittenml` 0.9.6, packed weights, and the default decoder:
+
+| Request | Generated audio | Synthesis time | Wall time / audio time |
+| --- | --- | --- | --- |
+| English, Bella: “Hello from Drove.” | 2.08 s | 17.23 s | 8.29× |
+| German: “Guten Morgen.” | 1.32 s | 11.54 s | 8.75× |
+| Kiki with emotion/event/emphasis markup | 2.44 s | 18.35 s | 7.52× |
+
+Peak process RSS was **5865 MiB (5.73 GiB)** across these requests and a
+cloning request using a built-in recording plus its transcript. Model loading
+took 33.73 seconds, including first-use codec setup; these timings exclude
+primary model and Python dependency downloads. These are short smoke samples,
+not a throughput or speech-quality guarantee; longer inputs and other CPUs may
+need more memory or time. All four flows returned valid 24 kHz WAV through
+the speech worker API without a GPU. A separate run through the Drove proxy
+confirmed lazy worker startup, a successful speech response, and automatic
+worker shutdown after the configured idle timeout.
+
+The model download keeps the default packed language model (about 954 MB),
+speaker weights, tokenizer files, built-in WAV/NPZ references, and license
+files. It excludes full/emb4 weights, optional decoders, and C++ bundles.
+The pinned runtime also downloads ResembleAI's Chatterbox S3 codec weights
+into the shared Hugging Face cache on first startup. Downloading the primary
+model alone does not make the first startup offline-ready. Dependency and
+auxiliary codec caches remain after deleting the registered model.
+
+### License
+
+The **weights** use the
+[Stellon Labs Community License](https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md),
+not the Python package's Apache 2.0 license. Research and non-commercial use
+are allowed under its terms. Commercial use requires registration with
+Stellon Labs; the commercial grant terminates above USD $1 million annual
+revenue or total cumulative funding, including affiliates, and requires a
+separate license. Distribution or products/services using the model require
+providing the agreement, retaining its prescribed Notice text, and displaying
+“Powered by KittenML”; consult the full agreement for all restrictions.
+Drove preserves the model's `LICENSE.md` and `speaker/LICENSE` on download.
+The speaker embedding model has separate MIT terms, and auxiliary codec
+assets have their own upstream terms. The code license does not grant rights
+to all model weights.

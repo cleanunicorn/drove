@@ -1,0 +1,7 @@
+This Stellon Labs Model is licensed under the Stellon Labs Community License, Copyright ©  Stellon Labs Inc. All Rights Reserved
+
+Powered by KittenML
+
+KittenTTS 2 model terms: https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md
+The model weights are downloaded separately; their agreement is preserved as LICENSE.md.
+The kittenml Python package is separately licensed under Apache 2.0.

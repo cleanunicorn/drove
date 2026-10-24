@@ -176,7 +176,7 @@ def _config_set(conf: Config, key: str, raw_value: str) -> Config:
         raise ValueError(f"Unknown key '{key}'.\nTop-level keys: {top}\nNested keys: {nested}")
 
     coerced = _coerce(fields[key].annotation, raw_value)
-    return conf.model_copy(update={key: coerced})
+    return Config.model_validate({**conf.model_dump(), key: coerced})
 
 
 def _coerce(annotation: object, raw: str) -> object:

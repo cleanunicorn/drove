@@ -12,10 +12,15 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-ENGINES = ("kokoro", "qwen", "chatterbox", "fish")
+ENGINES = ("kokoro", "qwen", "chatterbox", "fish", "kitten")
 
 # Top-level module each engine extra provides, to detect availability.
-ENGINE_IMPORTS = {"qwen": "qwen_tts", "chatterbox": "chatterbox", "fish": "fish_speech"}
+ENGINE_IMPORTS = {
+    "qwen": "qwen_tts",
+    "chatterbox": "chatterbox",
+    "fish": "fish_speech",
+    "kitten": "kittenml",
+}
 
 
 def engine_available(name: str) -> bool:
@@ -609,6 +614,70 @@ class FishEngine(ClonedVoiceMixin):
         yield from _synthesize(self, text, synth)
 
 
+KITTEN_ALIASES = {
+    "male": "Bruno",
+    "female": "Bella",
+    "british-male": "Hugo",
+    "british-female": "Rosie",
+}
+
+
+class KittenEngine:
+    """KittenTTS 2 Python backend: presets or a trusted reference WAV.
+
+    Delegate long-text splitting and expression handling to Kitten so emotion
+    tags and emphasis spans survive intact across chunk boundaries.
+    """
+
+    def __init__(
+        self,
+        voice: str,
+        speed: float,
+        device: str,
+        language: str | None = None,
+        model_dir: Path | None = None,
+    ) -> None:
+        _quiet()
+        KittenTTS = import_module("kittenml").KittenTTS
+        self.reference: str | None = None
+        self.reference_text: str | None = None
+        self.voice = KITTEN_ALIASES.get(voice, voice)
+        self.normalize = False
+        self.preset = "stable"
+        # Only this constructor consumes trusted local configuration paths.
+        if Path(voice).suffix.lower() == ".wav":
+            clip = Path(voice).expanduser()
+            transcript = clip.with_suffix(".txt")
+            if not clip.is_file():
+                raise ValueError("KittenTTS reference WAV does not exist.")
+            if not transcript.is_file() or not (text := transcript.read_text().strip()):
+                raise ValueError(
+                    "KittenTTS reference requires a nonempty companion .txt transcript."
+                )
+            self.reference = str(clip.resolve())
+            self.reference_text = text
+        self.model = KittenTTS(
+            str(model_dir) if model_dir is not None else "KittenML/kitten-tts-2",
+            device=device,
+        )
+        self.sr = self.model.sample_rate
+        if self.reference is None and self.voice not in self.model.available_voices:
+            raise ValueError("Unknown KittenTTS built-in voice in model configuration.")
+
+    def paragraph(self, text: str) -> Any:
+        options: dict[str, Any] = {
+            "normalize": self.normalize,
+            "preset": self.preset,
+        }
+        if hasattr(self, "chunk_limit"):
+            options["advanced"] = {"chunk_chars": self.chunk_limit}
+        if self.reference is not None:
+            options.update(reference=self.reference, reference_text=self.reference_text)
+        else:
+            options["voice"] = self.voice
+        yield _hushed(self.model.generate, text, **options)
+
+
 def build_engine(
     name: str,
     voice: str | None,
@@ -623,6 +692,7 @@ def build_engine(
         "qwen": QwenEngine,
         "chatterbox": ChatterboxEngine,
         "fish": FishEngine,
+        "kitten": KittenEngine,
     }
     engine: Any = classes[name](voice or "male", speed, device, language, model_dir)
     if max_chunk_chars is not None:

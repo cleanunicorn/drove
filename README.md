@@ -78,7 +78,7 @@ The model loads on that first request and unloads itself after the idle timeout.
 | 📝 **Text generation** | Any GGUF model from HuggingFace, served through `llama-server` with per-model flags. |
 | 👁️ **Vision / multimodal** | Multimodal GGUF models with an `mmproj` projector are auto-detected and wired up on download. |
 | 🎙️ **Speech-to-text** | Serve ASR models like NVIDIA Parakeet through the built-in ONNX worker — no extra binary. |
-| 🔊 **Text-to-speech** | Synthesize speech locally with Kokoro, Qwen3-TTS, Chatterbox, or Fish S1-mini through `/v1/audio/speech`. |
+| 🔊 **Text-to-speech** | Synthesize speech locally with Kokoro, Qwen3-TTS, Chatterbox, Fish S1-mini, or KittenTTS 2 through `/v1/audio/speech`. |
 | 💬 **Terminal chat** | A TUI chat client with sessions and themes, pointed at drove *or* any remote OpenAI-compatible API. |
 | 🔍 **Observability** | Optional request/response logging with a TUI browser and a web UI for debugging. |
 | 📊 **Live status** | `drove server status` shows loaded models, memory, tokens/sec, and time-to-first-token. |
@@ -195,7 +195,7 @@ Speech-to-text support comes from the `asr` extra (included by `make install`; a
 
 <br>
 
-drove synthesizes speech locally through the OpenAI `/v1/audio/speech` API, using the bundled Kokoro, Qwen3-TTS, Chatterbox-Nano, and Fish S1-mini engines (adapted from Cathy). Download the weights like any other model; the engine is detected from the repo:
+drove synthesizes speech locally through the OpenAI `/v1/audio/speech` API, using the bundled Kokoro, Qwen3-TTS, Chatterbox-Nano, and Fish S1-mini engines (adapted from Cathy), plus KittenTTS 2. Download the weights like any other model; the engine is detected from the repo:
 
 ```bash
 drove models download hexgrad/Kokoro-82M --name kokoro
@@ -429,7 +429,7 @@ After installing, make sure the `uv` tool bin directory is on your `PATH` (heed 
 | Memory-budget eviction | yes | partial | no |
 | OpenAI-compatible API | yes | yes | yes (server) |
 | Speech-to-text models | yes (built-in worker) | no | no |
-| Text-to-speech models | yes (Kokoro, Qwen3-TTS, Chatterbox, Fish) | no | no |
+| Text-to-speech models | yes (Kokoro, Qwen3-TTS, Chatterbox, Fish, KittenTTS 2) | no | no |
 | Direct llama-server flags | yes (per model) | partial | yes |
 | HuggingFace download + quant picker | yes | partial | manual |
 | Request/response observability | built-in | no | no |

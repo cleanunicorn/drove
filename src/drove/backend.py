@@ -66,6 +66,7 @@ _TTS_REPOS = {
     "qwen/qwen3-tts-12hz-0.6b-customvoice": "qwen",
     "resembleai/chatterbox-nano": "chatterbox",
     "fishaudio/s1-mini": "fish",
+    "kittenml/kitten-tts-2": "kitten",
 }
 
 

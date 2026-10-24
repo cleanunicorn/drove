@@ -14,6 +14,7 @@ models_dir = "~/.local/share/drove/models"
 listen_host = "0.0.0.0"
 listen_port = 8080
 llama_server_bin = "llama-server"
+speech_timeout_seconds = 600
 idle_timeout_seconds = 1800
 max_loaded_models = 1
 max_memory = "24GB"
@@ -23,6 +24,23 @@ prompt_cache_ttl_seconds = 3600
 [llama_server]
 n_gpu_layers = -1
 ```
+
+## Speech request timeout
+
+`speech_timeout_seconds` controls how long the proxy waits for a response from
+`/v1/audio/speech` (default `600`, a positive number of seconds). Speech workers
+buffer the complete audio before responding, so long inputs on CPU can take
+more than five minutes. Increase the read timeout for longer jobs:
+
+```bash
+drove config speech_timeout_seconds 3600
+```
+
+The setting also accepts `DROVE_SPEECH_TIMEOUT_SECONDS` and applies to new
+requests after config reload. Clients need their own timeout long enough to
+wait for synthesis. `startup_timeout_seconds` separately controls waiting for
+the worker to become healthy. Other endpoints retain their 300-second read
+timeout; connection, write, and pool timeouts also remain 300 seconds.
 
 ## Model eviction
 
@@ -39,7 +57,7 @@ stopped):
 The memory used by a model is estimated from its on-disk file size (all shards
 for sharded GGUF models, all `.onnx` files for speech-to-text models).
 Text-to-speech models reserve a fixed per-engine estimate instead — 3 GiB for
-Kokoro, 4 GiB for Qwen3-TTS and Chatterbox, 8 GiB for Fish — which the
+Kokoro, 4 GiB for Qwen3-TTS and Chatterbox, 8 GiB for Fish, 6 GiB for KittenTTS 2 — which the
 `tts_memory_mb` model key overrides. Context
 (KV cache) and runtime overhead are not counted, so leave some headroom below
 your real RAM/VRAM limit. A model whose estimate alone exceeds `max_memory` is
@@ -160,12 +178,14 @@ by hand or with `drove models config <name> <key> <value>` to change them.
 
 | Key | Meaning |
 |--|--|
-| `tts_engine` | `kokoro`, `qwen`, `chatterbox`, or `fish`. |
+| `tts_engine` | `kokoro`, `qwen`, `chatterbox`, `fish`, or `kitten`. |
 | `tts_voice` | Default voice: a preset (`af_heart`, `Ryan`, …), an alias (`male`, `female`, `british-male`, `british-female`), a Kokoro blend (`af_heart:2,af_bella:1`), or an absolute reference WAV path. Defaults to `female`. |
 | `tts_device` | `auto` (CUDA if available, else CPU), `cpu`, `cuda`, or `mps`. Defaults to `auto`. |
 | `tts_model_dir` | Directory with downloaded weights, relative to the sidecar or absolute. Unset means the Hugging Face cache. |
 | `tts_language` | Qwen3-TTS language, e.g. `English`. |
 | `tts_max_chunk_chars` | Maximum characters synthesized per chunk (at least 150). |
+| `tts_normalize` | KittenTTS 2 English text normalization. Defaults to false for multilingual text. |
+| `tts_preset` | KittenTTS 2 decoding: `stable` (default) or `expressive`. |
 | `tts_memory_mb` | Memory reserved against `max_memory` while the model is loaded. |
 
 ```toml

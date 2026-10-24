@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -240,6 +241,86 @@ def test_proxy_forwards_speech_json_and_binary_audio_intact(tmp_path: Path) -> N
     assert len(sent_requests) == 1
     assert sent_requests[0].url.path == "/v1/audio/speech"
     assert json.loads(sent_requests[0].content) == body
+
+
+@pytest.mark.parametrize(
+    "endpoint,status",
+    [("audio/speech", 200), ("audio/transcriptions", 502), ("chat/completions", 502)],
+)
+async def test_speech_can_outlast_the_regular_upstream_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, endpoint: str, status: int
+) -> None:
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    config = make_config(tmp_path)
+    app = create_app(config)
+    # Use the current config, as a running proxy does after a config reload.
+    app.state.config = config.model_copy(update={"speech_timeout_seconds": 2})
+    # Scale the ordinary 300-second timeout down to keep this network test fast.
+    app.state.client.timeout = httpx.Timeout(0.05)
+    requests: list[httpx.Request] = []
+
+    async def capture(request: httpx.Request) -> None:
+        requests.append(request)
+
+    app.state.client.event_hooks["request"] = [capture]
+    audio = b"RIFF-slow-speech"
+    finished = asyncio.Event()
+
+    async def worker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            headers = await reader.readuntil(b"\r\n\r\n")
+            length = next(
+                int(line.split(b":", 1)[1])
+                for line in headers.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            )
+            await reader.readexactly(length)
+            # A buffered engine sends no response headers until synthesis finishes.
+            await asyncio.sleep(0.15)
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\n"
+                + f"Content-Length: {len(audio)}\r\nConnection: close\r\n\r\n".encode()
+                + audio
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            finished.set()
+
+    server = await asyncio.start_server(worker, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    manager = app.state.manager
+    try:
+        with (
+            patch.object(manager, "ensure_running", new_callable=AsyncMock) as ensure,
+            patch.object(manager, "base_url_for", return_value=f"http://127.0.0.1:{port}"),
+            patch.object(manager, "request_finished") as release,
+        ):
+            async with (
+                server,
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://proxy"
+                ) as client,
+            ):
+                response = await client.post(f"/v1/{endpoint}", json={"model": "kitten"})
+            ensure.assert_awaited_once_with("kitten", claim=True)
+            release.assert_called_once_with("kitten")
+        assert response.status_code == status
+        assert requests[0].extensions["timeout"] == {
+            "connect": 0.05,
+            "read": 2 if endpoint == "audio/speech" else 0.05,
+            "write": 0.05,
+            "pool": 0.05,
+        }
+        if status == 200:
+            assert response.content == audio
+        else:
+            assert "ReadTimeout" in response.json()["detail"]
+        assert app.state.stats.active_requests == 0
+    finally:
+        await app.state.client.aclose()
+        await asyncio.wait_for(finished.wait(), timeout=2)
 
 
 @pytest.mark.parametrize("endpoint", ["transcriptions", "speech"])

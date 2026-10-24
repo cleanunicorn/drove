@@ -382,6 +382,19 @@ def test_config_set_writes_to_drove_config_env(
     assert default_config.read_text() == original
 
 
+@pytest.mark.parametrize("value", ["3600", "0", "-1"])
+def test_config_set_validates_speech_timeout(default_config: Path, value: str) -> None:
+    original = default_config.read_text()
+    result = CliRunner().invoke(app, ["config", "speech_timeout_seconds", "--", value])
+    if value == "3600":
+        assert result.exit_code == 0, result.output
+        assert "speech_timeout_seconds = 3600" in default_config.read_text()
+    else:
+        assert result.exit_code == 1, result.output
+        assert "greater than 0" in result.output
+        assert default_config.read_text() == original
+
+
 def test_config_set_without_custom_file_refuses(tmp_path: Path, default_config: Path) -> None:
     missing = tmp_path / "missing.toml"
     original = default_config.read_text()

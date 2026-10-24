@@ -14,6 +14,7 @@ models_dir = "~/.local/share/drove/models"
 listen_host = "0.0.0.0"
 listen_port = 8080
 llama_server_bin = "llama-server"
+speech_timeout_seconds = 600
 idle_timeout_seconds = 1800
 max_loaded_models = 1
 max_memory = "24GB"
@@ -23,6 +24,23 @@ prompt_cache_ttl_seconds = 3600
 [llama_server]
 n_gpu_layers = -1
 ```
+
+## Speech request timeout
+
+`speech_timeout_seconds` controls how long the proxy waits for a response from
+`/v1/audio/speech` (default `600`, a positive number of seconds). Speech workers
+buffer the complete audio before responding, so long inputs on CPU can take
+more than five minutes. Increase the read timeout for longer jobs:
+
+```bash
+drove config speech_timeout_seconds 3600
+```
+
+The setting also accepts `DROVE_SPEECH_TIMEOUT_SECONDS` and applies to new
+requests after config reload. Clients need their own timeout long enough to
+wait for synthesis. `startup_timeout_seconds` separately controls waiting for
+the worker to become healthy. Other endpoints retain their 300-second read
+timeout; connection, write, and pool timeouts also remain 300 seconds.
 
 ## Model eviction
 

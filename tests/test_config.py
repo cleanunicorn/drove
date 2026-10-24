@@ -16,24 +16,34 @@ def test_defaults(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "nonexistent.toml")
     assert cfg.listen_port == 8080
     assert cfg.idle_timeout_seconds == 1800
+    assert cfg.speech_timeout_seconds == 600
     assert cfg.llama_server_bin == "llama-server"
 
 
 def test_toml_overrides_defaults(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
-    cfg_file.write_bytes(tomli_w.dumps({"listen_port": 9090, "idle_timeout_seconds": 600}).encode())
+    cfg_file.write_bytes(
+        tomli_w.dumps(
+            {"listen_port": 9090, "idle_timeout_seconds": 600, "speech_timeout_seconds": 900}
+        ).encode()
+    )
     cfg = load_config(cfg_file)
     assert cfg.listen_port == 9090
     assert cfg.idle_timeout_seconds == 600
+    assert cfg.speech_timeout_seconds == 900
 
 
 def test_env_var_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     cfg_file = tmp_path / "config.toml"
-    cfg_file.write_bytes(tomli_w.dumps({"listen_port": 9090}).encode())
+    cfg_file.write_bytes(
+        tomli_w.dumps({"listen_port": 9090, "speech_timeout_seconds": 900}).encode()
+    )
     monkeypatch.setenv("DROVE_LISTEN_PORT", "7777")
+    monkeypatch.setenv("DROVE_SPEECH_TIMEOUT_SECONDS", "1200")
     cfg = load_config(cfg_file)
     assert cfg.listen_port == 7777
+    assert cfg.speech_timeout_seconds == 1200
 
 
 def test_models_dir_expands_home(tmp_path: Path) -> None:
@@ -47,11 +57,20 @@ def test_models_dir_expands_home(tmp_path: Path) -> None:
 def test_save_and_reload(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
     cfg = load_config(tmp_path / "nonexistent.toml")
-    cfg = cfg.model_copy(update={"listen_port": 1234})
+    cfg = cfg.model_copy(update={"listen_port": 1234, "speech_timeout_seconds": 2400})
     cfg.save(cfg_file)
 
     reloaded = load_config(cfg_file)
     assert reloaded.listen_port == 1234
+    assert reloaded.speech_timeout_seconds == 2400
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_speech_timeout_must_be_positive(tmp_path: Path, value: int) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_bytes(tomli_w.dumps({"speech_timeout_seconds": value}).encode())
+    with pytest.raises(ValidationError, match="speech_timeout_seconds"):
+        load_config(cfg_file)
 
 
 @pytest.mark.parametrize(

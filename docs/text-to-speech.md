@@ -213,6 +213,12 @@ can exceed Drove's default 300-second startup timeout. Increase
 `startup_timeout_seconds` in global configuration before first use, for example
 to `1800`. Later starts reuse the caches.
 
+Speech responses are buffered until synthesis finishes. The proxy allows
+`600` seconds for speech synthesis by default, separately from worker startup.
+For longer CPU jobs, increase it with `drove config speech_timeout_seconds 3600`
+and increase your client's request timeout as needed. Internal text chunking
+does not send partial responses or reset this wait.
+
 ## API contract
 
 `POST /v1/audio/speech` accepts JSON:

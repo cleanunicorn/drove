@@ -239,12 +239,22 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 )
 
             try:
+                timeout = client.timeout
+                if path == "v1/audio/speech":
+                    # Speech workers buffer synthesis before sending any headers.
+                    timeout = httpx.Timeout(
+                        connect=timeout.connect,
+                        read=current_config.speech_timeout_seconds,
+                        write=timeout.write,
+                        pool=timeout.pool,
+                    )
                 upstream = client.build_request(
                     method=request.method,
                     url=f"{manager.base_url_for(resolved_model)}/{path}",
                     params=request.query_params,
                     headers=headers,
                     content=body,
+                    timeout=timeout,
                 )
                 upstream_started = time.monotonic()
                 resp = await client.send(upstream, stream=True)

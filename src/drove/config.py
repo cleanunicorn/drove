@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -93,6 +93,7 @@ class Config(BaseSettings):
     allowed_tools: list[str] = []
     llama_server_bin: str = "llama-server"
     startup_timeout_seconds: int = 300  # max wait for llama-server to become healthy
+    speech_timeout_seconds: int = Field(default=600, gt=0)  # read timeout for buffered speech
     idle_timeout_seconds: int = 1800  # 30 minutes
     max_loaded_models: int = 1
     max_memory: str = "0"  # combined memory budget for loaded models, e.g. "24GB"; "0" = unlimited
@@ -148,6 +149,7 @@ class Config(BaseSettings):
             "allowed_tools": self.allowed_tools,
             "llama_server_bin": self.llama_server_bin,
             "startup_timeout_seconds": self.startup_timeout_seconds,
+            "speech_timeout_seconds": self.speech_timeout_seconds,
             "idle_timeout_seconds": self.idle_timeout_seconds,
             "max_loaded_models": self.max_loaded_models,
             "max_memory": self.max_memory,

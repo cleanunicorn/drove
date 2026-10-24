@@ -1,22 +1,17 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Added
-
-- Added local KittenTTS 2 speech generation through the usual model download and speech API workflows, with built-in multilingual voices, configured voice cloning, expression controls, CPU support, and license guidance.
-
-### Fixed
-
-- Allowed buffered speech generation to run beyond five minutes with a configurable speech read timeout, defaulting to 10 minutes.
-
-
-## v0.8.4 (2026-10-17)
+## v0.9.0 (2026-10-24)
 
 ### Bug Fixes
 
 - **stats**: Capture audio usage in server status
   ([`d3c3702`](https://github.com/cleanunicorn/drove/commit/d3c3702b1447d0e7ab98713cafe50e927cc27782))
+
+### Features
+
+- **tts**: Add local KittenTTS 2 speech generation
+  ([`5690ea3`](https://github.com/cleanunicorn/drove/commit/5690ea307327392c0302819171f3ecd1e965520b))
 
 
 ## v0.8.3 (2026-10-17)

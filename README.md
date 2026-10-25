@@ -35,13 +35,16 @@ freeing resources.
 
 ## Quickstart
 
-You need [uv](https://docs.astral.sh/uv/) and, for this text example,
+You need Git, Make, and, for this text example,
 [`llama-server`](https://github.com/ggml-org/llama.cpp/tree/master/tools/server)
-on your `PATH`. drove requires Python 3.14 or later; uv can download it.
+on your `PATH`. `make install` bootstraps [uv](https://docs.astral.sh/uv/) if needed
+and uses it to install Python 3.14 and drove, including speech-to-text dependencies.
 Downloads and first model loads can take several minutes.
 
 ```bash
-uv tool install --python 3.14 'drove[asr] @ git+https://github.com/cleanunicorn/drove'
+git clone https://github.com/cleanunicorn/drove.git
+cd drove
+make install
 drove init
 drove models download unsloth/Qwen3-8B-GGUF:Q4_K_M --name qwen
 ```
@@ -71,7 +74,7 @@ loaded state, size and capabilities. Inside chat, `/model` saves the current
 conversation and starts a new one with another model. See
 [Terminal chat](./docs/text-and-vision.md#terminal-chat) for navigation and remote endpoints.
 
-For installation alternatives, SDK setup, and checks at each step, follow
+For installation details, SDK setup, and checks at each step, follow
 [Getting started](./docs/getting-started.md).
 
 Set a preferred model with `drove config default_model "qwen"` after initialization.

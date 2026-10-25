@@ -14,15 +14,17 @@ the same drove port as chat completions; the `model` form field picks the model.
 
 ## Install
 
-Install drove with the `asr` extra using the GitHub distribution:
+Clone the repository and install drove with speech-to-text support:
 
 ```bash
-uv tool install --python 3.14 'drove[asr] @ git+https://github.com/cleanunicorn/drove'
+git clone https://github.com/cleanunicorn/drove.git
+cd drove
+make install
 drove init
 ```
 
-From a checkout, `make install` includes ASR by default. If drove is already
-installed without ASR, rerun the uv install command with `--force`.
+`make install` bootstraps uv if needed and includes ASR by default. If drove is
+already installed without ASR, rerun `make install` from your checkout.
 No `llama-server` binary is needed for transcription.
 
 `ffmpeg` is recommended (but not required) so the worker can accept compressed

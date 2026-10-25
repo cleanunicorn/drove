@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Changed
+
+- Updated installation instructions to clone the repository and run `make install`.
+- Required agents to start each task in a separate Git worktree under `/tmp`.
+
 
 ## v0.11.0 (2026-10-25)
 

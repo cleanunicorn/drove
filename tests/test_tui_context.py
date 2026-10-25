@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 from textual.widgets import Label
 
@@ -223,6 +224,29 @@ async def test_stopped_reply_clears_the_meter(tmp_path, monkeypatch):
             while app.is_generating:
                 await pilot.pause()
         assert not meter(app).has_class("visible")
+
+
+async def test_failed_reply_clears_the_meter(tmp_path, monkeypatch):
+    known_size(monkeypatch, 1000)
+    app = chat_app(tmp_path)
+    calls = 0
+
+    async def stream(messages):
+        nonlocal calls
+        calls += 1
+        yield {"kind": "usage", "usage": usage(300 * calls, 0)}
+        if calls == 2:
+            raise httpx.ReadError("connection lost")
+
+    monkeypatch.setattr(app, "_stream_chat", stream)
+    async with app.run_test() as pilot:
+        await reply(app, pilot)
+        assert meter(app).tooltip == "300 / 1,000 tokens"
+        await reply(app, pilot, "again")
+        assert app.query("Message.error")
+        # The usage reported before the failure no longer describes the history.
+        assert not meter(app).has_class("visible")
+        assert "Context: Not reported" in app._details_text()
 
 
 @pytest.mark.parametrize("command", ["/new", "/clear"])

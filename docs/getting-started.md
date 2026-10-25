@@ -64,6 +64,9 @@ drove models list
 
 The list should contain `qwen`. `--name` sets the local name you will use in
 chat and API requests; `:Q4_K_M` selects a quantization without a picker.
+Without `:QUANT`, repositories with several variants open an arrow-key picker
+with sizes, local download status and advisory RAM estimates. Enter selects;
+Esc or Ctrl+C cancels. Scripts can use `:QUANT` or `--yes` to skip it.
 For other models, use the exact name printed by `drove models list`.
 See [Managing models](./models.md) for naming, downloads, and tuning.
 

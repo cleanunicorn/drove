@@ -64,12 +64,13 @@ wheels = [
 
 [[package]]
 name = "drove"
-version = "0.7.0"
+version = "0.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx", extra = ["http2"] },
     { name = "huggingface-hub" },
+    { name = "markdown-it-py", extra = ["linkify"] },
     { name = "psutil" },
     { name = "pydantic-settings" },
     { name = "python-multipart" },
@@ -99,6 +100,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.135.2" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28.1" },
     { name = "huggingface-hub", specifier = ">=1.7.2" },
+    { name = "markdown-it-py", extras = ["linkify"], specifier = ">=4.0.0" },
     { name = "onnx-asr", extras = ["cpu"], marker = "extra == 'asr'", specifier = ">=0.11.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pydantic-settings", specifier = ">=2.13.1" },

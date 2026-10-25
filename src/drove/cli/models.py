@@ -2,15 +2,36 @@
 
 from __future__ import annotations
 
+import shlex
+from dataclasses import dataclass
+from os.path import abspath
 from pathlib import Path
+from shlex import quote
+from stat import S_ISDIR, S_ISLNK
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.text import Text
 
-from drove.cli.output import console, fields, heading, hint, section, table
+from drove.cli.output import (
+    confirm_action,
+    console,
+    error,
+    fields,
+    heading,
+    hint,
+    info,
+    section,
+    success,
+    table,
+    unknown,
+    warning,
+)
 
 if TYPE_CHECKING:
+    from rich.console import Console
+
+    from drove.cli.quant_picker import QuantCandidate
     from drove.downloader import DownloadPlan, FileStatus
 
 from drove.model_config import (
@@ -66,7 +87,10 @@ def _find_model(models_dir: Path, name: str) -> Path:
     try:
         return ModelStore(models_dir).resolve(name)
     except FileNotFoundError:
-        typer.echo(f"Model '{name}' not found.", err=True)
+        error(
+            unknown("model", name, (entry.name for entry in ModelStore(models_dir).list())),
+            next_step="List models: drove models list",
+        )
         raise typer.Exit(1)
 
 
@@ -157,11 +181,20 @@ def add_tts_model(
     directory = models_dir / name
     if directory.exists() or (models_dir / f"{name}.gguf").exists():
         raise typer.BadParameter(f"Model '{name}' already exists; use 'drove models config'.")
-    directory.mkdir(parents=True)
     primary = directory / "model.tts"
-    save_model_config(primary, cfg)
-    primary.touch()
-    typer.echo(f"Registered {name} ({engine}). POST /v1/audio/speech with model='{name}'.")
+    try:
+        directory.mkdir(parents=True)
+        save_model_config(primary, cfg)
+        primary.touch()
+    except OSError as exc:
+        error(
+            f"Could not finish registering '{name}': {exc}",
+            next_step="Check the model directory and permissions.",
+        )
+        raise typer.Exit(1) from exc
+    success(
+        f"Registered {name} ({engine}).", next_step=f"POST /v1/audio/speech with model='{name}'."
+    )
 
 
 @models_app.command("list")
@@ -269,6 +302,92 @@ def model_info(
     hint(out, "See effective settings and sources: drove models config <name>")
 
 
+@dataclass(frozen=True)
+class _DeletionPreview:
+    root: Path
+    external_config: Path | None
+    files: tuple[tuple[Path, int, bool], ...]
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(size for _, size, _ in self.files)
+
+
+def _deletion_preview(models_dir: Path, root: Path) -> _DeletionPreview:
+    """Inventory precisely the targets we remove, without following symlinks."""
+    base = models_dir.resolve()
+    if ".." in root.parts:
+        raise ValueError("Deletion target cannot contain parent traversal.")
+    root = Path(abspath(root))
+    if root == base or not root.parent.resolve().is_relative_to(base):
+        raise ValueError("Deletion target must be a model inside the models directory.")
+    entries: list[tuple[Path, int, bool]] = []
+
+    def collect(path: Path) -> None:
+        info = path.lstat()
+        if S_ISDIR(info.st_mode):
+            for child in sorted(path.iterdir()):
+                collect(child)
+        else:
+            entries.append((path, info.st_size, S_ISLNK(info.st_mode)))
+
+    collect(root)
+    candidate = root.with_name(root.name + ".toml") if root.is_dir() else root.with_suffix(".toml")
+    external: Path | None = None
+    if candidate.exists() or candidate.is_symlink():
+        if candidate.is_dir() and not candidate.is_symlink():
+            raise ValueError(f"Expected a sidecar file, found a directory: {candidate}")
+        collect(candidate)
+        external = candidate
+    return _DeletionPreview(root, external, tuple(entries))
+
+
+def _loaded_warning(ctx: typer.Context, models_dir: Path, root: Path) -> str:
+    """Best-effort snapshot; malformed or unreachable status is never 'unloaded'."""
+    import httpx
+
+    config = ctx.obj["config"]
+    host = config.listen_host.strip("[]")
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        response = httpx.get(f"http://{host}:{config.listen_port}/status", timeout=2.0)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            raise ValueError("Invalid status")
+        store = ModelStore(models_dir)
+        matched: list[str] = []
+        resolved_root = root.resolve()
+        recursive = root.is_dir() and not root.is_symlink()
+        for model in data["models"]:
+            if not isinstance(model, dict) or not isinstance(model.get("name"), str):
+                raise ValueError("Invalid model status")
+            candidate = store.find_root(model["name"])
+            if candidate is None:
+                continue
+            resolved_candidate = candidate.resolve()
+            affected = resolved_candidate == resolved_root or (
+                recursive and resolved_candidate.is_relative_to(resolved_root)
+            )
+            if affected:
+                active = model.get("active_requests")
+                requests = (
+                    f" ({active} active requests)"
+                    if type(active) is int and active >= 0
+                    else " (active requests unknown)"
+                )
+                matched.append(model["name"] + requests)
+        if matched:
+            return (
+                "Warning: currently loaded: " + ", ".join(matched) + ". Deletion does not stop it."
+            )
+        return "Not currently loaded (server status snapshot)."
+    except httpx.HTTPError, ValueError, OSError:
+        return "Warning: loaded status unknown; server status could not be checked."
+
+
 @models_app.command("delete")
 def delete_model(
     ctx: typer.Context,
@@ -278,30 +397,63 @@ def delete_model(
     """Delete a model and its config."""
     import shutil
 
-    models_dir = _models_dir(ctx)
+    models_dir = Path(abspath(_models_dir(ctx)))
     root = _model_root(models_dir, name)
-
     if root is None:
-        typer.echo(f"Model '{name}' not found.", err=True)
+        error(
+            unknown("model", name, (entry.name for entry in ModelStore(models_dir).list())),
+            next_step="List models: drove models list",
+        )
         raise typer.Exit(1)
+    try:
+        preview = _deletion_preview(models_dir, root)
+    except (OSError, ValueError) as exc:
+        error(f"Cannot prepare deletion: {exc}")
+        raise typer.Exit(1) from None
 
-    target_str = f"{root}/"
-
+    root = preview.root
+    out = console()
+    heading(out, "Delete model", name)
+    fields(
+        out,
+        [
+            ("Target", root),
+            ("Files", len(preview.files)),
+            (
+                "Estimated space",
+                f"{_fmt_size(preview.total_bytes)} ({preview.total_bytes:,} bytes)",
+            ),
+        ],
+    )
+    listing = table("REMOVE", "BYTES")
+    for path, size, is_link in preview.files:
+        label = str(path.relative_to(models_dir)) + (" (symlink only)" if is_link else "")
+        listing.add_row(Text(label), f"{size:,}")
+    out.print(listing)
+    configs = [
+        str(path.relative_to(models_dir)) for path, _, _ in preview.files if path.suffix == ".toml"
+    ]
+    fields(out, [("Sidecar config", ", ".join(configs) if configs else "none present")])
+    hint(out, "Space is estimated; open files and hard links may delay or reduce reclaimed space.")
     if not yes:
-        typer.confirm(f"Delete model '{name}' at {target_str}?", abort=True)
+        out.print(Text(_loaded_warning(ctx, models_dir, root), style="yellow"))
+        confirm_action(out, f"Delete model '{name}' and the listed files?")
 
-    if root.is_dir():
-        shutil.rmtree(root)
-    else:
-        # Legacy: single file without directory
-        root.unlink()
-    typer.echo(f"Deleted {target_str}")
-
-    # Remove sidecar config if present (stored next to the root, not inside it)
-    cfg_path = models_dir / f"{name}.toml"
-    if cfg_path.exists():
-        cfg_path.unlink()
-        typer.echo(f"Deleted config {cfg_path}")
+    try:
+        if root.is_symlink() or not root.is_dir():
+            root.unlink()
+        else:
+            shutil.rmtree(root)
+        if preview.external_config is not None:
+            preview.external_config.unlink()
+    except OSError as exc:
+        error(
+            f"Could not finish deleting '{name}': {exc}",
+            next_step="Check remaining files and permissions before retrying.",
+        )
+        raise typer.Exit(1) from exc
+    detail = f" and config {preview.external_config}" if preview.external_config is not None else ""
+    success(f"Deleted {root}{detail}.", next_step="List remaining models: drove models list")
 
 
 def _fmt_size(b: int) -> str:
@@ -310,90 +462,61 @@ def _fmt_size(b: int) -> str:
     return f"{b / 1_048_576:.1f} MB"
 
 
-def _prompt_quant_choice(quants: dict[str, int]) -> str | None:
-    """Show a numbered menu of quants and return the chosen tag, or None for 'all'."""
-    tags = list(quants.keys())
-    typer.echo("Multiple quantizations available:")
-    typer.echo("")
-    width = max(len(t) for t in tags)
-    for i, tag in enumerate(tags, start=1):
-        typer.echo(f"  {i:>2}) {tag:<{width}}  {_fmt_size(quants[tag]):>10}")
-    total = sum(quants.values())
-    typer.echo(f"   a) {'all':<{width}}  {_fmt_size(total):>10}")
-    typer.echo("")
+def _prompt_quant_choice(candidates: list[QuantCandidate], theme: str) -> str | None:
+    """Run only on a terminal; None is cancellation, not the all choice."""
+    import sys
 
-    valid = {str(i) for i in range(1, len(tags) + 1)} | {"a"}
-    while True:
-        raw = typer.prompt(f"Select quantization [1-{len(tags)}/a]").strip().lower()
-        if raw in valid:
-            break
-        typer.echo(f"Invalid choice '{raw}'.")
+    from drove.cli.quant_picker import QuantPicker, available_memory
 
-    if raw == "a":
-        return None
-    return tags[int(raw) - 1]
-
-
-def _apply_quant_selection(
-    plan: DownloadPlan, chosen: str, filtered: dict[str, int], name_override: str | None
-) -> str | None:
-    """Narrow *plan* to the files of the chosen quant variant, in place.
-
-    Returns *chosen* on success, or None when no files matched (the plan is
-    left untouched).
-    """
-    from drove.downloader import infer_local_name, is_sharded
-
-    if not filtered:
-        return None
-    plan.files = filtered
-    plan.sharded = is_sharded(list(filtered.keys()))
-    if name_override is None:
-        plan.local_name = infer_local_name(plan.repo_id, list(filtered.keys()), chosen)
-    return chosen
-
-
-def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str | None:
-    """Offer the quant-variant menu for *plan* and apply the choice in place.
-
-    ONNX (ASR) repos carry variants as filename infixes (model.int8.onnx) and
-    resolve to the default variant, so choices come from the full pre-filter
-    set kept on ``plan.onnx_files``; GGUF repos carry tags in filenames and
-    resolve unfiltered. Returns the chosen quant tag, or None when the user
-    keeps the default / all files (or only one variant exists).
-    """
-    from drove.downloader import (
-        available_onnx_quants,
-        available_quants,
-        filter_by_quant,
-        filter_onnx_quant,
-    )
-
-    if plan.is_tts:
-        return None
-    if plan.is_asr:
-        variants = available_onnx_quants(plan.onnx_files)
-        if len(variants) < 2:
-            return None
-        chosen = _prompt_quant_choice(variants)
-        typer.echo(f"Selected: {chosen or 'all variants'}")
-        if chosen is None:
-            plan.files = dict(plan.onnx_files)
-            return None
-        if chosen == "default":
-            return None
-        return _apply_quant_selection(
-            plan, chosen, filter_onnx_quant(plan.onnx_files, chosen), name_override
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        typer.echo(
+            "Choose a quantization with :QUANT, or pass --yes when not using a terminal.",
+            err=True,
         )
+        raise typer.Exit(1)
+    try:
+        return QuantPicker(candidates, available_memory(), theme).run()
+    except KeyboardInterrupt, EOFError:
+        return None
 
-    quants = available_quants(plan.files)
-    if len(quants) < 2:
+
+def _select_quant_variant(
+    plan: DownloadPlan,
+    name_override: str | None,
+    models_dir: Path,
+    theme: str = "textual-dark",
+) -> str | None:
+    """Apply a selected preview only after confirmation; preserve scripted defaults."""
+    from drove.cli.quant_picker import ALL_VARIANTS, build_candidates
+
+    candidates = build_candidates(plan, name_override, models_dir)
+    if not candidates:
         return None
-    chosen = _prompt_quant_choice(quants)
-    typer.echo(f"Selected: {chosen or 'all quantizations'}")
+    chosen = _prompt_quant_choice(candidates, theme)
     if chosen is None:
-        return None
-    return _apply_quant_selection(plan, chosen, filter_by_quant(plan.files, chosen), name_override)
+        info("Download cancelled. No files were downloaded.")
+        raise typer.Exit(0)
+    selected = next(candidate for candidate in candidates if candidate.tag == chosen)
+    plan.files = selected.plan.files
+    plan.local_name = selected.plan.local_name
+    plan.sharded = selected.plan.sharded
+    info(f"Selected: {'all variants' if chosen == ALL_VARIANTS else chosen}")
+    return selected.quant
+
+
+def _download_remaining(
+    plan: DownloadPlan, statuses: dict[str, tuple[FileStatus, int]]
+) -> tuple[int, int]:
+    from drove.downloader import FileStatus
+
+    remaining = complete = 0
+    for fname, size in {**plan.files, **plan.mmproj_files, **plan.extra_files}.items():
+        status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
+        if status == FileStatus.COMPLETE:
+            complete += 1
+        else:
+            remaining += max(0, size - local_size)
+    return remaining, complete
 
 
 def _print_download_plan(
@@ -402,11 +525,35 @@ def _print_download_plan(
     statuses: dict[str, tuple[FileStatus, int]] | None = None,
     *,
     verbose: bool = False,
-) -> None:
+) -> Console:
     from drove.downloader import FileStatus
 
     out = console()
     heading(out, "Download", plan.repo_id)
+    if verbose:
+        for title, files in [
+            ("Model files", plan.files),
+            ("Multimodal projection (vision)", plan.mmproj_files),
+            ("Support files", plan.extra_files),
+        ]:
+            if not files:
+                continue
+            section(out, title)
+            listing = table("FILE", "SIZE", "STATUS")
+            listing.columns[1].justify = "right"
+            for fname, size in files.items():
+                label = "pending"
+                if statuses is not None:
+                    status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
+                    if status == FileStatus.COMPLETE:
+                        label = "complete"
+                    elif status == FileStatus.INCOMPLETE:
+                        pct = local_size * 100 // size if size else 0
+                        label = f"{pct}% local"
+                listing.add_row(Text(fname), _fmt_size(size), label)
+            out.print(listing)
+    else:
+        hint(out, "Use --verbose to inspect every file and resume state.")
     total_files = len(plan.files) + len(plan.mmproj_files) + len(plan.extra_files)
     fields(
         out,
@@ -417,45 +564,12 @@ def _print_download_plan(
         ],
     )
     if statuses is not None:
-        all_files = {**plan.files, **plan.mmproj_files, **plan.extra_files}
-        remaining = 0
-        complete = 0
-        for fname, size in all_files.items():
-            status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
-            if status == FileStatus.COMPLETE:
-                complete += 1
-            else:
-                remaining += max(0, size - local_size)
+        remaining, complete = _download_remaining(plan, statuses)
         fields(
             out,
             [("To download", f"~{_fmt_size(remaining)} · {complete}/{total_files} files complete")],
         )
-    if not verbose:
-        hint(out, "Use --verbose to inspect every file and resume state.")
-        out.print()
-        return
-    for title, files in [
-        ("Model files", plan.files),
-        ("Multimodal projection (vision)", plan.mmproj_files),
-        ("Support files", plan.extra_files),
-    ]:
-        if not files:
-            continue
-        section(out, title)
-        listing = table("FILE", "SIZE", "STATUS")
-        listing.columns[1].justify = "right"
-        for fname, size in files.items():
-            label = "pending"
-            if statuses is not None:
-                status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
-                if status == FileStatus.COMPLETE:
-                    label = "complete"
-                elif status == FileStatus.INCOMPLETE:
-                    pct = local_size * 100 // size if size else 0
-                    label = f"{pct}% local"
-            listing.add_row(Text(fname), _fmt_size(size), label)
-        out.print(listing)
-    out.print()
+    return out
 
 
 @models_app.command("download")
@@ -486,6 +600,16 @@ def download_model(
         str | None,
         typer.Option(help="TTS engine for a compatible repo (auto-detected for known models)."),
     ] = None,
+    repair_config: Annotated[
+        bool,
+        typer.Option(
+            "--repair-config",
+            help=(
+                "Retry download metadata and fill missing inferred settings "
+                "without replacing custom values."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Download a model from HuggingFace Hub.
 
@@ -516,74 +640,149 @@ def download_model(
     models_dir = _models_dir(ctx)
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    typer.echo(f"Resolving {model_ref} ...")
+    info(f"Resolving {model_ref} ...")
     try:
         if tts_engine is None:
             plan = resolve_download(model_ref, name_override=name)
         else:
             plan = resolve_download(model_ref, name_override=name, tts_engine=tts_engine)
-    except ValueError as e:
-        typer.echo(str(e), err=True)
+    except (ValueError, OSError) as e:
+        error(str(e))
         raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"Failed to resolve repo: {e}", err=True)
+        error(
+            f"Failed to resolve repo: {e}",
+            next_step="Check the repository reference and network connection.",
+        )
         raise typer.Exit(1)
 
     _, quant = parse_model_ref(model_ref)
     if quant is None and not yes:
-        quant = _select_quant_variant(plan, name)
+        quant = _select_quant_variant(plan, name, models_dir, ctx.obj["config"].tui_theme)
 
     statuses = plan.check_local_files(models_dir)
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
     all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
 
-    if all_complete and not plan.is_tts:
-        typer.echo(
-            f"Model '{plan.local_name}' is already fully downloaded "
-            f"at {plan.destination(models_dir)}."
-        )
+    if all_complete and not plan.is_tts and not repair_config:
+        _download_summary(plan, models_dir, existing=True)
         raise typer.Exit(0)
 
-    _print_download_plan(plan, models_dir, statuses, verbose=verbose)
     if plan.tts_engine == "kitten":
-        typer.echo(
+        warning(
             "KittenTTS 2 weights: Stellon Labs Community License (not Apache 2.0). "
             "Commercial use requires registration; revenue/funding limits and attribution apply.\n"
             "https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md"
         )
 
+    out = _print_download_plan(plan, models_dir, statuses, verbose=verbose)
     if not yes and not all_complete:
-        if has_existing:
-            typer.confirm("Some files already exist. Resume download?", abort=True)
-        else:
-            typer.confirm("Proceed with download?", abort=True)
+        remaining, _ = _download_remaining(plan, statuses)
+        action = "Resume download of" if has_existing else "Download"
+        confirm_action(out, f"{action} approximately {_fmt_size(remaining)}?")
 
-    def progress(current: int, total: int, filename: str) -> None:
-        typer.echo(f"  [{current}/{total}] {filename}")
+    from drove.cli.download_progress import DownloadDisplay
 
+    display = DownloadDisplay(plan.total_bytes)
     try:
-        primary = plan.execute(models_dir, progress_cb=progress)
+        with display:
+            primary = plan.execute(models_dir, event_cb=display.update)
+        display.stage = "configuration"
+        _finish_download(plan, primary, quant, missing_only=repair_config)
+        _download_summary(plan, models_dir)
+    except KeyboardInterrupt:
+        retry = _download_retry_command(
+            plan,
+            quant,
+            name,
+            tts_engine,
+            repair_config=repair_config or display.stage == "configuration",
+            config_path=ctx.obj.get("config_path"),
+        )
+        typer.echo("Download interrupted. Completed files were kept.", err=True)
+        typer.echo("Cached partial data will be reused where supported by Hugging Face.", err=True)
+        typer.echo(f"Resume: {retry}", err=True)
+        if _retry_needs_all_choice(plan):
+            typer.echo("Choose all variants again when prompted.", err=True)
+        raise typer.Exit(130) from None
     except Exception as e:
-        typer.echo(f"Download failed: {e}", err=True)
-        raise typer.Exit(1)
+        retry = _download_retry_command(
+            plan,
+            quant,
+            name,
+            tts_engine,
+            repair_config=repair_config or display.stage == "configuration",
+            config_path=ctx.obj.get("config_path"),
+        )
+        if display.stage == "configuration":
+            message = "Files downloaded, but model configuration failed"
+        else:
+            message = f"Download failed for {display.filename or plan.repo_id}"
+        error(f"{message}: {e}")
+        typer.echo(
+            "Completed files were kept; cached partial data resumes where supported.", err=True
+        )
+        typer.echo(f"Retry: {retry}", err=True)
+        if _retry_needs_all_choice(plan):
+            typer.echo("Choose all variants again when prompted.", err=True)
+        if display.stage == "configuration":
+            typer.echo(
+                "Inspect configuration: "
+                + _drove_command(ctx.obj.get("config_path"), "models", "config", plan.local_name),
+                err=True,
+            )
+        raise typer.Exit(1) from None
 
-    # Save download metadata to sidecar TOML
+
+def _drove_command(config_path: Path | None, *arguments: str) -> str:
+    args = ["drove"]
+    if config_path is not None:
+        args.extend(["--config", str(config_path)])
+    return shlex.join([*args, *arguments])
+
+
+def _download_retry_command(
+    plan: DownloadPlan,
+    quant: str | None,
+    name: str | None,
+    tts_engine: str | None,
+    *,
+    repair_config: bool = False,
+    config_path: Path | None = None,
+) -> str:
+    ref = f"{plan.repo_id}:{quant}" if quant else plan.repo_id
+    args = ["models", "download", ref]
+    if name is not None:
+        args.extend(["--name", name])
+    if tts_engine is not None:
+        args.extend(["--tts-engine", tts_engine])
+    if repair_config:
+        args.append("--repair-config")
+    # ONNX --yes resolves the default variant, not all variants. Keep the
+    # picker for that case instead of silently changing the recovery scope.
+    if not _retry_needs_all_choice(plan):
+        args.append("--yes")
+    return _drove_command(config_path, *args)
+
+
+def _retry_needs_all_choice(plan: DownloadPlan) -> bool:
+    from drove.downloader import available_onnx_quants
+
+    return (
+        plan.is_asr
+        and plan.files == plan.onnx_files
+        and len(available_onnx_quants(plan.onnx_files)) > 1
+    )
+
+
+def _finish_download(
+    plan: DownloadPlan, primary: Path, quant: str | None, *, missing_only: bool = False
+) -> None:
+    """Publish metadata and inferred settings before reporting success."""
     all_files = (
         sorted(plan.file_names) + sorted(plan.mmproj_files.keys()) + sorted(plan.extra_files.keys())
     )
-    save_download_info(
-        primary,
-        DownloadInfo(
-            repo_id=plan.repo_id,
-            files=all_files,
-            quant=quant,
-        ),
-    )
-
-    if plan.is_tts:
-        typer.echo(f"  Text-to-speech auto-configured: {plan.tts_engine}")
-
-    # Auto-configure speech-to-text models for the built-in ASR worker
+    save_download_info(primary, DownloadInfo(repo_id=plan.repo_id, files=all_files, quant=quant))
     if plan.is_asr:
         from drove.backend import infer_asr_model_type
 
@@ -595,26 +794,62 @@ def download_model(
             updates["asr_quantization"] = quant.lower()
         if updates:
             model_cfg = load_model_config(primary)
-            save_model_config(primary, model_cfg.model_copy(update=updates))
-            for k, v in updates.items():
-                typer.echo(f"  {k} auto-configured: {v}")
-        if not inferred:
-            typer.echo(
-                "  Could not infer the ASR model type. Set it with: "
-                f"drove models config '{plan.local_name}' asr_model <type>"
-            )
-
-    # Auto-configure mmproj if a multimodal projection file was downloaded
-    # Store just the filename — resolved to an absolute path at server startup.
+            if missing_only:
+                updates = {
+                    key: value for key, value in updates.items() if getattr(model_cfg, key) is None
+                }
+            if updates:
+                save_model_config(primary, model_cfg.model_copy(update=updates))
     if plan.mmproj_files:
         mmproj_name = Path(sorted(plan.mmproj_files.keys())[0]).name
         model_cfg = load_model_config(primary)
-        updated_cfg = model_cfg.model_copy(update={"mmproj": mmproj_name})
-        save_model_config(primary, updated_cfg)
-        typer.echo(f"  mmproj auto-configured: {mmproj_name}")
+        if not missing_only or model_cfg.mmproj is None:
+            save_model_config(primary, model_cfg.model_copy(update={"mmproj": mmproj_name}))
 
-    size_mb = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()) / 1_048_576
-    typer.echo(f"\nSaved as '{plan.local_name}'  ({size_mb:.1f} MB)")
+
+def _download_summary(plan: DownloadPlan, models_dir: Path, *, existing: bool = False) -> None:
+    from drove.downloader import first_shard
+
+    dest = plan.destination(models_dir)
+    primary = dest / ("model.tts" if plan.is_tts else Path(first_shard(plan.file_names)).name)
+    cfg = load_model_config(primary)
+    size = sum(f.stat().st_size for f in dest.rglob("*") if f.is_file())
+    out = console()
+    heading(out, "Already fully downloaded" if existing else "Download complete")
+    rows: list[tuple[str, object]] = [
+        ("Model", plan.local_name),
+        ("Location", dest),
+        ("Size on disk", f"{size:,} bytes ({size / 1_048_576:.1f} MiB)"),
+    ]
+    if cfg.mmproj:
+        rows.append(("mmproj", cfg.mmproj))
+    if plan.is_asr:
+        rows.extend(
+            [
+                ("asr_model", cfg.asr_model or "Not configured"),
+                ("asr_quantization", cfg.asr_quantization),
+            ]
+        )
+    if plan.is_tts:
+        rows.append(("tts_engine", cfg.tts_engine))
+    fields(out, rows)
+    if plan.is_asr and not cfg.asr_model:
+        hint(
+            out,
+            "Set the ASR model type: "
+            + shlex.join(["drove", "models", "config", plan.local_name, "asr_model"])
+            + " <type>",
+        )
+    if plan.is_tts or plan.is_asr:
+        hint(out, "Next: " + shlex.join(["drove", "models", "info", plan.local_name]))
+        hint(
+            out,
+            "Serve audio requests: drove serve (see docs/"
+            + ("text-to-speech.md" if plan.is_tts else "speech-to-text.md")
+            + ")",
+        )
+    else:
+        hint(out, "Next: " + shlex.join(["drove", "chat", plan.local_name]))
 
 
 @models_app.command("config")
@@ -689,17 +924,30 @@ def model_config_cmd(
         effective_key = name
         effective_value = key
         if value is not None:
-            typer.echo("Too many arguments for global config mode.", err=True)
+            error(
+                "Too many arguments for global config mode.",
+                next_step="See drove models config --help.",
+            )
             raise typer.Exit(1)
 
         if unset:
             cfg = load_global_model_config(models_dir)
             if unset not in ModelConfig.model_fields:
-                typer.echo(f"Unknown key '{unset}'.", err=True)
+                error(
+                    unknown("key", unset, ModelConfig.model_fields),
+                    next_step="List valid keys: drove models config --global --all",
+                )
                 raise typer.Exit(1)
             updated = cfg.model_copy(update={unset: None})
-            save_global_model_config(models_dir, updated)
-            typer.echo(f"Unset '{unset}' from global config.")
+            try:
+                save_global_model_config(models_dir, updated)
+            except OSError as exc:
+                error(f"Could not write global model configuration: {exc}")
+                raise typer.Exit(1) from exc
+            success(
+                f"Unset '{unset}' from global config.",
+                next_step="Review effective settings: drove models config --global",
+            )
             return
 
         if effective_key is None:
@@ -717,6 +965,13 @@ def model_config_cmd(
             )
             return
 
+        if effective_key not in ModelConfig.model_fields:
+            error(
+                unknown("key", effective_key, ModelConfig.model_fields),
+                next_step="List valid keys: drove models config --global --all",
+            )
+            raise typer.Exit(1)
+
         if effective_value is None:
             cfg = load_global_model_config(models_dir)
             params = cfg.to_dict()
@@ -732,19 +987,20 @@ def model_config_cmd(
                 effective_key,
                 effective_value,
             )
-            typer.echo(
+            success(
                 f"Set '{effective_key}' = {effective_value} in global config.",
+                next_step="Review effective settings: drove models config --global",
             )
-        except ValueError as e:
-            typer.echo(str(e), err=True)
+        except (ValueError, OSError) as e:
+            error(str(e))
             raise typer.Exit(1)
         return
 
     # Per-model config mode — name is required
     if name is None:
-        typer.echo(
-            "Missing model name. Use --global for global config.",
-            err=True,
+        error(
+            "Missing model name.",
+            next_step="Use --global for global config or list models with drove models list.",
         )
         raise typer.Exit(1)
 
@@ -753,11 +1009,21 @@ def model_config_cmd(
     if unset:
         cfg = load_model_config(model_path)
         if unset not in ModelConfig.model_fields:
-            typer.echo(f"Unknown key '{unset}'.", err=True)
+            error(
+                unknown("key", unset, ModelConfig.model_fields),
+                next_step=f"List valid keys: drove models config {quote(name)} --all",
+            )
             raise typer.Exit(1)
         updated = cfg.model_copy(update={unset: None})
-        save_model_config(model_path, updated)
-        typer.echo(f"Unset '{unset}' for model '{name}'.")
+        try:
+            save_model_config(model_path, updated)
+        except OSError as exc:
+            error(f"Could not write model configuration: {exc}")
+            raise typer.Exit(1) from exc
+        success(
+            f"Unset '{unset}' for model '{name}'.",
+            next_step=f"Review effective settings: drove models config {quote(name)}",
+        )
         return
 
     if key is None:
@@ -777,6 +1043,13 @@ def model_config_cmd(
         )
         return
 
+    if key not in ModelConfig.model_fields:
+        error(
+            unknown("key", key, ModelConfig.model_fields),
+            next_step=f"List valid keys: drove models config {quote(name)} --all",
+        )
+        raise typer.Exit(1)
+
     if value is None:
         cfg = load_model_config(model_path)
         params = cfg.to_dict()
@@ -785,9 +1058,12 @@ def model_config_cmd(
 
     try:
         set_model_config_key(model_path, key, value)
-        typer.echo(f"Set '{key}' = {value} for model '{name}'.")
-    except ValueError as e:
-        typer.echo(str(e), err=True)
+        success(
+            f"Set '{key}' = {value} for model '{name}'.",
+            next_step=f"Review effective settings: drove models config {quote(name)}",
+        )
+    except (ValueError, OSError) as e:
+        error(str(e))
         raise typer.Exit(1)
 
 

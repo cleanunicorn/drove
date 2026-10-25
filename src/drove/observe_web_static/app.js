@@ -1,38 +1,34 @@
 "use strict";
 
 const state = {
-  records: [],
-  total: 0,
-  offset: 0,
-  pageSize: 100,
-  query: "",
-  isLoadingMore: false,
-  selectedId: null,
-  searchDebounce: null,
-  sectionCounter: 0,
+  records: [], total: 0, offset: 0, pageSize: 100, query: "",
+  listVersion: 0, listController: null, listStatus: "idle", listError: "",
+  isLoadingMore: false, moreError: "", exhausted: false,
+  selectedId: null, detailVersion: 0, detailController: null,
+  searchDebounce: null, sectionCounter: 0, focusedId: null,
 };
+
+async function checkedJson(url, signal) {
+  const response = await fetch(url, { signal });
+  if (!response.ok) throw new Error(`Request failed (HTTP ${response.status}).`);
+  return response.json();
+}
 
 const api = {
-  async list(query, offset, limit) {
-    const params = new URLSearchParams();
+  list(query, offset, limit, signal) {
+    const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
     if (query) params.set("search", query);
-    params.set("offset", String(offset));
-    params.set("limit", String(limit));
-    const url = "/api/records?" + params.toString();
-    const resp = await fetch(url);
-    return resp.json();
+    return checkedJson("/api/records?" + params, signal);
   },
-  async get(id) {
-    const resp = await fetch("/api/records/" + id);
-    return resp.json();
+  get(id, signal) {
+    return checkedJson("/api/records/" + encodeURIComponent(id), signal);
   },
 };
 
-function esc(s) {
-  if (!s) return "";
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[char]);
 }
 
 function el(tag, attrs, children) {
@@ -45,102 +41,243 @@ function el(tag, attrs, children) {
       else node.setAttribute(k, v);
     }
   }
-  if (children) {
-    for (const c of [].concat(children)) {
-      if (c == null) continue;
-      node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-    }
+  for (const child of children == null ? [] : [].concat(children)) {
+    if (child != null) node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
   }
   return node;
 }
 
-async function loadRecords() {
-  const q = (document.getElementById("search") || {}).value || "";
-  state.query = q;
+function resetList() {
+  clearTimeout(state.searchDebounce);
+  state.searchDebounce = null;
+  state.listController?.abort();
+  state.listController = new AbortController();
+  state.listVersion += 1;
+  state.query = document.getElementById("search").value;
+  state.records = [];
+  state.total = 0;
   state.offset = 0;
-  const data = await api.list(q, 0, state.pageSize);
-  state.records = data.items;
-  state.total = data.total;
+  state.listStatus = "loading";
+  state.listError = "";
+  state.moreError = "";
+  state.isLoadingMore = false;
+  state.exhausted = false;
   renderList();
+  return state.listVersion;
 }
 
-async function loadMoreRecords() {
-  if (state.isLoadingMore) return;
-  state.isLoadingMore = true;
-  renderLoadMoreState();
+async function fetchPage(version, append, trigger = document.activeElement) {
+  if (version !== state.listVersion) return;
+  const query = state.query;
+  const offset = state.offset;
+  const previousCount = state.records.length;
+  const footerFocus = ["load-more-btn", "list-retry"].includes(trigger?.id) ? trigger : null;
+  const restoreFooterFocus = () => footerFocus && (document.activeElement === footerFocus || document.activeElement === document.body);
+  if (append) { state.isLoadingMore = true; state.moreError = ""; }
+  renderListStatus();
   try {
-    const nextOffset = state.records.length;
-    const data = await api.list(state.query, nextOffset, state.pageSize);
-    const seen = new Set(state.records.map((r) => r.id));
-    const fresh = data.items.filter((r) => !seen.has(r.id));
+    const data = await api.list(query, offset, state.pageSize, state.listController.signal);
+    if (version !== state.listVersion) return;
+    if (!Array.isArray(data.items) || !Number.isInteger(data.total) || data.total < 0) {
+      throw new Error("Invalid record list.");
+    }
+    const seen = new Set(state.records.map(record => record.id));
+    const fresh = data.items.filter(record => {
+      if (seen.has(record.id)) return false;
+      seen.add(record.id);
+      return true;
+    });
     state.records = state.records.concat(fresh);
     state.total = data.total;
+    state.offset = offset + data.items.length;
+    state.exhausted = data.items.length === 0 || state.offset >= state.total;
+    state.listStatus = "success";
     renderList();
+    if (restoreFooterFocus()) {
+      const target = document.querySelectorAll(".record")[Math.min(previousCount, state.records.length - 1)];
+      if (target) target.focus();
+    }
+  } catch (error) {
+    if (version !== state.listVersion || error.name === "AbortError") return;
+    if (append) state.moreError = "Could not load more requests. Try again.";
+    else {
+      state.listStatus = "error";
+      state.listError = query ? "Could not search requests. Try again." : "Could not load requests. Try again.";
+    }
   } finally {
-    state.isLoadingMore = false;
-    renderLoadMoreState();
+    if (version === state.listVersion) {
+      state.isLoadingMore = false;
+      renderListStatus();
+      if (restoreFooterFocus()) {
+        if (state.listError || state.moreError) document.getElementById("list-retry").focus();
+        else if (!state.records.length) document.getElementById("refresh-btn").focus();
+      }
+    }
   }
+}
+
+function loadRecords() {
+  const trigger = document.activeElement;
+  return fetchPage(resetList(), false, trigger);
+}
+
+function loadMoreRecords() {
+  if (state.listStatus !== "success" || state.isLoadingMore || state.exhausted) return;
+  return fetchPage(state.listVersion, true);
 }
 
 function onSearchInput() {
-  if (state.searchDebounce) clearTimeout(state.searchDebounce);
-  state.searchDebounce = setTimeout(loadRecords, 150);
+  const version = resetList(); // Invalidate old responses before the debounce delay.
+  state.searchDebounce = setTimeout(() => fetchPage(version, false), 150);
 }
 
-function recordSummaryHtml(r) {
-  const time = r.timestamp.substring(11, 19);
-  const model = r.model || "?";
-  const statusCls = r.response_status < 400 ? "status-ok" : "status-err";
-  const tokens = r.tokens_prompt || r.tokens_completion
-    ? `${r.tokens_prompt}+${r.tokens_completion}`
-    : "-";
-  const speed = r.tokens_per_second ? r.tokens_per_second.toFixed(1) + " tok/s" : "";
-  const sel = r.id === state.selectedId ? " selected" : "";
-  return `<div class="record${sel}" data-id="${r.id}">
-    <div class="top">
-      <span class="method">${esc(r.method)}</span>
-      <span class="time">${time}</span>
-    </div>
-    <div class="path">/${esc(r.endpoint)}</div>
-    <div class="meta">
-      <span>${esc(model)}</span>
-      <span class="${statusCls}">${r.response_status}</span>
-      <span>${tokens}</span>
-      <span>${speed}</span>
-    </div>
-  </div>`;
+function recordTime(timestamp) {
+  const value = String(timestamp || "Unknown time");
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)) return value;
+  const now = new Date();
+  const today = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
+  return value.slice(0, 10) === today ? value.slice(11, 19) : value.slice(0, 10) + " " + value.slice(11, 19);
+}
+
+function recordButton(record) {
+  const button = el("button", { type: "button", class: "record", "aria-pressed": "false", tabindex: "-1" });
+  button.dataset.id = record.id;
+  const top = el("span", { class: "top" }, [
+    el("span", { class: "method" }, String(record.method)),
+    el("span", { class: "time", title: String(record.timestamp) }, recordTime(record.timestamp)),
+  ]);
+  const tokens = record.tokens_prompt || record.tokens_completion ? `${record.tokens_prompt}+${record.tokens_completion}` : "-";
+  const speed = record.tokens_per_second ? record.tokens_per_second.toFixed(1) + " tok/s" : "";
+  const meta = el("span", { class: "meta" }, [
+    el("span", null, record.model || "?"),
+    el("span", { class: record.response_status < 400 ? "status-ok" : "status-err" }, String(record.response_status)),
+    el("span", null, tokens), el("span", null, speed),
+  ]);
+  button.append(top, el("span", { class: "path" }, "/" + record.endpoint), meta);
+  button.addEventListener("click", () => selectRecord(record.id));
+  button.addEventListener("focus", () => {
+    state.focusedId = record.id;
+    document.querySelectorAll(".record").forEach(row => { row.tabIndex = row === button ? 0 : -1; });
+  });
+  button.addEventListener("keydown", event => {
+    const keys = ["ArrowUp", "ArrowDown", "Home", "End"];
+    if (!keys.includes(event.key)) return;
+    event.preventDefault();
+    const rows = [...document.querySelectorAll(".record")];
+    const current = rows.indexOf(button);
+    const index = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 :
+      Math.max(0, Math.min(rows.length - 1, current + (event.key === "ArrowDown" ? 1 : -1)));
+    rows[index].focus();
+  });
+  return button;
+}
+
+function updateSelection() {
+  document.querySelectorAll(".record").forEach(row => {
+    const selected = row.dataset.id === state.selectedId;
+    row.classList.toggle("selected", selected);
+    row.setAttribute("aria-pressed", String(selected));
+  });
 }
 
 function renderList() {
+  const activeId = document.activeElement?.classList.contains("record") ? document.activeElement.dataset.id : null;
   const list = document.getElementById("list");
-  list.innerHTML = state.records.map(recordSummaryHtml).join("");
-  list.querySelectorAll(".record").forEach((node) => {
-    node.addEventListener("click", () => selectRecord(node.dataset.id));
-  });
-  const loadMoreBtn = document.getElementById("load-more-btn");
-  if (loadMoreBtn) {
-    loadMoreBtn.style.display =
-      state.records.length < state.total ? "inline-block" : "none";
+  list.replaceChildren(...state.records.map(recordButton));
+  const rows = [...list.children];
+  const tabRow = rows.find(row => row.dataset.id === (activeId || state.focusedId)) || rows[0];
+  if (tabRow) {
+    tabRow.tabIndex = 0;
+    if (activeId) tabRow.focus();
   }
-  renderLoadMoreState();
+  updateSelection();
+  renderListStatus();
 }
 
-function renderLoadMoreState() {
-  const loadMoreBtn = document.getElementById("load-more-btn");
-  if (!loadMoreBtn) return;
-  loadMoreBtn.disabled = state.isLoadingMore;
+function renderListStatus() {
+  const busy = state.listStatus === "loading" || state.isLoadingMore;
+  document.getElementById("list-pane").setAttribute("aria-busy", String(busy));
+  const status = document.getElementById("list-status");
+  const count = document.getElementById("record-count");
+  const retry = document.getElementById("list-retry");
+  const more = document.getElementById("load-more-btn");
+  let message = "";
+  if (state.listStatus === "loading") message = state.query ? "Searching requests…" : "Loading requests…";
+  else if (state.listStatus === "error") message = state.listError;
+  else if (state.isLoadingMore) message = "Loading more requests…";
+  else if (state.moreError) message = state.moreError;
+  else if (state.total === 0) message = state.query ? `No matches for “${state.query}”.` : "No requests recorded yet. Enable logging with drove config observe true.";
+  else if (state.records.length === 0) message = "No requests available on this page. Refresh to check again.";
+  status.textContent = message;
+  status.classList.toggle("error", !!state.listError || !!state.moreError);
+  count.hidden = state.listStatus !== "success";
+  const shown = state.records.length.toLocaleString();
+  const total = state.total.toLocaleString();
+  count.textContent = state.query && state.records.length === state.total ? `${total} matches` : `${shown} of ${total} ${state.query ? "matches" : "requests"}`;
+  retry.hidden = !state.listError && !state.moreError;
+  more.hidden = state.listStatus !== "success" || state.exhausted || !!state.moreError;
+  more.disabled = state.isLoadingMore;
+  more.textContent = state.isLoadingMore ? "Loading…" : "Load more";
 }
 
-async function selectRecord(id) {
+function detailNotice(message, retry) {
+  const notice = el("div", { class: "detail-placeholder", role: "status" }, el("p", null, message));
+  if (retry) notice.appendChild(el("button", { type: "button", class: "retry", onclick: retry }, "Retry"));
+  document.getElementById("detail").replaceChildren(notice);
+}
+
+async function showRecord(id) {
+  state.detailController?.abort();
+  state.detailController = new AbortController();
+  const version = ++state.detailVersion;
   state.selectedId = id;
-  renderList();
-  const record = await api.get(id);
-  renderDetail(record);
+  updateSelection();
+  const root = document.getElementById("detail");
+  const retryFocus = root.contains(document.activeElement) && document.activeElement.classList.contains("retry") ? document.activeElement : null;
+  const restoreFocus = () => retryFocus && (document.activeElement === retryFocus || document.activeElement === document.body);
+  root.setAttribute("aria-busy", String(!!id));
+  if (!id) { detailNotice("Select a request from the list to inspect."); return; }
+  detailNotice("Loading request details…");
+  try {
+    const record = await api.get(id, state.detailController.signal);
+    if (version !== state.detailVersion) return;
+    if (!record || record.id !== id) throw new Error("Invalid record.");
+    renderDetail(record);
+    if (restoreFocus()) root.querySelector(".section-header")?.focus();
+  } catch (error) {
+    if (version !== state.detailVersion || error.name === "AbortError") return;
+    detailNotice("Could not load request details. The request may no longer exist.", () => showRecord(id));
+    if (restoreFocus()) root.querySelector(".retry")?.focus();
+  } finally {
+    if (version === state.detailVersion) root.setAttribute("aria-busy", "false");
+  }
+}
+
+function selectRecord(id) {
+  const hash = "#record=" + encodeURIComponent(id);
+  if (location.hash !== hash) history.pushState(null, "", hash);
+  return showRecord(id);
+}
+
+function selectionFromHash() {
+  if (!location.hash) return showRecord(null);
+  try {
+    if (!location.hash.startsWith("#record=")) throw new Error("Invalid selection");
+    const id = decodeURIComponent(location.hash.slice(8));
+    if (!id) throw new Error("Empty selection");
+    return showRecord(id);
+  } catch {
+    showRecord(null);
+    detailNotice("This request link is invalid. Clear the selection and choose a request.", () => {
+      history.replaceState(null, "", location.pathname + location.search);
+      showRecord(null);
+    });
+  }
 }
 
 function metric(label, value) {
-  return `<div class="metric"><div class="label">${label}</div>` +
-    `<div class="value">${value}</div></div>`;
+  return `<div class="metric"><div class="label">${esc(label)}</div>` +
+    `<div class="value">${esc(value)}</div></div>`;
 }
 
 function buildMetrics(r) {
@@ -173,9 +310,9 @@ function makeSection(title, contentHtml, collapsed) {
     : `<div class="empty">(empty)</div>`;
   const node = el("div", { class: "section" });
   node.innerHTML = `
-    <div class="section-header">
+    <button type="button" class="section-header" aria-controls="${id}" aria-expanded="${!collapsed}">
       <span class="${arrowCls}">&#9654;</span> ${title}
-    </div>
+    </button>
     <div class="section-body" id="${id}" style="display:${display}">${inner}</div>`;
   const header = node.querySelector(".section-header");
   header.addEventListener("click", () => toggleSection(node));
@@ -188,6 +325,7 @@ function toggleSection(sectionNode) {
   const isOpen = body.style.display !== "none";
   body.style.display = isOpen ? "none" : "block";
   arrow.classList.toggle("open", !isOpen);
+  sectionNode.querySelector(".section-header").setAttribute("aria-expanded", String(!isOpen));
 }
 
 function renderDetail(r) {
@@ -198,7 +336,9 @@ function renderDetail(r) {
     <h2>${esc(r.method)} /${esc(r.endpoint)}
       <span style="font-weight:400;color:var(--text2)">
       (${esc(r.model || "unknown")})</span></h2>
+    <p class="timestamp"></p>
     <div class="metrics">${buildMetrics(r)}</div>`;
+  detail.querySelector(".timestamp").textContent = String(r.timestamp || "Unknown time");
   root.appendChild(detail);
 
   detail.appendChild(makeJsonSection("Request Body", r.request_body));
@@ -214,9 +354,9 @@ function makeJsonSection(title, raw) {
   const id = "jt-" + state.sectionCounter++;
   const node = el("div", { class: "section" });
   node.innerHTML = `
-    <div class="section-header">
+    <button type="button" class="section-header" aria-controls="${id}" aria-expanded="true">
       <span class="arrow open">&#9654;</span> ${title}
-    </div>
+    </button>
     <div class="section-body" id="${id}" style="display:block"></div>`;
   node.querySelector(".section-header").addEventListener("click", () => toggleSection(node));
   const body = node.querySelector(".section-body");
@@ -263,6 +403,19 @@ function keyPrefix(key) {
 
 const MD_KEYS = new Set(["content", "reasoning_content"]);
 
+// Treat parsed Markdown as untrusted HTML. Text-only previews must not load media,
+// carry page styling, clobber DOM names, or add executable elements/attributes.
+const MD_SANITIZE_OPTIONS = {
+  ALLOWED_TAGS: [
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr", "strong", "em",
+    "del", "blockquote", "ul", "ol", "li", "pre", "code", "a",
+    "table", "thead", "tbody", "tr", "th", "td",
+  ],
+  ALLOWED_ATTR: ["href", "title", "start"],
+  ALLOW_DATA_ATTR: false,
+  ALLOW_ARIA_ATTR: false,
+};
+
 function makeLeaf(key, html, rawVal) {
   const row = el("div", { class: "jt-row" });
   row.appendChild(el("span", { style: "width:14px;flex-shrink:0" }));
@@ -287,7 +440,13 @@ function toggleMd(btn, raw, parent) {
     return;
   }
   const render = el("div", { class: "md-render" });
-  render.innerHTML = marked.parse(raw);
+  try {
+    if (!window.marked?.parse || !window.DOMPurify?.isSupported) return;
+    render.innerHTML = DOMPurify.sanitize(marked.parse(raw), MD_SANITIZE_OPTIONS);
+  } catch {
+    // Keep the original text visible if either dependency is unavailable/fails.
+    return;
+  }
   parent.appendChild(render);
   if (str) str.style.display = "none";
   btn.textContent = "RAW";
@@ -299,7 +458,9 @@ function makeNode(key, val, open, close) {
   const wrap = el("div");
 
   const row = el("div", { class: "jt-row" });
-  const toggle = el("span", { class: "jt-toggle" }, entries.length ? "▼" : " ");
+  const toggle = entries.length
+    ? el("button", { type: "button", class: "jt-toggle", "aria-expanded": "true", "aria-label": "Toggle " + (key === undefined ? (isArr ? "array" : "object") : String(key)) }, "▼")
+    : el("span", { class: "jt-toggle", "aria-hidden": "true" }, " ");
   row.appendChild(toggle);
   const head = el("span");
   head.innerHTML = keyPrefix(key) + `<span class="hl-brace">${open}</span>`;
@@ -308,7 +469,8 @@ function makeNode(key, val, open, close) {
   row.appendChild(ellipsis);
   wrap.appendChild(row);
 
-  const children = el("div", { class: "jt-children" });
+  const children = el("div", { class: "jt-children", id: "tree-" + state.sectionCounter++ });
+  if (entries.length) toggle.setAttribute("aria-controls", children.id);
   for (let i = 0; i < entries.length; i++) {
     const [k, v] = entries[i];
     const child = buildTree(v, isArr ? undefined : k);
@@ -330,6 +492,7 @@ function makeNode(key, val, open, close) {
       closeRow.style.display = wasOpen ? "none" : "";
       ellipsis.style.display = wasOpen ? "inline" : "none";
       toggle.textContent = wasOpen ? "▶" : "▼";
+      toggle.setAttribute("aria-expanded", String(!wasOpen));
     };
     toggle.addEventListener("click", onToggle);
     ellipsis.addEventListener("click", onToggle);
@@ -347,4 +510,7 @@ function appendComma(frag) {
 document.getElementById("search").addEventListener("input", onSearchInput);
 document.getElementById("refresh-btn").addEventListener("click", loadRecords);
 document.getElementById("load-more-btn").addEventListener("click", loadMoreRecords);
+document.getElementById("list-retry").addEventListener("click", () => state.moreError ? loadMoreRecords() : loadRecords());
+window.addEventListener("hashchange", selectionFromHash);
 loadRecords();
+selectionFromHash();

@@ -124,7 +124,7 @@ def test_download_keeps_references_and_licenses_and_avoids_unused_weights(tmp_pa
         SimpleNamespace(rfilename=p, size=1) for p in wanted | skipped
     ]
 
-    def download(*, repo_id, filename, local_dir):
+    def download(*, repo_id, filename, local_dir, tqdm_class=None):
         path = Path(local_dir) / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")

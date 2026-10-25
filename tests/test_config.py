@@ -146,3 +146,27 @@ def test_load_config_reads_drove_config_env(
     cfg.write_text(tomli_w.dumps({"listen_port": 9123}))
     monkeypatch.setenv("DROVE_CONFIG", str(cfg))
     assert load_config().listen_port == 9123
+
+
+@pytest.mark.parametrize("model", [None, "", "   ", "org/model:Q4_K_M"])
+def test_default_model_roundtrip(tmp_path: Path, model: str | None) -> None:
+    from drove.config import Config
+
+    cfg = Config(default_model=model)
+    expected = model if model and model.strip() else None
+    assert cfg.default_model == expected
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+    assert load_config(path).default_model == expected
+    assert ("default_model" in path.read_text()) == (expected is not None)
+
+
+def test_default_model_env_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "config.toml"
+    assert load_config(path).default_model is None
+    path.write_text('default_model = "file-model"\n')
+    assert load_config(path).default_model == "file-model"
+    monkeypatch.setenv("DROVE_DEFAULT_MODEL", "env-model")
+    assert load_config(path).default_model == "env-model"
+    monkeypatch.setenv("DROVE_DEFAULT_MODEL", " ")
+    assert load_config(path).default_model is None

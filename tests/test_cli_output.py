@@ -175,7 +175,8 @@ def test_status_offline_exit_and_watch_retry(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(httpx, "get", offline)
     result = CliRunner().invoke(app, ["server", "status"])
     assert result.exit_code == 1
-    assert "drove server" in result.stdout
+    assert "Warning: Server is not running." in result.stderr
+    assert "drove server" in result.stderr
     _print_status("http://localhost:8080", watch=True)  # Does not exit the refresh loop.
 
 
@@ -423,3 +424,58 @@ def test_status_displays_audio(monkeypatch: pytest.MonkeyPatch, capsys, verbose:
     assert "Transcription" in output and "Speech" in output
     assert "12.5s audio" in output and "3.5s audio" in output
     assert "1.2s processing" in output and "2.1s processing" in output
+
+
+def test_config_default_model_set_get_clear(tmp_path: Path) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text("")
+    runner = CliRunner()
+    prefix = ["-c", str(custom), "config", "default_model"]
+    assert runner.invoke(app, [*prefix, "org/model:Q4_K_M"]).exit_code == 0
+    assert runner.invoke(app, prefix).stdout == "org/model:Q4_K_M\n"
+    assert 'default_model = "org/model:Q4_K_M"' in custom.read_text()
+    assert runner.invoke(app, [*prefix, ""]).exit_code == 0
+    assert "default_model" not in custom.read_text()
+    assert runner.invoke(app, prefix).stdout == "None\n"
+
+
+@pytest.mark.parametrize(
+    "answer,accepted", [("\n", False), ("n\n", False), ("", False), ("wrong\ny\n", True)]
+)
+def test_confirmation_literal_safe_input(monkeypatch, answer, accepted):
+    import typer
+
+    from drove.cli.output import confirm_action
+
+    stream = StringIO()
+    out = Console(file=stream, width=40, color_system=None)
+    monkeypatch.setattr("sys.stdin", StringIO(answer))
+    if accepted:
+        confirm_action(out, "Delete '[red]literal'?")
+    else:
+        with pytest.raises(typer.Abort):
+            confirm_action(out, "Delete '[red]literal'?")
+    output = stream.getvalue()
+    assert "[red]literal" in output and "(n)" in output
+    assert "\x1b" not in output
+
+
+def test_download_remaining_all_categories_and_oversized():
+    from drove.cli.models import _download_remaining
+
+    plan = DownloadPlan(
+        repo_id="org/repo",
+        local_name="m",
+        sharded=False,
+        files={"one.gguf": 100, "two.gguf": 100},
+        mmproj_files={"mmproj.gguf": 50},
+        extra_files={"tokens": 25},
+    )
+    assert _download_remaining(
+        plan,
+        {
+            "one.gguf": (FileStatus.COMPLETE, 200),
+            "two.gguf": (FileStatus.INCOMPLETE, 120),
+            "mmproj.gguf": (FileStatus.INCOMPLETE, 20),
+        },
+    ) == (55, 1)

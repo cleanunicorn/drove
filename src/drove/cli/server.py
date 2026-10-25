@@ -14,7 +14,7 @@ import uvicorn
 from rich.text import Text
 from typer.core import TyperCommand
 
-from drove.cli.output import console, fields, heading, hint, section, table
+from drove.cli.output import console, error, fields, heading, hint, section, table, warning
 
 server_app = typer.Typer(
     help="Manage the drove server.",
@@ -44,12 +44,10 @@ def _server_default(
     config.models_dir.mkdir(parents=True, exist_ok=True)
 
     if not shutil.which(str(config.llama_server_bin)):
-        typer.secho(
-            f"Warning: llama-server binary not found: {config.llama_server_bin!r}. "
+        warning(
+            f"llama-server binary not found: {config.llama_server_bin!r}. "
             "Model requests will fail until it is installed and on PATH "
             "(or set llama_server_bin in the config).",
-            fg=typer.colors.YELLOW,
-            err=True,
         )
 
     cfg_path: Path = ctx.obj["config_path"]
@@ -170,13 +168,14 @@ def _print_status(base: str, *, watch: bool = False, verbose: bool = False) -> N
     except httpx.ConnectError:
         out = console()
         heading(out, "Server status", base)
-        out.print(Text("Server is not running.", style="yellow"))
-        hint(out, "Start the server: drove server")
+        warning("Server is not running.", next_step="Start the server: drove server")
         if not watch:
             raise typer.Exit(1)
         return
     except httpx.HTTPError as e:
-        typer.echo(f"Failed to connect: {e}", err=True)
+        error(
+            f"Failed to connect: {e}", next_step="Check drove server status and the endpoint URL."
+        )
         if not watch:
             raise typer.Exit(1)
         return

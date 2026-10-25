@@ -1,5 +1,57 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Preserved custom configuration paths in download retry, resume, and repair
+  inspection commands so recovery reused the original model directory.
+- Kept model-picker cancellation, literal tool approvals, and saved partial replies
+  working together with Markdown chat rendering.
+- Fixed loaded-model warnings when deleting a namespace containing running models.
+- Fixed deletion previews for relative model-storage paths, including symlinked directories.
+- Preserved literal text in chat messages and tool details, preventing model-supplied
+  styling from obscuring tool approvals; made long arguments scrollable with
+  permission controls kept visible.
+- Made chat errors actionable while preserving literal user and error text,
+  labelled received chunk rates accurately, and warned when theme settings could
+  not be saved.
+- Stopped background observe scans when quitting the terminal browser so returning
+  to the shell no longer waited for the remaining log files.
+
+### Added
+
+- Added a configurable default model for model-less API requests and chat launches, with explicit model choices taking precedence and defaulted speech requests supplying the worker’s required model field.
+- Added unified model download progress, explicit resume/skip states, actionable failure and
+  interruption guidance, and completion summaries with configuration and next steps.
+- Added configuration-repair retries for completed downloads that preserve custom settings.
+- Added guided keyboard quantization selection with download sizes, local status,
+  advisory memory estimates, and safe cancellation.
+- Added contextual model deletion and download confirmations with file and size
+  previews, loaded-model warnings, and consistent safe defaults.
+- Added chat reply stopping with saved partial output, visible removable queued
+  prompts, and keyboard shortcuts for every tool confirmation choice.
+- Rendered assistant chat replies as streaming Markdown with highlighted code and
+  keyboard copying of complete messages or individual code blocks.
+- Added loading, retry and empty states, accurate counts, keyboard navigation, shareable request links, and readable mobile layouts to the observe web browser.
+
+### Changed
+
+- Unified CLI success, warning, and error feedback with actionable typo hints,
+  mutation confirmations, and readable integration summaries while preserving
+  plain config values, completion scripts, and dry-run output.
+- Changed Esc in chat to stop generation or deny a pending tool call without
+  quitting; kept Ctrl+C and Ctrl+Q as explicit quit shortcuts.
+- Strengthened observe browser regression checks to verify the latest request details survived a delayed, non-aborting response.
+- Improved the observe terminal browser with responsive paged search, safe search
+  Escape handling, helpful empty states, complete model names, and theme-aware details.
+
+### Security
+
+- Prevented logged content from executing HTML in observe web Markdown previews,
+  escaped record fields, and bundled pinned dependencies for offline rendering
+  while preserving ordinary Markdown formatting and safe links.
+
 
 ## v0.10.0 (2026-10-25)
 

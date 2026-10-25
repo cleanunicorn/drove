@@ -74,12 +74,16 @@ conversation and starts a new one with another model. See
 For installation alternatives, SDK setup, and checks at each step, follow
 [Getting started](./docs/getting-started.md).
 
+Set a preferred model with `drove config default_model "qwen"` after initialization.
+It is used by `drove chat` and API requests that omit `model`; explicit model
+choices still win. See [default-model configuration](./docs/configuration.md#default-model).
+
 ## What you can do
 
 - **Manage resources:** load models on demand, evict least-recently-used models,
   and persist llama.cpp prompt caches across idle shutdowns.
-- **Bring your own models:** download from Hugging Face, pick quantizations,
-  resume downloads, and set llama-server arguments per model.
+- **Bring your own models:** download from Hugging Face, choose quantizations with
+  keyboard controls and memory guidance, resume downloads, and set llama-server arguments per model.
 - **Use familiar clients:** connect an OpenAI SDK, the built-in chat TUI, or
   pi, opencode, and Kilo Code via `drove integrate`.
 - **Inspect requests:** watch server status, browse optional request logs in

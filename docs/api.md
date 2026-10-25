@@ -51,8 +51,11 @@ The inventory still includes speech models; the chat picker filters them using
 this metadata. Listing does not start any backend. Older drove servers and
 third-party endpoints may omit the `drove` object.
 
-Always send `model` explicitly. When it is absent, drove can fall back to a
-loaded model; if none is loaded, the request fails with HTTP 400.
+An explicit `model` takes precedence. When it is absent, drove lazily starts the
+configured `default_model`, if set; a missing configured model returns HTTP 404.
+Without a default, drove falls back to a loaded model, or returns HTTP 400 if
+none is loaded. See [Default model](./configuration.md#default-model), including
+the speech JSON forwarding behavior.
 
 ## Request examples
 
@@ -81,7 +84,7 @@ time for both a cold start and inference. See
 
 | Status | Typical cause | Next check |
 | --- | --- | --- |
-| `400` | No model specified and none loaded, or invalid backend input | Send a model ID and validate the request fields |
+| `400` | No model specified, no default configured and none loaded, or invalid backend input | Send a model ID and validate the request fields |
 | `404` | Requested model is not installed | Compare with `/v1/models` |
 | `502` | Proxy could not complete the backend connection or request | Inspect server logs and timeouts |
 | `503` | Backend failed to start or become healthy | Check dependencies, memory, and startup timeout |

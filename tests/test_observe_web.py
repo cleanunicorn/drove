@@ -155,3 +155,67 @@ def test_api_records_search_offset(tmp_path: Path) -> None:
     assert data["total"] == 2
     assert len(data["items"]) == 1
     assert data["items"][0]["id"] == "20260408-100000-aaaa0001"
+
+
+def test_script_assets_are_served_locally(tmp_path: Path) -> None:
+    """A fresh browser must not need a CDN to render logged Markdown."""
+    from html.parser import HTMLParser
+    from urllib.parse import urlsplit
+
+    class Scripts(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.sources: list[str] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            if tag == "script":
+                source = dict(attrs).get("src")
+                if source:
+                    self.sources.append(source)
+
+    with TestClient(create_observe_app(tmp_path)) as client:
+        scripts = Scripts()
+        scripts.feed(client.get("/").text)
+        assert len(scripts.sources) == 3
+        assert scripts.sources[-1] == "static/app.js"
+        for source in scripts.sources:
+            assert not urlsplit(source).scheme
+            assert not urlsplit(source).netloc
+            response = client.get("/" + source)
+            assert response.status_code == 200
+            assert "javascript" in response.headers["content-type"]
+            assert response.content
+
+
+def test_vendored_markdown_assets_match_provenance(tmp_path: Path) -> None:
+    """Pinned distribution files and complete licenses travel with the UI."""
+    import hashlib
+
+    with TestClient(create_observe_app(tmp_path)) as client:
+        response = client.get("/static/vendor/manifest.json")
+        assert response.status_code == 200
+        manifest = response.json()
+        assert {library["name"] for library in manifest} == {"marked", "DOMPurify"}
+        scripts = client.get("/").text
+        for library in manifest:
+            assert library["version"]
+            assert library["source"].startswith("https://registry.npmjs.org/")
+            assert library["integrity"].startswith("sha512-")
+            assert library["license"]
+            for asset in library["files"]:
+                served = client.get("/static/vendor/" + asset["path"])
+                assert served.status_code == 200
+                assert hashlib.sha256(served.content).hexdigest() == asset["sha256"]
+                assert len(served.content) > 100
+                if asset["path"].endswith(".js"):
+                    assert scripts.index(asset["path"]) < scripts.index("static/app.js")
+
+
+def test_browser_assets_are_served(tmp_path: Path) -> None:
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        for asset, content_type in (("app.js", "javascript"), ("styles.css", "text/css")):
+            response = client.get(f"/static/{asset}")
+            assert response.status_code == 200
+            assert content_type in response.headers["content-type"]
+            assert response.content

@@ -1,20 +1,32 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Fixed
+## v0.10.0 (2026-10-25)
 
-- Prevented unconverted model weights from appearing as chat-ready in model selection.
+### Bug Fixes
 
-### Added
+- **chat**: Exclude unservable weights from model selection
+  ([`61b0ee3`](https://github.com/cleanunicorn/drove/commit/61b0ee324a1e29b638556f62398d9f0eea7f571c))
 
-- Added searchable keyboard model selection with loaded state, size and capabilities, plus safe in-chat model switching that saved the previous conversation.
+Resolve catalog entries through ModelStore before advertising chat capabilities. Keep unsupported
+  weights visible in inventory with unknown capabilities.
 
-### Changed
+Add six regression cases covering safetensors, bin and pt in local and namespaced directories,
+  including availability after conversion to GGUF. All six failed before the fix; make fmt, make
+  lint, make typecheck and make test pass (491 tests).
 
-- Redesigned the documentation around a focused first-request tutorial, task guides,
-  and linked references; clarified model names, installation, configuration reloads,
-  and troubleshooting.
+Sweep: 2 inventory-to-capability paths found; 1 fixed in the reviewed catalog change; 1 left in
+  pre-existing bulk integration registration outside the review target.
+
+### Documentation
+
+- Redesign documentation around user tasks
+  ([`7d84e00`](https://github.com/cleanunicorn/drove/commit/7d84e00bded189c55ef4db5a1c6bc5e83f3c78c4))
+
+### Features
+
+- **chat**: Add searchable model selection and in-chat switching
+  ([`298c683`](https://github.com/cleanunicorn/drove/commit/298c6838a4c58c08965d0e6c9fd1a1570a772e8e))
 
 
 ## v0.9.0 (2026-10-24)

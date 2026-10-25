@@ -10,6 +10,9 @@
 - Preserved literal text in chat messages and tool details, preventing model-supplied
   styling from obscuring tool approvals; made long arguments scrollable with
   permission controls kept visible.
+- Made chat errors actionable while preserving literal user and error text,
+  labelled received chunk rates accurately, and warned when theme settings could
+  not be saved.
 
 ### Added
 
@@ -24,6 +27,8 @@
   previews, loaded-model warnings, and consistent safe defaults.
 - Added chat reply stopping with saved partial output, visible removable queued
   prompts, and keyboard shortcuts for every tool confirmation choice.
+- Rendered assistant chat replies as streaming Markdown with highlighted code and
+  keyboard copying of complete messages or individual code blocks.
 
 ### Changed
 

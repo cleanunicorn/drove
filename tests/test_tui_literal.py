@@ -8,7 +8,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.containers import ScrollableContainer
 from textual.content import Content
-from textual.widgets import Button, Collapsible, Label
+from textual.widgets import Button, Collapsible, Label, Markdown
 
 from drove.sessions import Session
 from drove.tui import CSS, ChatApp, Message, ToolConfirmationModal
@@ -25,7 +25,13 @@ class MessageApp(App[None]):
         yield self.message
 
 
-def assert_literal(label: Label, expected: str) -> None:
+def assert_literal(label: Label | Markdown, expected: str) -> None:
+    if isinstance(label, Markdown):
+        assert label.source == expected
+        paragraphs = list(label.query("MarkdownParagraph"))
+        assert "".join(paragraph._content.plain for paragraph in paragraphs) == expected
+        assert all(not paragraph._content.spans for paragraph in paragraphs)
+        return
     rendered = label.render()
     assert isinstance(rendered, Content)
     assert rendered.plain == expected
@@ -39,7 +45,7 @@ async def test_message_body_is_literal(role: str, text: str) -> None:
     app = MessageApp(message)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert_literal(message.query_one(".message-body", Label), text)
+        assert_literal(message.query_one(".message-body"), text)
 
 
 @pytest.mark.parametrize("text", ["a[i]", "[bold]x[/bold]", "[/x]", ""])
@@ -47,13 +53,14 @@ async def test_streamed_body_and_thinking_are_literal(text: str) -> None:
     message = Message("assistant")
     async with MessageApp(message).run_test() as pilot:
         for chunk in [text[:2], text[2:]]:
-            message.append_text(chunk)
+            await message.append_text(chunk)
             await message.append_thinking(chunk)
+        await message.finish_text()
         message.finish_thinking()
         thinking = message.query_one(Collapsible)
         thinking.collapsed = False
         await pilot.pause()
-        assert_literal(message.query_one(".message-body", Label), text)
+        assert_literal(message.query_one(".message-body"), text)
         assert_literal(thinking.query_one(Label), text)
 
 
@@ -139,7 +146,7 @@ async def test_replayed_messages_and_thinking_are_literal(tmp_path: Path) -> Non
         messages = list(app.query(Message))
         assert len(messages) == 2
         for message in messages:
-            assert_literal(message.query_one(".message-body", Label), text)
+            assert_literal(message.query_one(".message-body"), text)
         thinking = messages[1].query_one(Collapsible)
         thinking.collapsed = False
         await pilot.pause()
@@ -167,7 +174,7 @@ async def test_live_messages_and_stream_error_are_literal(
         await app._generation_worker.wait()
         await pilot.pause()
         for role in ["user", "assistant", "error"]:
-            assert_literal(app.query_one(f"Message.{role} .message-body", Label), text)
+            assert_literal(app.query_one(f"Message.{role} .message-body"), text)
         assert_literal(app.query_one(".thinking-section Label", Label), text)
 
 

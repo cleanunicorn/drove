@@ -86,8 +86,9 @@ See [Default model](configuration.md#default-model) for server behavior and
 `DROVE_DEFAULT_MODEL` precedence.
 
 
-In `drove chat`, message text, thinking, and errors are shown literally: bracketed
-text such as `a[i]` is not treated as styling. Tool confirmations show the tool
+In `drove chat`, user text, thinking, and errors are shown literally: bracketed
+text such as `a[i]` is not treated as styling. Assistant replies render Markdown,
+while Rich-style tags remain literal. Tool confirmations show the tool
 name and exact arguments as plain text. Scroll within the confirmation to review
 long arguments; the permission buttons stay available below it.
 
@@ -114,6 +115,33 @@ not guarantee that a remote backend immediately stops computation.
 
 Use `/save` to save a partial reply without stopping it. `/new`, `/clear`, and
 `/sessions` require the current reply (and any running tool) to finish or stop.
+
+
+## Chat presentation and copying
+
+Assistant replies render Markdown headings, lists and highlighted code blocks while
+streaming and when a saved session is resumed. User messages, reasoning, errors and
+system notes remain literal text. Links are displayed without opening a browser.
+
+Tab to a message, then press **Ctrl+Y** to copy its original text (including Markdown
+source), or **Ctrl+B** to choose a code block with the arrow keys and Enter. The code
+picker copies the current block without its fences, preserving code whitespace;
+Esc closes the picker. These keys apply only while a message is focused. Return to
+the input with Tab to continue typing.
+
+Copying sends an OSC52 clipboard request to the terminal. The terminal must support
+and allow clipboard writes; macOS Terminal does not. The confirmation means the
+request was sent, not that the operating-system clipboard was verified.
+
+Connection errors suggest `drove server status` and `drove serve`. Proxy errors show
+the returned message and an appropriate next step instead of a raw JSON response.
+The status bar's **chunks/s (received)** is client-observed content/reasoning events
+per second from the first such event to completion, including tool waits. It is
+not a token-generation rate, and events can contain different amounts of text.
+
+`/theme NAME` applies immediately. If saving its configuration fails, a warning
+explains that the change applies only to this session; with no configuration path,
+the TUI explicitly reports that the theme was not saved.
 
 ## Config management
 

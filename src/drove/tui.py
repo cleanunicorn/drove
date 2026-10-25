@@ -14,6 +14,8 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from markdown_it import MarkdownIt
+from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -30,10 +32,12 @@ from textual.widgets import (
     Header,
     Label,
     LoadingIndicator,
+    Markdown,
     OptionList,
     Static,
     TextArea,
 )
+from textual.widgets.markdown import MarkdownStream
 from textual.widgets.option_list import Option
 from textual.worker import Worker
 
@@ -59,6 +63,10 @@ ChatApp {
 .message {
     margin-bottom: 1;
     width: 100%;
+}
+
+.message:focus {
+    border-left: solid $accent;
 }
 
 .message-header {
@@ -191,6 +199,22 @@ ToolConfirmationModal {
     margin: 0 1;
 }
 
+CodePicker {
+    align: center middle;
+}
+
+#code-dialog {
+    width: 80%;
+    height: 60%;
+    background: $surface;
+    border: solid $accent;
+    padding: 1 2;
+}
+
+#code-table {
+    height: 1fr;
+}
+
 /* Session picker modal */
 SessionPicker {
     align: center middle;
@@ -242,7 +266,17 @@ class ChatInput(TextArea):
 # ── Message widget ──────────────────────────────────────────────────────────────
 
 
-class Message(Static):
+def _markdown_parser() -> MarkdownIt:
+    """Use identical Markdown semantics for display and exact code copying."""
+    return MarkdownIt("gfm-like", {"html": False})
+
+
+class Message(Static, can_focus=True):
+    BINDINGS = [
+        Binding("ctrl+y", "copy_message", "Copy message"),
+        Binding("ctrl+b", "copy_code", "Copy code block"),
+    ]
+
     def __init__(self, role: str, content: str = "", *, stopped: bool = False) -> None:
         super().__init__()
         self._role = role
@@ -250,6 +284,7 @@ class Message(Static):
         self._content = content
         self._thinking = ""
         self._has_thinking_widget = False
+        self._markdown_stream: MarkdownStream | None = None
         self.add_class("message", role)
 
     def compose(self) -> ComposeResult:
@@ -263,18 +298,61 @@ class Message(Static):
         if self._stopped:
             heading += " · Stopped"
         yield Label(heading, classes="message-header", markup=False)
-        yield Label(self._content, classes="message-body", id=f"body-{id(self)}", markup=False)
+        if self._role == "assistant":
+            yield Markdown(
+                self._content,
+                parser_factory=_markdown_parser,
+                open_links=False,
+                classes="message-body",
+                id=f"body-{id(self)}",
+            )
+        else:
+            yield Label(self._content, markup=False, classes="message-body", id=f"body-{id(self)}")
 
     def mark_stopped(self) -> None:
         self._stopped = True
         self.query_one(".message-header", Label).update("Assistant · Stopped")
 
-    def append_text(self, chunk: str) -> None:
+    async def append_text(self, chunk: str) -> None:
         self._content += chunk
-        try:
+        if self._role == "assistant":
+            if self._markdown_stream is None:
+                body = self.query_one(f"#body-{id(self)}", Markdown)
+                self._markdown_stream = Markdown.get_stream(body)
+            await self._markdown_stream.write(chunk)
+        else:
             self.query_one(f"#body-{id(self)}", Label).update(self._content)
-        except NoMatches:
-            pass
+
+    async def finish_text(self) -> None:
+        """Flush the final fragment and release the buffered Markdown updater."""
+        stream, self._markdown_stream = self._markdown_stream, None
+        if stream is not None:
+            await stream.stop()
+
+    async def on_unmount(self) -> None:
+        await self.finish_text()
+
+    def action_copy_message(self) -> None:
+        self.app.copy_to_clipboard(self._content)
+        self.notify("Message sent to terminal clipboard.")
+
+    def action_copy_code(self) -> None:
+        blocks = [
+            (token.info, token.content)
+            for token in _markdown_parser().parse(self._content)
+            if token.type in {"fence", "code_block"}
+        ]
+        if not blocks:
+            self.notify("This message has no code blocks.")
+            return
+
+        def copy_selected(code: str | None) -> None:
+            if code is not None:
+                self.app.copy_to_clipboard(code)
+                self.notify("Code block sent to terminal clipboard.")
+            self.focus()
+
+        self.app.push_screen(CodePicker(blocks), copy_selected)
 
     async def append_thinking(self, chunk: str) -> None:
         self._thinking += chunk
@@ -286,9 +364,9 @@ class Message(Static):
                 collapsed=True,
                 classes="thinking-section",
             )
-            # Insert before the body label
+            # Insert before either the Markdown or literal body
             try:
-                body = self.query_one(f"#body-{id(self)}", Label)
+                body = self.query_one(f"#body-{id(self)}")
                 await self.mount(collapsible, before=body)
             except NoMatches:
                 await self.mount(collapsible)
@@ -318,6 +396,35 @@ class Message(Static):
             classes="tool-call-section",
         )
         await self.mount(collapsible)
+
+
+class CodePicker(ModalScreen[str | None]):
+    """Choose parsed code from the current raw source, including unfinished fences."""
+
+    BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
+
+    def __init__(self, blocks: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self._blocks = blocks
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="code-dialog"):
+            yield Label("Copy code block — arrows and Enter; Esc cancels", markup=False)
+            yield DataTable(id="code-table", cursor_type="row")
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_columns("Block", "Language", "Preview")
+        for index, (language, code) in enumerate(self._blocks, 1):
+            preview = code.splitlines()[0] if code else "(empty)"
+            table.add_row(str(index), Text(language or "plain"), Text(preview[:70]))
+        table.focus()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        self.dismiss(self._blocks[event.cursor_row][1])
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)
 
 
 # ── Session picker modal ────────────────────────────────────────────────────────
@@ -435,6 +542,43 @@ class ChatTurn:
     tool_task: asyncio.Task[str] | None = None
 
 
+def _http_error(status: int, body: bytes) -> str:
+    """Extract known proxy/OpenAI messages without exposing a raw response envelope."""
+    try:
+        data = json.loads(body)
+    except ValueError, UnicodeDecodeError:
+        data = None
+    message = ""
+    if isinstance(data, dict):
+        error = data.get("error")
+        candidates = [
+            data.get("detail"),
+            error.get("message") if isinstance(error, dict) else error,
+            data.get("message"),
+        ]
+        message = next((value for value in candidates if isinstance(value, str) and value), "")
+    prefix = f"Request failed (HTTP {status})"
+    explanation = f": {message}" if message else "."
+    if status == 404:
+        advice = "Check the model with drove models list."
+    elif status in (401, 403):
+        advice = "Check the endpoint and API key configuration."
+    else:
+        advice = "Check drove server status and the server logs."
+    return f"{prefix}{explanation} {advice}"
+
+
+def _chat_error(error: Exception, base_url: str) -> str:
+    if isinstance(error, httpx.ConnectError):
+        return (
+            f"Cannot reach drove server at {base_url}. "
+            "Try drove server status; start it with drove serve if needed."
+        )
+    if isinstance(error, httpx.TimeoutException):
+        return "The server request timed out. Check drove server status and retry."
+    return str(error) or f"Chat request failed ({type(error).__name__}). Check drove server status."
+
+
 # ── Main app ────────────────────────────────────────────────────────────────────
 
 
@@ -489,7 +633,7 @@ class ChatApp(App[None]):
         self._turn: ChatTurn | None = None
         self._quit_requested = False
         self._model_picker_open = False
-        self._last_speed: float | None = None  # tok/s from last response
+        self._last_speed: float | None = None  # received chunks/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
         self.theme = theme
         self._session_allowed_tools: set[str] = set()
@@ -610,8 +754,13 @@ class ChatApp(App[None]):
                     await self._show_note(f"Unknown theme '{arg}'. Run /theme to list available.")
                 else:
                     self.theme = arg
-                    self._save_theme(arg)
-                    await self._show_note(f"Theme set to '{arg}'.")
+                    save_warning = self._save_theme(arg)
+                    if save_warning:
+                        await self._show_note(
+                            f"Theme '{arg}' applied for this session. {save_warning}"
+                        )
+                    else:
+                        await self._show_note(f"Theme set to '{arg}' and saved.")
 
         elif cmd == "/save":
             try:
@@ -688,9 +837,9 @@ class ChatApp(App[None]):
         self._update_status()
         await self._replay_history()
 
-    def _save_theme(self, theme: str) -> None:
+    def _save_theme(self, theme: str) -> str | None:
         if self._config_path is None:
-            return
+            return "No config file was supplied; the theme was not saved."
         try:
             from drove.config import load_config
 
@@ -698,7 +847,8 @@ class ChatApp(App[None]):
             cfg = cfg.model_copy(update={"tui_theme": theme})
             cfg.save(self._config_path)  # creates the file if it doesn't exist
         except Exception:
-            pass
+            return "Warning: could not save the theme. Check the config path and permissions."
+        return None
 
     # ── Input handling ──────────────────────────────────────────────────────────
 
@@ -970,7 +1120,7 @@ class ChatApp(App[None]):
         turn.started = True
         t_start = time.monotonic()
         t_first: float | None = None
-        token_count = 0
+        chunk_count = 0
         successful = False
         try:
             await self.query_one("#messages").mount(Message("user", turn.text))
@@ -981,35 +1131,38 @@ class ChatApp(App[None]):
                 if turn.stop_requested:
                     raise asyncio.CancelledError
                 tool_calls: dict[int, dict[str, str]] = {}
-                async with aclosing(self._stream_chat(turn.history)) as stream:
-                    async for event in stream:
-                        if t_first is None:
-                            t_first = time.monotonic()
-                        if event["kind"] == "thinking":
-                            token_count += 1
-                            turn.record["thinking"] = (
-                                turn.record.get("thinking", "") + event["chunk"]
-                            )
-                            await turn.bubble.append_thinking(event["chunk"])
-                        elif event["kind"] == "content":
-                            token_count += 1
-                            turn.record["content"] += event["chunk"]
-                            turn.bubble.finish_thinking()
-                            turn.bubble.append_text(event["chunk"])
-                        elif event["kind"] == "tool_call":
-                            tc = tool_calls.setdefault(
-                                event["index"],
-                                {
-                                    "id": "",
-                                    "name": "",
-                                    "arguments": "",
-                                },
-                            )
-                            for key in ("id", "name"):
-                                if event.get(key):
-                                    tc[key] = event[key]
-                            tc["arguments"] += event.get("arguments", "")
-                        self._scroll_to_bottom()
+                try:
+                    async with aclosing(self._stream_chat(turn.history)) as stream:
+                        async for event in stream:
+                            if t_first is None and event["kind"] in {"thinking", "content"}:
+                                t_first = time.monotonic()
+                            if event["kind"] == "thinking":
+                                chunk_count += 1
+                                turn.record["thinking"] = (
+                                    turn.record.get("thinking", "") + event["chunk"]
+                                )
+                                await turn.bubble.append_thinking(event["chunk"])
+                            elif event["kind"] == "content":
+                                chunk_count += 1
+                                turn.record["content"] += event["chunk"]
+                                turn.bubble.finish_thinking()
+                                await turn.bubble.append_text(event["chunk"])
+                            elif event["kind"] == "tool_call":
+                                tc = tool_calls.setdefault(
+                                    event["index"],
+                                    {
+                                        "id": "",
+                                        "name": "",
+                                        "arguments": "",
+                                    },
+                                )
+                                for key in ("id", "name"):
+                                    if event.get(key):
+                                        tc[key] = event[key]
+                                tc["arguments"] += event.get("arguments", "")
+                            self._scroll_to_bottom()
+                finally:
+                    await turn.bubble.finish_text()
                 turn.bubble.finish_thinking()
                 if not tool_calls:
                     self._commit_draft(turn)
@@ -1053,7 +1206,9 @@ class ChatApp(App[None]):
             turn.stop_requested = True
         except Exception as error:
             self._queue_paused = True
-            await self.query_one("#messages").mount(Message("error", str(error)))
+            await self.query_one("#messages").mount(
+                Message("error", _chat_error(error, self._base_url))
+            )
         finally:
             try:
                 if turn.stop_requested:
@@ -1087,7 +1242,7 @@ class ChatApp(App[None]):
             finally:
                 elapsed = time.monotonic() - t_first if t_first is not None else 0
                 self._last_ttft = t_first - t_start if t_first is not None else None
-                self._last_speed = token_count / elapsed if elapsed > 0 else None
+                self._last_speed = chunk_count / elapsed if elapsed > 0 else None
                 if self._turn is turn:
                     self._turn = None
                     self._generation_worker = None
@@ -1122,9 +1277,7 @@ class ChatApp(App[None]):
             ) as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
-                    raise RuntimeError(
-                        f"Server error {resp.status_code}: {body.decode(errors='replace')}"
-                    )
+                    raise RuntimeError(_http_error(resp.status_code, body))
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -1159,7 +1312,7 @@ class ChatApp(App[None]):
     def _update_status(self) -> None:
         parts = [f"  model: {self._model}", self._base_url, f"session: {self._session.id}"]
         if self._last_speed is not None:
-            parts.append(f"{self._last_speed:.1f} tok/s")
+            parts.append(f"{self._last_speed:.1f} chunks/s (received)")
         if self._last_ttft is not None:
             parts.append(f"TTFT {self._last_ttft:.2f}s")
         if self._queue:
@@ -1177,7 +1330,8 @@ class ChatApp(App[None]):
 
     def _scroll_to_bottom(self, force: bool = False) -> None:
         container = self.query_one("#messages", ScrollableContainer)
-        # Auto-scroll only if already near the bottom or forced
-        near_bottom = (container.max_scroll_y - container.scroll_y) <= 5
-        if force or near_bottom:
-            container.scroll_end(animate=False)
+        # Anchoring follows later Markdown layout updates, not just queued source.
+        # Textual releases the anchor when the user scrolls, and restores it only
+        # when they return to the bottom. Do not re-enable it on every chunk.
+        if force or (not container.is_anchored and container.scroll_y >= container.max_scroll_y):
+            container.anchor()

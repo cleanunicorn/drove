@@ -436,3 +436,45 @@ def test_config_default_model_set_get_clear(tmp_path: Path) -> None:
     assert runner.invoke(app, [*prefix, ""]).exit_code == 0
     assert "default_model" not in custom.read_text()
     assert runner.invoke(app, prefix).stdout == "None\n"
+
+
+@pytest.mark.parametrize(
+    "answer,accepted", [("\n", False), ("n\n", False), ("", False), ("wrong\ny\n", True)]
+)
+def test_confirmation_literal_safe_input(monkeypatch, answer, accepted):
+    import typer
+
+    from drove.cli.output import confirm_action
+
+    stream = StringIO()
+    out = Console(file=stream, width=40, color_system=None)
+    monkeypatch.setattr("sys.stdin", StringIO(answer))
+    if accepted:
+        confirm_action(out, "Delete '[red]literal'?")
+    else:
+        with pytest.raises(typer.Abort):
+            confirm_action(out, "Delete '[red]literal'?")
+    output = stream.getvalue()
+    assert "[red]literal" in output and "(n)" in output
+    assert "\x1b" not in output
+
+
+def test_download_remaining_all_categories_and_oversized():
+    from drove.cli.models import _download_remaining
+
+    plan = DownloadPlan(
+        repo_id="org/repo",
+        local_name="m",
+        sharded=False,
+        files={"one.gguf": 100, "two.gguf": 100},
+        mmproj_files={"mmproj.gguf": 50},
+        extra_files={"tokens": 25},
+    )
+    assert _download_remaining(
+        plan,
+        {
+            "one.gguf": (FileStatus.COMPLETE, 200),
+            "two.gguf": (FileStatus.INCOMPLETE, 120),
+            "mmproj.gguf": (FileStatus.INCOMPLETE, 20),
+        },
+    ) == (55, 1)

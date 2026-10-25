@@ -5,6 +5,8 @@
 ### Fixed
 
 - Prevented unconverted model weights from appearing as chat-ready in model selection.
+- Fixed loaded-model warnings when deleting a namespace containing running models.
+- Fixed deletion previews for relative model-storage paths, including symlinked directories.
 
 ### Added
 
@@ -15,6 +17,8 @@
 - Added configuration-repair retries for completed downloads that preserve custom settings.
 - Added guided keyboard quantization selection with download sizes, local status,
   advisory memory estimates, and safe cancellation.
+- Added contextual model deletion and download confirmations with file and size
+  previews, loaded-model warnings, and consistent safe defaults.
 
 ### Changed
 

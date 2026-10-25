@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import shlex
+from dataclasses import dataclass
+from os.path import abspath
 from pathlib import Path
+from stat import S_ISDIR, S_ISLNK
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.text import Text
 
-from drove.cli.output import console, fields, heading, hint, section, table
+from drove.cli.output import confirm_action, console, fields, heading, hint, section, table
 
 if TYPE_CHECKING:
+    from rich.console import Console
+
     from drove.cli.quant_picker import QuantCandidate
     from drove.downloader import DownloadPlan, FileStatus
 
@@ -271,6 +276,92 @@ def model_info(
     hint(out, "See effective settings and sources: drove models config <name>")
 
 
+@dataclass(frozen=True)
+class _DeletionPreview:
+    root: Path
+    external_config: Path | None
+    files: tuple[tuple[Path, int, bool], ...]
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(size for _, size, _ in self.files)
+
+
+def _deletion_preview(models_dir: Path, root: Path) -> _DeletionPreview:
+    """Inventory precisely the targets we remove, without following symlinks."""
+    base = models_dir.resolve()
+    if ".." in root.parts:
+        raise ValueError("Deletion target cannot contain parent traversal.")
+    root = Path(abspath(root))
+    if root == base or not root.parent.resolve().is_relative_to(base):
+        raise ValueError("Deletion target must be a model inside the models directory.")
+    entries: list[tuple[Path, int, bool]] = []
+
+    def collect(path: Path) -> None:
+        info = path.lstat()
+        if S_ISDIR(info.st_mode):
+            for child in sorted(path.iterdir()):
+                collect(child)
+        else:
+            entries.append((path, info.st_size, S_ISLNK(info.st_mode)))
+
+    collect(root)
+    candidate = root.with_name(root.name + ".toml") if root.is_dir() else root.with_suffix(".toml")
+    external: Path | None = None
+    if candidate.exists() or candidate.is_symlink():
+        if candidate.is_dir() and not candidate.is_symlink():
+            raise ValueError(f"Expected a sidecar file, found a directory: {candidate}")
+        collect(candidate)
+        external = candidate
+    return _DeletionPreview(root, external, tuple(entries))
+
+
+def _loaded_warning(ctx: typer.Context, models_dir: Path, root: Path) -> str:
+    """Best-effort snapshot; malformed or unreachable status is never 'unloaded'."""
+    import httpx
+
+    config = ctx.obj["config"]
+    host = config.listen_host.strip("[]")
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        response = httpx.get(f"http://{host}:{config.listen_port}/status", timeout=2.0)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            raise ValueError("Invalid status")
+        store = ModelStore(models_dir)
+        matched: list[str] = []
+        resolved_root = root.resolve()
+        recursive = root.is_dir() and not root.is_symlink()
+        for model in data["models"]:
+            if not isinstance(model, dict) or not isinstance(model.get("name"), str):
+                raise ValueError("Invalid model status")
+            candidate = store.find_root(model["name"])
+            if candidate is None:
+                continue
+            resolved_candidate = candidate.resolve()
+            affected = resolved_candidate == resolved_root or (
+                recursive and resolved_candidate.is_relative_to(resolved_root)
+            )
+            if affected:
+                active = model.get("active_requests")
+                requests = (
+                    f" ({active} active requests)"
+                    if type(active) is int and active >= 0
+                    else " (active requests unknown)"
+                )
+                matched.append(model["name"] + requests)
+        if matched:
+            return (
+                "Warning: currently loaded: " + ", ".join(matched) + ". Deletion does not stop it."
+            )
+        return "Not currently loaded (server status snapshot)."
+    except httpx.HTTPError, ValueError, OSError:
+        return "Warning: loaded status unknown; server status could not be checked."
+
+
 @models_app.command("delete")
 def delete_model(
     ctx: typer.Context,
@@ -280,30 +371,53 @@ def delete_model(
     """Delete a model and its config."""
     import shutil
 
-    models_dir = _models_dir(ctx)
+    models_dir = Path(abspath(_models_dir(ctx)))
     root = _model_root(models_dir, name)
-
     if root is None:
         typer.echo(f"Model '{name}' not found.", err=True)
         raise typer.Exit(1)
+    try:
+        preview = _deletion_preview(models_dir, root)
+    except (OSError, ValueError) as error:
+        typer.echo(f"Cannot prepare deletion: {error}", err=True)
+        raise typer.Exit(1) from None
 
-    target_str = f"{root}/"
-
+    root = preview.root
+    out = console()
+    heading(out, "Delete model", name)
+    fields(
+        out,
+        [
+            ("Target", root),
+            ("Files", len(preview.files)),
+            (
+                "Estimated space",
+                f"{_fmt_size(preview.total_bytes)} ({preview.total_bytes:,} bytes)",
+            ),
+        ],
+    )
+    listing = table("REMOVE", "BYTES")
+    for path, size, is_link in preview.files:
+        label = str(path.relative_to(models_dir)) + (" (symlink only)" if is_link else "")
+        listing.add_row(Text(label), f"{size:,}")
+    out.print(listing)
+    configs = [
+        str(path.relative_to(models_dir)) for path, _, _ in preview.files if path.suffix == ".toml"
+    ]
+    fields(out, [("Sidecar config", ", ".join(configs) if configs else "none present")])
+    hint(out, "Space is estimated; open files and hard links may delay or reduce reclaimed space.")
     if not yes:
-        typer.confirm(f"Delete model '{name}' at {target_str}?", abort=True)
+        out.print(Text(_loaded_warning(ctx, models_dir, root), style="yellow"))
+        confirm_action(out, f"Delete model '{name}' and the listed files?")
 
-    if root.is_dir():
-        shutil.rmtree(root)
-    else:
-        # Legacy: single file without directory
+    if root.is_symlink() or not root.is_dir():
         root.unlink()
-    typer.echo(f"Deleted {target_str}")
-
-    # Remove sidecar config if present (stored next to the root, not inside it)
-    cfg_path = models_dir / f"{name}.toml"
-    if cfg_path.exists():
-        cfg_path.unlink()
-        typer.echo(f"Deleted config {cfg_path}")
+    else:
+        shutil.rmtree(root)
+    typer.echo(f"Deleted {root}")
+    if preview.external_config is not None:
+        preview.external_config.unlink()
+        typer.echo(f"Deleted config {preview.external_config}")
 
 
 def _fmt_size(b: int) -> str:
@@ -354,17 +468,56 @@ def _select_quant_variant(
     return selected.quant
 
 
+def _download_remaining(
+    plan: DownloadPlan, statuses: dict[str, tuple[FileStatus, int]]
+) -> tuple[int, int]:
+    from drove.downloader import FileStatus
+
+    remaining = complete = 0
+    for fname, size in {**plan.files, **plan.mmproj_files, **plan.extra_files}.items():
+        status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
+        if status == FileStatus.COMPLETE:
+            complete += 1
+        else:
+            remaining += max(0, size - local_size)
+    return remaining, complete
+
+
 def _print_download_plan(
     plan: DownloadPlan,
     models_dir: Path,
     statuses: dict[str, tuple[FileStatus, int]] | None = None,
     *,
     verbose: bool = False,
-) -> None:
+) -> Console:
     from drove.downloader import FileStatus
 
     out = console()
     heading(out, "Download", plan.repo_id)
+    if verbose:
+        for title, files in [
+            ("Model files", plan.files),
+            ("Multimodal projection (vision)", plan.mmproj_files),
+            ("Support files", plan.extra_files),
+        ]:
+            if not files:
+                continue
+            section(out, title)
+            listing = table("FILE", "SIZE", "STATUS")
+            listing.columns[1].justify = "right"
+            for fname, size in files.items():
+                label = "pending"
+                if statuses is not None:
+                    status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
+                    if status == FileStatus.COMPLETE:
+                        label = "complete"
+                    elif status == FileStatus.INCOMPLETE:
+                        pct = local_size * 100 // size if size else 0
+                        label = f"{pct}% local"
+                listing.add_row(Text(fname), _fmt_size(size), label)
+            out.print(listing)
+    else:
+        hint(out, "Use --verbose to inspect every file and resume state.")
     total_files = len(plan.files) + len(plan.mmproj_files) + len(plan.extra_files)
     fields(
         out,
@@ -375,45 +528,12 @@ def _print_download_plan(
         ],
     )
     if statuses is not None:
-        all_files = {**plan.files, **plan.mmproj_files, **plan.extra_files}
-        remaining = 0
-        complete = 0
-        for fname, size in all_files.items():
-            status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
-            if status == FileStatus.COMPLETE:
-                complete += 1
-            else:
-                remaining += max(0, size - local_size)
+        remaining, complete = _download_remaining(plan, statuses)
         fields(
             out,
             [("To download", f"~{_fmt_size(remaining)} · {complete}/{total_files} files complete")],
         )
-    if not verbose:
-        hint(out, "Use --verbose to inspect every file and resume state.")
-        out.print()
-        return
-    for title, files in [
-        ("Model files", plan.files),
-        ("Multimodal projection (vision)", plan.mmproj_files),
-        ("Support files", plan.extra_files),
-    ]:
-        if not files:
-            continue
-        section(out, title)
-        listing = table("FILE", "SIZE", "STATUS")
-        listing.columns[1].justify = "right"
-        for fname, size in files.items():
-            label = "pending"
-            if statuses is not None:
-                status, local_size = statuses.get(fname, (FileStatus.MISSING, 0))
-                if status == FileStatus.COMPLETE:
-                    label = "complete"
-                elif status == FileStatus.INCOMPLETE:
-                    pct = local_size * 100 // size if size else 0
-                    label = f"{pct}% local"
-            listing.add_row(Text(fname), _fmt_size(size), label)
-        out.print(listing)
-    out.print()
+    return out
 
 
 @models_app.command("download")
@@ -509,7 +629,6 @@ def download_model(
         _download_summary(plan, models_dir, existing=True)
         raise typer.Exit(0)
 
-    _print_download_plan(plan, models_dir, statuses, verbose=verbose)
     if plan.tts_engine == "kitten":
         typer.echo(
             "KittenTTS 2 weights: Stellon Labs Community License (not Apache 2.0). "
@@ -517,11 +636,11 @@ def download_model(
             "https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md"
         )
 
+    out = _print_download_plan(plan, models_dir, statuses, verbose=verbose)
     if not yes and not all_complete:
-        if has_existing:
-            typer.confirm("Some files already exist. Resume download?", abort=True)
-        else:
-            typer.confirm("Proceed with download?", abort=True)
+        remaining, _ = _download_remaining(plan, statuses)
+        action = "Resume download of" if has_existing else "Download"
+        confirm_action(out, f"{action} approximately {_fmt_size(remaining)}?")
 
     from drove.cli.download_progress import DownloadDisplay
 

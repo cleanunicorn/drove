@@ -14,6 +14,7 @@ from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.screen import ModalScreen
@@ -134,9 +135,15 @@ LoadingIndicator {
 
 LoadingIndicator.visible { display: block; }
 
+ToolConfirmationModal {
+    align: center middle;
+}
+
 #tool-dialog {
-    width: 60;
-    height: auto;
+    width: 90%;
+    max-width: 80;
+    height: 90%;
+    max-height: 40;
     background: $surface;
     border: solid $accent;
     padding: 1 2;
@@ -150,6 +157,15 @@ LoadingIndicator.visible { display: block; }
 
 #tool-dialog Label.message {
     margin-bottom: 1;
+}
+
+#tool-arguments-scroll {
+    height: 1fr;
+    overflow-x: hidden;
+}
+
+#tool-arguments {
+    width: 1fr;
 }
 
 #tool-dialog .buttons {
@@ -229,8 +245,8 @@ class Message(Static):
             "error": "Error",
             "system-note": "System",
         }
-        yield Label(labels.get(self._role, self._role), classes="message-header")
-        yield Label(self._content, classes="message-body", id=f"body-{id(self)}")
+        yield Label(labels.get(self._role, self._role), classes="message-header", markup=False)
+        yield Label(self._content, classes="message-body", id=f"body-{id(self)}", markup=False)
 
     def append_text(self, chunk: str) -> None:
         self._content += chunk
@@ -244,7 +260,7 @@ class Message(Static):
         if not self._has_thinking_widget:
             self._has_thinking_widget = True
             collapsible = Collapsible(
-                Label(self._thinking, id=f"thinking-{id(self)}"),
+                Label(self._thinking, id=f"thinking-{id(self)}", markup=False),
                 title="Thinking…",
                 collapsed=True,
                 classes="thinking-section",
@@ -275,7 +291,8 @@ class Message(Static):
         result_preview = result[:200] + ("…" if len(result) > 200 else "")
         collapsible = Collapsible(
             Label(f"Arguments: {arguments}\n\nResult:\n{result}", markup=False),
-            title=f"⚙ {name} → {result_preview}",
+            # Collapsible forwards Content to its title renderer despite its str annotation.
+            title=Content(f"⚙ {name} → {result_preview}"),  # type: ignore[arg-type]
             collapsed=True,
             classes="tool-call-section",
         )
@@ -296,11 +313,14 @@ class ToolConfirmationModal(ModalScreen[str]):
     def compose(self) -> ComposeResult:
         with Vertical(id="tool-dialog"):
             yield Label("Tool Call Confirmation", classes="title")
-            yield Label(
-                f"The model wants to execute the tool: [bold]{self._tool_name}[/bold]",
-                classes="message",
-            )
-            yield Label(f"Arguments: {self._arguments}", classes="message")
+            with ScrollableContainer(id="tool-arguments-scroll"):
+                yield Label(
+                    f"The model wants to execute the tool: {self._tool_name}",
+                    classes="message",
+                    markup=False,
+                )
+                yield Label("Arguments:")
+                yield Label(self._arguments, id="tool-arguments", markup=False)
             with Horizontal(classes="buttons"):
                 yield Button("Allow Once", variant="primary", id="allow-once")
                 yield Button("Deny Once", variant="error", id="deny-once")
@@ -407,7 +427,7 @@ class ChatApp(App[None]):
         yield Header(show_clock=True)
         yield ScrollableContainer(id="messages")
         with Horizontal(id="status-bar"):
-            yield Label("", id="status-label")
+            yield Label("", id="status-label", markup=False)
             yield LoadingIndicator(id="spinner")
         yield OptionList(id="autocomplete")
         with Vertical(id="input-bar"):

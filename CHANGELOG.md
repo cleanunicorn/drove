@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved literal text in chat messages and tool details, preventing model-supplied
+  styling from obscuring tool approvals; made long arguments scrollable with
+  permission controls kept visible.
+
 ### Changed
 
 - Redesigned the documentation around a focused first-request tutorial, task guides,

@@ -39,6 +39,11 @@ drove --config /path/to/config.toml server status -V
 For walkthroughs, see [Managing models](./models.md),
 [Text and vision](./text-and-vision.md), and [Running drove](./operations.md).
 
+In `drove chat`, message text, thinking, and errors are shown literally: bracketed
+text such as `a[i]` is not treated as styling. Tool confirmations show the tool
+name and exact arguments as plain text. Scroll within the confirmation to review
+long arguments; the permission buttons stay available below it.
+
 ## Config management
 
 ```bash

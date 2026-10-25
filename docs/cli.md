@@ -253,6 +253,24 @@ muted labels. Model names and paths wrap to fit the terminal and are printed
 literally, including brackets. Redirected output has no ANSI color codes;
 `NO_COLOR=1` disables color in the terminal too.
 
+Human feedback uses explicit `Success:`, `Warning:`, `Error:`, and `Info:` labels,
+so outcomes remain distinguishable without color. Warnings and errors go to
+standard error; confirmations go to standard output. A `Next:` line gives the
+relevant follow-up command. Unknown model names and configuration keys suggest a
+close match when available and explain how to list valid choices. Unknown
+model-config keys are errors; a valid key with no override still prints `(not set)`.
+
+State-changing commands confirm what they changed after completing their writes.
+`drove init` summarizes the saved configuration instead of dumping TOML, and
+`drove integrate` shows model limits and capabilities plus written files and
+actual backups. Completion installation reports the correct activation step for
+the selected shell.
+
+Single-value config queries and generated completion scripts remain plain output
+for scripts. Integration and completion `--dry-run` output retains its existing
+plain transcript and writes no files; integration previews include model lines,
+file-path comments, and JSON rather than a single JSON document.
+
 Default reports prioritize the next decision; detail is available on demand:
 
 | Command | Default view | More detail |

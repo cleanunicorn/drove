@@ -903,3 +903,115 @@ def test_cli_reports_unparseable_config(tmp_path: Path, cli_config: Path) -> Non
     )
     assert result.exit_code == 1
     assert path.read_text() == "[1, 2]"
+
+
+def test_cli_feedback_reports_capabilities_written_paths_and_real_backups(
+    tmp_path: Path, cli_config: Path
+) -> None:
+    runner = CliRunner()
+    first = runner.invoke(app, ["-c", str(cli_config), "integrate", "pi", "-d", "coder"])
+    assert first.exit_code == 0, first.output
+    for value in ("MODEL", "CONTEXT", "OUTPUT", "VISION", "TOOLS", "REASONING", "coder", "small"):
+        assert value in first.stdout
+    assert "65,536" in first.stdout and "8,192" in first.stdout
+    assert "yes" in first.stdout and "no" in first.stdout
+    assert "Written" in first.stdout and "Success:" in first.stdout and "Next:" in first.stdout
+    assert "Backup" not in first.stdout
+    unchanged = runner.invoke(app, ["-c", str(cli_config), "integrate", "pi", "-d", "coder"])
+    assert unchanged.exit_code == 0 and "already up to date" in unchanged.stdout
+    assert "Backup" not in unchanged.stdout and "Written" not in unchanged.stdout
+    removed = runner.invoke(app, ["-c", str(cli_config), "integrate", "pi", "--remove"])
+    assert removed.exit_code == 0 and "Removed" in removed.stdout and "Backup" in removed.stdout
+    assert (tmp_path / "pi" / "models.json.bak").exists()
+    assert (tmp_path / "pi" / "settings.json.bak").exists()
+
+
+@pytest.mark.parametrize("args", [["codr"], ["--default", "codr"]])
+def test_cli_feedback_unknown_integration_model_suggests_match(
+    tmp_path: Path, cli_config: Path, args: list[str]
+) -> None:
+    result = CliRunner().invoke(app, ["-c", str(cli_config), "integrate", "opencode", *args])
+    assert result.exit_code == 1
+    assert "Error:" in result.stderr and "Did you mean 'coder'" in result.stderr
+    assert "drove models list" in result.stderr
+    assert not (tmp_path / "xdg" / "opencode").exists()
+
+
+def test_cli_feedback_dry_run_exact_legacy_transcript(tmp_path: Path, cli_config: Path) -> None:
+    from drove.integrations import dump_json
+
+    path = tmp_path / "xdg" / "opencode" / "opencode.json"
+    conf = Config(models_dir=tmp_path / "models", listen_port=9999)
+    specs = collect_model_specs(conf)
+    files = ConfigFiles()
+    OpenCode().apply(
+        files, path, specs, base_url=default_base_url(conf), provider_id="drove", prune=True
+    )
+    preamble = ""
+    for spec in specs:
+        caps = [
+            name
+            for name, enabled in (
+                ("vision", spec.vision),
+                ("tools", spec.tool_call),
+                ("reasoning", spec.reasoning),
+            )
+            if enabled
+        ]
+        preamble += (
+            f"  {spec.id}: context {spec.context_window:,}, output {spec.max_output:,}"
+            + (f", {', '.join(caps)}" if caps else "")
+            + "\n"
+        )
+    expected = preamble + f"\n# {path}\n" + dump_json(files.get(path))
+    result = CliRunner().invoke(
+        app, ["-c", str(cli_config), "integrate", "opencode", "--dry-run"], color=True
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout == expected and result.stderr == ""
+    assert not path.exists() and not path.with_suffix(".json.bak").exists()
+
+
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_cli_feedback_write_failure_never_claims_registration(
+    cli_config: Path, monkeypatch: pytest.MonkeyPatch, incomplete: bool
+) -> None:
+    import importlib
+
+    module = importlib.import_module("drove.cli.integrate")
+
+    def fail(changed):
+        if incomplete:
+            raise IncompleteRollbackError("rollback failed")
+        raise OSError("write failed")
+
+    monkeypatch.setattr(module, "write_configs", fail)
+    result = CliRunner().invoke(app, ["-c", str(cli_config), "integrate", "opencode"])
+    assert result.exit_code == 1 and "Error:" in result.stderr
+    assert "Success:" not in result.output and "MODEL" not in result.stdout
+    assert (
+        ("rollback failed" in result.stderr)
+        if incomplete
+        else ("nothing was changed" in result.stderr)
+    )
+
+
+def test_cli_feedback_pruning_and_unchanged_dry_run(tmp_path: Path, cli_config: Path) -> None:
+    runner = CliRunner()
+    prefix = ["-c", str(cli_config), "integrate", "opencode"]
+    assert runner.invoke(app, prefix).exit_code == 0
+    for primary in (tmp_path / "models").rglob("*.gguf"):
+        primary.unlink()
+    dry = runner.invoke(app, [*prefix, "--dry-run"])
+    assert dry.exit_code == 0 and dry.stdout.startswith(
+        "No chat models left; removing 2 stale model(s).\n"
+    )
+    assert "Success:" not in dry.stdout
+    result = runner.invoke(app, prefix)
+    assert result.exit_code == 0 and "Removed 2 stale model(s)" in result.stdout
+    assert "Backup" in result.stdout
+    # Explicit removal also removes the now-empty provider container.
+    assert runner.invoke(app, [*prefix, "--remove"]).exit_code == 0
+    unchanged = runner.invoke(app, [*prefix, "--remove", "--dry-run"])
+    path = tmp_path / "xdg" / "opencode" / "opencode.json"
+    assert unchanged.stdout == f"opencode is already up to date: {path}\n"

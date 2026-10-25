@@ -26,7 +26,8 @@ class CatalogError(ValueError):
 def model_catalog(config: Config, loaded: set[str]) -> list[dict[str, object]]:
     """Describe every model without loading a backend; call off the event loop."""
     models: list[dict[str, object]] = []
-    for entry in ModelStore(config.models_dir).list():
+    store = ModelStore(config.models_dir)
+    for entry in store.list():
         metadata: dict[str, object] = {
             "chat": None,
             "loaded": entry.name in loaded,
@@ -34,10 +35,11 @@ def model_catalog(config: Config, loaded: set[str]) -> list[dict[str, object]]:
             "capabilities": None,
         }
         try:
-            spec = describe_model(config, entry.name, entry.primary)
+            primary = store.resolve(entry.name)
+            spec = describe_model(config, entry.name, primary)
         except OSError, ValueError:
-            # A broken sidecar must not break listing every other model, or
-            # accidentally advertise this model as suitable for chat.
+            # Unservable weights and broken sidecars stay in the inventory,
+            # but must not be advertised as suitable for chat.
             pass
         else:
             metadata["chat"] = spec is not None

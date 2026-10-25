@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevented unconverted model weights from appearing as chat-ready in model selection.
+
 ### Added
 
 - Added searchable keyboard model selection with loaded state, size and capabilities, plus safe in-chat model switching that saved the previous conversation.

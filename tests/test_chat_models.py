@@ -1,5 +1,6 @@
 """The picker trusts server metadata while retaining legacy endpoints."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -10,8 +11,37 @@ from drove.chat_models import (
     ChatModel,
     fetch_models,
     fetch_models_async,
+    model_catalog,
     parse_models,
 )
+from drove.config import Config
+
+
+@pytest.mark.parametrize("extension", ["safetensors", "bin", "pt"])
+@pytest.mark.parametrize("name", ["unconverted", "org/unconverted"])
+def test_catalog_excludes_unconverted_weights_from_chat(
+    tmp_path: Path, extension: str, name: str
+) -> None:
+    config = Config(models_dir=tmp_path)
+    folder = tmp_path / name
+    folder.mkdir(parents=True)
+    (folder / f"model.{extension}").write_bytes(b"weights")
+    (tmp_path / "ready.gguf").write_bytes(b"gguf")
+
+    catalog = model_catalog(config, {"ready"})
+    rows = {row["id"]: row for row in catalog}
+    assert rows[name]["drove"] == {
+        "chat": None,
+        "loaded": False,
+        "size_bytes": 7,
+        "capabilities": None,
+    }
+    assert [model.id for model in parse_models({"data": catalog})] == ["ready"]
+
+    # A converted model remains selectable even with the original weights present.
+    (folder / "model.gguf").write_bytes(b"gguf")
+    converted = parse_models({"data": model_catalog(config, set())})
+    assert {model.id for model in converted} == {"ready", name}
 
 
 def test_parse_filters_speech_and_broken_metadata_without_guessing() -> None:

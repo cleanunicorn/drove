@@ -157,19 +157,9 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     @app.get("/v1/models")
     async def list_models() -> JSONResponse:
         """OpenAI-compatible model listing."""
-        from drove.cli.models import _iter_models
+        from drove.chat_models import model_catalog
 
-        models = _iter_models(config.models_dir)
-        model_objects = []
-        for name, _path, _size in models:
-            model_objects.append(
-                {
-                    "id": name,
-                    "object": "model",
-                    "created": 0,
-                    "owned_by": "local",
-                }
-            )
+        model_objects = await asyncio.to_thread(model_catalog, config, set(manager.loaded_models))
         return JSONResponse({"object": "list", "data": model_objects})
 
     @app.api_route(

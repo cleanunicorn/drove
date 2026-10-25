@@ -80,7 +80,19 @@ drove chat --resume                      # resume the latest saved session
 drove chat -s "You are a terse assistant."
 ```
 
-Type `/help` inside chat for commands such as `/sessions` and `/theme`.
+Without a model argument, the picker shows loaded state, disk size and inferred
+capabilities. Type to filter names, move with ↑/↓, and press Enter to select.
+Esc or Ctrl+C cancels. A loaded chat model is preselected when available;
+known speech models and models with unreadable configuration are excluded.
+Pass a model name explicitly if stdin or stdout is redirected.
+
+Inside chat, `/model` opens the same picker with the current model selected.
+Choosing another saves the current conversation and starts a separate one,
+preserving its system prompt. Wait for pending replies to finish before switching.
+Cancel or select the current model to keep the conversation unchanged. Saved
+conversations can be reopened through `/sessions` when using their model.
+Type `/help` for all commands, including `/theme`.
+
 The TUI can also use a remote OpenAI-compatible endpoint:
 
 ```bash
@@ -88,7 +100,10 @@ drove chat -e https://api.openai.com/v1 -k "$OPENAI_API_KEY"
 ```
 
 Remote chat uses that provider's models and credentials; it does not require a
-local drove server.
+local drove server. Older servers and third-party endpoints may not supply model
+metadata; their entries remain selectable with unknown labels. drove cannot
+verify chat capability from a name alone. See [Chat model selection](./cli.md#chat-model-selection)
+for the complete CLI behavior.
 
 ## Connect a coding agent
 

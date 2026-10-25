@@ -81,6 +81,10 @@ drove chat -s "You are a terse assistant."
 ```
 
 Type `/help` inside chat for commands such as `/sessions` and `/theme`.
+Assistant replies show formatted Markdown and highlighted code. Tab to a message
+and use Ctrl+Y to copy its original text, or Ctrl+B to choose a code block. See
+[chat presentation and copying](./cli.md#chat-presentation-and-copying) for clipboard
+support, error guidance and the meaning of the received-chunk speed display.
 The TUI can also use a remote OpenAI-compatible endpoint:
 
 ```bash

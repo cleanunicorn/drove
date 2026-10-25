@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Rendered assistant chat replies as streaming Markdown with highlighted code and
+  keyboard copying of complete messages or individual code blocks.
+
+### Fixed
+
+- Made chat errors actionable while preserving literal user and error text,
+  labelled received chunk rates accurately, and warned when theme settings could
+  not be saved.
+
 ### Changed
 
 - Redesigned the documentation around a focused first-request tutorial, task guides,

@@ -39,7 +39,7 @@ from textual.widgets.markdown import MarkdownStream
 from textual.widgets.option_list import Option
 from textual.worker import Worker
 
-from drove.chat_models import CatalogError, fetch_models_async
+from drove.chat_models import CatalogError, fetch_context_length, fetch_models_async
 from drove.config import ChatHint, load_config, save_tui_completed_hints
 from drove.model_picker import ModelPicker
 from drove.sessions import Session, list_sessions, new_session, save_session
@@ -51,6 +51,9 @@ CSS = """
 ChatApp { background: $background; }
 #chat-header { height: 1; padding: 0 1; background: $surface; }
 #brand { width: 1fr; color: $accent; text-style: bold; }
+#ctx-meter { display: none; width: auto; margin-left: 1; color: $text-muted; }
+#ctx-meter.visible { display: block; }
+#ctx-meter.warn { color: $warning; }
 #chat-header Button {
     width: auto; min-width: 0; height: 1; border: none;
     background: transparent; margin-left: 1;
@@ -270,11 +273,30 @@ def _markdown_parser() -> MarkdownIt:
 
 
 TOOL_DENIED = "Error: Tool execution denied by user."
+CONTEXT_METER_CELLS = 10
+#: Fill fraction from which the context meter is shown as nearly full.
+CONTEXT_WARN_FRACTION = 0.8
 #: Most recent tool output kept for the live preview; the model always gets all of it.
 TOOL_OUTPUT_TAIL_CHARS = 4096
 #: Lines of that tail shown under a running tool.
 TOOL_OUTPUT_LINES = 6
 TOOL_ARGUMENTS_PREVIEW = 60
+
+
+def _compact_tokens(count: int) -> str:
+    if count < 1000:
+        return str(count)
+    if count < 1_000_000:
+        return f"{count / 1000:.1f}k"
+    return f"{count / 1_000_000:.1f}M"
+
+
+def _context_used(usage: dict[str, Any]) -> int | None:
+    """Tokens in context after the last reply, or None unless both counts were reported."""
+    counts = [usage.get("prompt_tokens"), usage.get("completion_tokens")]
+    if not all(type(count) is int and count >= 0 for count in counts):
+        return None
+    return sum(counts)  # type: ignore[arg-type]
 
 
 def _preview_arguments(arguments: str) -> str:
@@ -791,6 +813,8 @@ class ChatApp(App[None]):
         self._last_speed: float | None = None  # received chunks/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
         self._last_usage: dict[str, int] = {}
+        self._context_length: int | None = None  # tokens the active model can hold, if known
+        self._context_request = 0  # invalidates context lookups for a former model
         self._tool_seconds = 0
         self._completed_hints: set[ChatHint] = set()
         self._hint_save_failed = False
@@ -822,6 +846,7 @@ class ChatApp(App[None]):
             yield Button(
                 "Info", id="chat-details", compact=True, tooltip="Connection and reply details"
             )
+            yield Label("", id="ctx-meter", markup=False)
         with Vertical(id="conversation", classes="empty"):
             with Vertical(id="welcome"):
                 with Vertical(id="welcome-content"):
@@ -864,12 +889,21 @@ class ChatApp(App[None]):
     def on_mount(self) -> None:
         self.title = "drove chat"
         self._tool_timer = self.set_interval(0.1, self._tick_tool, pause=True)
+        self.run_worker(self._refresh_context_length(), exit_on_error=False)
         self._update_status()
         self.query_one("#user-input", ChatInput).focus()
 
         # Replay existing messages when resuming
         if self._session.message_count > 0:
             self.call_after_refresh(self._replay_history)
+
+    async def _refresh_context_length(self) -> None:
+        self._context_request += 1
+        request, model = self._context_request, self._model
+        length = await fetch_context_length(self._base_url, self._api_key, model)
+        if request == self._context_request and model == self._model:
+            self._context_length = length
+            self._update_status()
 
     async def _replay_history(self) -> None:
         # Index tool results by tool_call_id for pairing
@@ -1033,6 +1067,10 @@ class ChatApp(App[None]):
             session.id += f"-{time.time_ns()}-{uuid4().hex}"
             self._session = session
             self._model = selected
+            self._context_request += 1
+            self._context_length = next(
+                (model.context_length for model in models if model.id == selected), None
+            )
             self._system_prompt = system_prompt
             self._history = list(session.messages)
             self._session_allowed_tools.clear()
@@ -1293,7 +1331,6 @@ class ChatApp(App[None]):
             return
         if not self._queue:
             self._queue_paused = False
-        self._last_usage = {}
         turn = ChatTurn(self._session, self._history, text)
         turn.history.append({"role": "user", "content": text})
         turn.session.messages = turn.history
@@ -1443,13 +1480,14 @@ class ChatApp(App[None]):
                 if turn.stop_requested:
                     raise asyncio.CancelledError
                 tool_calls: dict[int, dict[str, str]] = {}
+                usage: dict[str, int] = {}
                 try:
                     async with aclosing(self._stream_chat(turn.history)) as stream:
                         async for event in stream:
                             if t_first is None and event["kind"] in {"thinking", "content"}:
                                 t_first = time.monotonic()
                             if event["kind"] == "usage":
-                                self._last_usage = event["usage"]
+                                usage = event["usage"]
                             elif event["kind"] == "thinking":
                                 chunk_count += 1
                                 turn.record["thinking"] = (
@@ -1477,6 +1515,9 @@ class ChatApp(App[None]):
                             self._scroll_to_bottom()
                 finally:
                     await turn.bubble.finish_text()
+                # Each response reports the whole context; keep only the latest one.
+                self._last_usage = usage
+                self._update_status()
                 turn.bubble.finish_thinking()
                 if not tool_calls:
                     self._commit_draft(turn)
@@ -1518,6 +1559,9 @@ class ChatApp(App[None]):
                 Message("error", _chat_error(error, self._base_url))
             )
         finally:
+            if not successful:
+                # A stopped or failed reply changed the history after the last usage report.
+                self._last_usage = {}
             try:
                 if turn.stop_requested:
                     turn.record["stopped"] = True
@@ -1681,15 +1725,44 @@ class ChatApp(App[None]):
         ttft = f"{self._last_ttft:.2f}s" if self._last_ttft is not None else "Not available"
         prompt = self._last_usage.get("prompt_tokens")
         completion = self._last_usage.get("completion_tokens")
+        used = _context_used(self._last_usage)
+        total = self._context_length
+        if used is None:
+            context = "Not reported"
+        elif total is None:
+            context = f"{used:,} tokens (context size unknown)"
+        else:
+            context = f"{used:,} / {total:,} tokens ({used / total:.0%})"
         return (
             f"Model: {self._model}\nEndpoint: {self._base_url}\n"
             f"Session: {self._session.id}\n"
+            f"Context: {context}\n"
             f"Context messages: {len(self._history)}\n"
             f"Last prompt tokens: {prompt if prompt is not None else 'Not reported'}\n"
             "Last completion tokens: "
             f"{completion if completion is not None else 'Not reported'}\n"
             f"Last reply speed: {speed}\nTime to first token: {ttft}"
         )
+
+    def _update_context_meter(self) -> None:
+        meter = self.query_one("#ctx-meter", Label)
+        used = _context_used(self._last_usage)
+        total = self._context_length
+        meter.set_class(used is not None, "visible")
+        if used is None:
+            meter.set_class(False, "warn")
+            return
+        if total is None:
+            # Without a known size a fill level would be a guess; show the count instead.
+            meter.update(f"ctx {_compact_tokens(used)}")
+            meter.tooltip = f"{used:,} tokens in context · context size unknown"
+            meter.set_class(False, "warn")
+            return
+        fraction = used / total
+        filled = min(CONTEXT_METER_CELLS, round(fraction * CONTEXT_METER_CELLS))
+        meter.update("▰" * filled + "▱" * (CONTEXT_METER_CELLS - filled))
+        meter.tooltip = f"{used:,} / {total:,} tokens"
+        meter.set_class(fraction >= CONTEXT_WARN_FRACTION, "warn")
 
     def _update_status(self) -> None:
         self.query_one("#conversation").set_class(
@@ -1721,6 +1794,7 @@ class ChatApp(App[None]):
         )
         self.query_one("#status-label", Label).update("  ·  ".join(parts))
         self.query_one("#status-bar").set_class(bool(activity or parts), "visible")
+        self._update_context_meter()
         if isinstance(self.screen, ChatDetails):
             self.screen.query_one("#details-content", Label).update(self._details_text())
         self._update_guidance()

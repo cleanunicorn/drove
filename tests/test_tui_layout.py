@@ -201,7 +201,7 @@ async def test_info_scrolls_without_leaking_diagnostics_into_conversation(tmp_pa
         assert not app.query(Message)
 
 
-async def test_stream_usage_is_reported_only_in_info(tmp_path, monkeypatch):
+async def test_stream_usage_feeds_info_and_the_context_meter(tmp_path, monkeypatch):
     app = chat(tmp_path)
     events = [
         {"choices": [{"delta": {"content": "Hello"}}]},
@@ -240,6 +240,8 @@ async def test_stream_usage_is_reported_only_in_info(tmp_path, monkeypatch):
         }
         assert app.query("Message.assistant").first()._content == "Hello"
         assert not app.query_one("#status-bar").has_class("visible")
+        # No context size is known here, so the meter shows the raw count.
+        assert app.query_one("#ctx-meter", Label).render().plain == "ctx 168"
         await app._dispatch_command("/info")
         await pilot.pause()
         assert (
@@ -251,3 +253,4 @@ async def test_stream_usage_is_reported_only_in_info(tmp_path, monkeypatch):
         await app._dispatch_command("/new")
         assert app._last_usage == {}
         assert "Last prompt tokens: Not reported" in app._details_text()
+        assert not app.query_one("#ctx-meter").has_class("visible")

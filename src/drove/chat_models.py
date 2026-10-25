@@ -139,3 +139,12 @@ async def fetch_models_async(base_url: str, api_key: str | None) -> list[ChatMod
         raise CatalogError(
             "Could not list models. Check the endpoint, server and API key."
         ) from exc
+
+
+async def fetch_context_length(base_url: str, api_key: str | None, model: str) -> int | None:
+    """The context length the endpoint advertises for *model*; None when unknown or offline."""
+    try:
+        models = await fetch_models_async(base_url, api_key)
+    except CatalogError:
+        return None
+    return next((entry.context_length for entry in models if entry.id == model), None)

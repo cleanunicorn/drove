@@ -1,31 +1,38 @@
 # Getting started
 
-This guide takes you from a fresh install to serving text, vision,
-speech-to-text, and text-to-speech models through one OpenAI-compatible endpoint. For the full
-reference on any topic, follow the links to the other docs.
+[Docs](./README.md) / Getting started
+
+Install drove, serve one text model, and verify a response. This tutorial uses
+a local model named `qwen` and a proxy bound to `127.0.0.1:8080`. Model downloads
+and the first load depend on your connection and hardware.
 
 ## Prerequisites
 
-- [`uv`](https://docs.astral.sh/uv/) — used to install and run drove.
-- **`llama-server`** from [llama.cpp](https://github.com/ggml-org/llama.cpp) on
-  your `PATH` — required for text and vision (GGUF) models. Speech-to-text needs
-  no extra binary.
-- `ffmpeg` (optional) — lets the speech-to-text worker accept compressed audio
-  (mp3, m4a, ogg…), and lets text-to-speech return mp3/opus/aac/flac and change
-  speed. Without it, use WAV.
-- `espeak-ng` — required for text-to-speech. Qwen3-TTS also needs `sox`.
+- **Linux or macOS.**
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** on your `PATH`.
+  drove needs Python 3.14 or later; uv can install that interpreter for you.
+- **`llama-server`** from [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/master/tools/server)
+  on your `PATH` for text and vision models. On macOS, `brew install llama.cpp`
+  provides it. On Linux, use a [release binary](https://github.com/ggml-org/llama.cpp/releases)
+  or build llama.cpp for your hardware.
+- Enough disk space and RAM/VRAM for your chosen model. The example downloads an
+  8B model at Q4_K_M quantization; choose a smaller model if needed.
+
+Only serving audio? Go directly to [Speech-to-text](./speech-to-text.md) or
+[Text-to-speech](./text-to-speech.md) for their dependencies and first request.
 
 ## 1. Install
 
-### Option 1: uv tool install (no clone)
-
 ```bash
-uv tool install 'drove[asr] @ git+https://github.com/cleanunicorn/drove'
+uv tool install --python 3.14 'drove[asr] @ git+https://github.com/cleanunicorn/drove'
+drove --version
 ```
 
-Drop `[asr]` for a text-generation-only install.
+The version command should print `drove` and a version number. `[asr]` includes
+speech-to-text dependencies; omit it for a minimal install. If your shell
+cannot find `drove`, run `uv tool update-shell`, then open a new terminal.
 
-### Option 2: make install (from a checkout)
+Alternatively, install from a checkout:
 
 ```bash
 git clone https://github.com/cleanunicorn/drove.git
@@ -33,16 +40,9 @@ cd drove
 make install
 ```
 
-`make install` installs `uv` if needed, then installs the `drove` CLI (with
-speech-to-text support) as a `uv` tool. Set `DROVE_EXTRAS=` for a minimal
-install. If the installer prints a `PATH` warning, add the `uv` tool bin
-directory to your `PATH`.
-
-Verify the install:
-
-```bash
-drove --version
-```
+`make install` bootstraps uv if needed and installs the CLI as a uv tool.
+`make install DROVE_EXTRAS=` omits ASR dependencies. You do not need a global
+install for [development checks](./contributing.md).
 
 ## 2. Initialize local config
 
@@ -50,229 +50,88 @@ drove --version
 drove init
 ```
 
-This writes `~/.config/drove/config.toml` with defaults and prints it. Override
-the location with `--config` or the `DROVE_CONFIG` environment variable. See
-[Configuration](./configuration.md) for every setting.
+This writes and displays `~/.config/drove/config.toml`. If it already exists,
+keep your settings; `drove config` displays them. For a custom path, use
+`drove --config /path/to/config.toml init` and pass the same root option to
+subsequent commands, or set `DROVE_CONFIG`.
 
 ## 3. Download a model
 
 ```bash
-drove models download unsloth/Qwen3-8B-GGUF
-```
-
-The reference is `org/repo` or `org/repo:QUANT`. Without a quantization tag, a
-repo with several variants shows a picker. Sharded models are stored in their
-own subdirectory, and partial downloads resume. List what you have:
-
-```bash
+drove models download unsloth/Qwen3-8B-GGUF:Q4_K_M --name qwen
 drove models list
 ```
 
-The `CAPABILITY` column flags `vision` (multimodal), `stt` (speech-to-text), and
-`tts` (text-to-speech) models. See [Managing models](#managing-models) below for more.
+The list should contain `qwen`. `--name` sets the local name you will use in
+chat and API requests; `:Q4_K_M` selects a quantization without a picker.
+For other models, use the exact name printed by `drove models list`.
+See [Managing models](./models.md) for naming, downloads, and tuning.
 
 ## 4. Run the server
 
+In one terminal:
+
 ```bash
-drove serve
+drove serve --host 127.0.0.1
 ```
 
-Leave it running. The OpenAI-compatible API is now available at:
+Leave it running. In a second terminal, check the proxy and model inventory:
 
-- `GET  http://127.0.0.1:8080/v1/models`
-- `POST http://127.0.0.1:8080/v1/chat/completions`
-- `POST http://127.0.0.1:8080/v1/audio/transcriptions`
-- `POST http://127.0.0.1:8080/v1/audio/speech`
-- `GET  http://127.0.0.1:8080/status`
+```bash
+curl --fail http://127.0.0.1:8080/health
+curl --fail http://127.0.0.1:8080/v1/models
+```
 
-Models load on the first request that names them and unload after the idle
-timeout. Bind a different address with `drove serve --host 0.0.0.0 --port 9000`.
+Health should report `"status":"ok"`; the model list should include an object
+with `"id":"qwen"`. These checks do not load the model. A server with no loaded
+models is ready to accept requests.
+
+The example uses a loopback bind. Without `--host`, drove defaults to
+`0.0.0.0`, which is reachable from other machines. See
+[Running drove](./operations.md#choose-a-bind-address) before enabling LAN access.
 
 ## 5. Send your first request
 
-### From the terminal chat
+In the second terminal:
 
 ```bash
-drove chat
+curl --fail-with-body http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen","messages":[{"role":"user","content":"Write a haiku about inference latency."}]}'
 ```
 
-With no model argument, drove lists the models available on the server and lets
-you pick one. Type `/help` inside the chat for commands (`/sessions`, `/theme`,
-…). See [Terminal chat](#terminal-chat) for connecting to remote endpoints.
+The response contains generated text under `choices[0].message.content`.
+The first request waits for the backend to start and load the weights. Later
+requests reuse it until it goes idle or is evicted. The default idle timeout is
+30 minutes. If the request fails, use [Troubleshooting](./troubleshooting.md).
 
-### With an OpenAI SDK
+For terminal chat, run `drove chat qwen`; type `/help` for chat commands.
 
-Point the base URL at drove and use any non-empty API key.
+### With the OpenAI Python SDK
+
+Install `openai` in your client project's environment. Then run:
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="drove")
-
-resp = client.chat.completions.create(
-    model="unsloth/Qwen3-8B-GGUF",
-    messages=[{"role": "user", "content": "Write a haiku about inference latency."}],
+response = client.chat.completions.create(
+    model="qwen",
+    messages=[{"role": "user", "content": "Hello!"}],
 )
-
-print(resp.choices[0].message.content)
+print(response.choices[0].message.content)
 ```
 
-### With curl
-
-```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "unsloth/Qwen3-8B-GGUF",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-## Speech-to-text
-
-drove serves ASR models such as NVIDIA Parakeet through its built-in ONNX
-worker — same port, same lazy lifecycle. Use an ONNX export:
-
-```bash
-drove models download istupakov/parakeet-tdt-0.6b-v3-onnx
-```
-
-```bash
-curl http://127.0.0.1:8080/v1/audio/transcriptions \
-  -F model='istupakov/parakeet-tdt-0.6b-v3-onnx' \
-  -F file=@speech.wav
-```
-
-Full details — model types, quantization, `response_format` — in
-[Speech-to-text](./speech-to-text.md).
-
-## Text-to-speech
-
-drove synthesizes speech locally with the bundled Kokoro, Qwen3-TTS,
-Chatterbox-Nano, and Fish S1-mini engines. Each engine runs in its own Python 3.12
-environment, which `uv` builds the first time the model starts. That first
-start can take several minutes, so raise the startup timeout once:
-
-```bash
-drove config startup_timeout_seconds 1800
-drove models download hexgrad/Kokoro-82M --name kokoro
-```
-
-```bash
-curl http://127.0.0.1:8080/v1/audio/speech \
-  -H 'Content-Type: application/json' \
-  -d '{"model": "kokoro", "input": "Hello from drove.", "voice": "af_heart", "response_format": "wav"}' \
-  --output hello.wav
-```
-
-With the OpenAI SDK:
-
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="drove")
-
-with client.audio.speech.with_streaming_response.create(
-    model="kokoro",
-    input="The model woke up just to say this.",
-    voice="am_michael",
-    response_format="mp3",
-    speed=1.1,
-) as response:
-    response.stream_to_file("hello.mp3")
-```
-
-Voices, other engines, reference-voice cloning, and every request field are in
-[Text-to-speech](./text-to-speech.md).
-
-## Vision / multimodal
-
-Multimodal GGUF models ship a companion `mmproj` projector. When you download
-such a repo, drove pulls the projector, records it in the model's sidecar
-config, and flags the model with the `vision` capability:
-
-```bash
-drove models download unsloth/gemma-3-12b-it-GGUF   # projector auto-detected
-drove models list                                   # CAPABILITY shows "vision"
-```
-
-From there it's the standard OpenAI vision request — send image content parts to
-`/v1/chat/completions` and drove forwards them to `llama-server` with the
-projector loaded.
-
-## Managing models
-
-```bash
-drove models list                            # NAME · CAPABILITY · SIZE
-drove models list -V                         # also show storage, config, and download origin
-drove models info <name>                     # files, size, caps, effective config
-drove models download <org/repo[:QUANT]>     # pull from HuggingFace
-drove models download <ref> --name my-name   # override the local name
-drove models delete <name>                   # remove a model and its config
-```
-
-Per-model configuration layers on top of the global defaults (config.toml →
-global model defaults → per-model sidecar, highest wins):
-
-```bash
-drove models config <name>                   # show effective config + source of each value
-drove models config <name> ctx_size 8192     # set a per-model llama.cpp flag
-drove models config ctx_size 16384           # set a default for all models (global)
-drove models config <name> --unset ctx_size  # remove a key
-```
-
-See [Configuration](./configuration.md) for the full list of supported keys.
-
-## Terminal chat
-
-`drove chat` is a TUI client with saved sessions and themes. It talks to your
-local drove server by default, but can point at any OpenAI-compatible API:
-
-```bash
-drove chat                                   # pick a model from the local server
-drove chat unsloth/Qwen3-8B-GGUF             # chat with a specific local model
-drove chat --resume                          # resume the latest saved session
-drove chat -s "You are a terse assistant."   # set a system prompt
-drove chat -e https://api.openai.com/v1 -k $OPENAI_API_KEY   # remote endpoint
-```
-
-## Watch server status
-
-Check what's loaded and how it's performing:
-
-```bash
-drove server status            # one-shot snapshot
-drove server status --watch    # refresh every 2s (drove server status -w 5 for 5s)
-```
-
-It reports uptime, loaded models with idle timers, process memory/CPU, request
-counts, token throughput, and time-to-first-token.
-
-## Debug requests (observability)
-
-Enable logging to capture every request/response pair, then browse them:
-
-```bash
-drove config observe true      # enable logging (or set observe = true in the config)
-drove observe                  # interactive TUI browser (-m <model> to filter)
-drove observe web              # web UI at http://127.0.0.1:8877
-```
-
-## Use drove from a coding agent
-
-Register your models with pi, opencode, or Kilo Code. Context windows, output
-limits, vision, tool calling, and reasoning are filled in for each model:
-
-```bash
-drove integrate opencode     # or: pi, kilo
-```
-
-See the [CLI reference](./cli.md#coding-agent-integration) for options.
+The SDK requires a non-empty key. drove does not authenticate it. Set your
+client timeout long enough for a cold model load.
 
 ## Next steps
 
-- [Configuration](./configuration.md) — global settings, memory budget, eviction, per-model config.
-- [CLI reference](./cli.md) — every command and flag.
-- [Speech-to-text](./speech-to-text.md) — ASR model types, formats, SDK usage.
-- [Text-to-speech](./text-to-speech.md) — engines, voices, formats, SDK usage.
-- [Architecture](./architecture.md) — how the proxy and backends fit together.
+Stop the foreground server with Ctrl+C when you are finished.
+
+- [Text and vision](./text-and-vision.md) — streaming, images, sessions, coding agents.
+- [Managing models](./models.md) — quantizations, local names, per-model settings.
+- [Running drove](./operations.md) — service setup, status, request logs.
+- [Configuration](./configuration.md) — timeouts, memory budget, prompt cache.
+
+[Docs](./README.md) · [Next: Managing models →](./models.md)

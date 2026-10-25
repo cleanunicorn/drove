@@ -43,7 +43,9 @@ request omits `model`, drove lazily starts the configured default, even if
 another model is already loaded. If that default is missing, the request
 returns an actionable 404; it does not silently select another model. With
 no default, the server keeps its existing loaded-model fallback (or returns
-400 when none is loaded). The request body is forwarded unchanged. This
+400 when none is loaded). For defaulted JSON speech requests, drove adds the
+selected `model` to the forwarded body because the speech worker requires it.
+Other request bodies, including explicit model choices, stay unchanged. This
 setting applies across proxy endpoints, so speech requests should explicitly
 name a suitable speech model when the default is a chat model.
 

@@ -512,3 +512,70 @@ def test_default_model_reload_change_and_removal(tmp_path: Path) -> None:
         assert client.post("/v1/chat/completions", json={}).status_code == 400
         assert ensure.await_count == 2
         assert app.state.stats.active_requests == 0
+
+
+@pytest.mark.parametrize("selection", ["omitted", "null", "explicit", "unset"])
+async def test_default_speech_reaches_real_worker(tmp_path: Path, selection: str) -> None:
+    from drove.workers.tts_runtime.worker import create_tts_app
+
+    class FakeEngine:
+        native_speed = True
+
+        def synthesize(self, text: str, voice: str, speed: float) -> tuple[bytes, int]:
+            assert (text, voice, speed) == ("Hello", "alloy", 1.0)
+            return b"\x00\x00" * 240, 24000
+
+    default = None if selection == "unset" else "preferred"
+    model = "chosen" if selection == "explicit" else "preferred"
+    config = make_config(tmp_path).model_copy(update={"default_model": default})
+    app = create_app(config)
+    worker = create_tts_app(FakeEngine(), model)
+    app.state.client._transport = httpx.ASGITransport(app=worker)
+    requests: list[httpx.Request] = []
+
+    async def capture(request: httpx.Request) -> None:
+        requests.append(request)
+
+    app.state.client.event_hooks["request"] = [capture]
+    payload = {"input": "Hello", "voice": "alloy", "response_format": "wav"}
+    if selection == "explicit":
+        payload["model"] = model
+    elif selection == "null":
+        payload["model"] = None
+    try:
+        with (
+            patch.object(app.state.manager, "ensure_running", new_callable=AsyncMock) as ensure,
+            patch.object(
+                type(app.state.manager), "is_running", new_callable=PropertyMock, return_value=True
+            ),
+            patch.object(
+                type(app.state.manager),
+                "current_model",
+                new_callable=PropertyMock,
+                return_value="preferred",
+            ),
+            patch.object(app.state.manager, "base_url_for", return_value="http://worker"),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://proxy"
+            ) as client:
+                response = await client.post("/v1/audio/speech", json=payload)
+            if selection == "unset":
+                assert response.status_code == 400
+                ensure.assert_not_awaited()
+            else:
+                assert response.status_code == 200
+                assert response.headers["content-type"] == "audio/wav"
+                assert response.content.startswith(b"RIFF")
+                ensure.assert_awaited_once_with(model, claim=True)
+            upstream = requests[0]
+            assert int(upstream.headers["content-length"]) == len(upstream.content)
+            if selection in {"explicit", "unset"}:
+                assert upstream.content == response.request.content
+            else:
+                import json
+
+                assert json.loads(upstream.content) == {**payload, "model": model}
+            assert app.state.stats.active_requests == 0
+    finally:
+        await app.state.client.aclose()

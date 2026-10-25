@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added a configurable default model for model-less API requests and chat launches, with explicit model choices taking precedence.
+- Added a configurable default model for model-less API requests and chat launches, with explicit model choices taking precedence and defaulted speech requests supplying the worker’s required model field.
 
 
 ## v0.9.0 (2026-10-24)

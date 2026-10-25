@@ -180,6 +180,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         stats.request_started()
         model_name = await _extract_model(request)
         current_config: Config = app.state.config
+        used_default = model_name is None and current_config.default_model is not None
         if model_name is None:
             model_name = current_config.default_model
 
@@ -225,6 +226,21 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
 
             headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
             body = await request.body()
+            if (
+                used_default
+                and path == "v1/audio/speech"
+                and "application/json" in request.headers.get("content-type", "")
+            ):
+                # The bundled speech worker requires the selected model in JSON.
+                # Leave malformed/non-object payloads for its normal validation.
+                try:
+                    speech_body = json.loads(body)
+                except ValueError, UnicodeDecodeError:
+                    speech_body = None
+                if isinstance(speech_body, dict):
+                    speech_body["model"] = resolved_model
+                    body = json.dumps(speech_body).encode()
+                    headers.pop("content-length", None)
 
             # Build observe context if observation is enabled
             obs_ctx: ObserveContext | None = None

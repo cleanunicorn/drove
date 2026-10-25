@@ -29,6 +29,7 @@
   prompts, and keyboard shortcuts for every tool confirmation choice.
 - Rendered assistant chat replies as streaming Markdown with highlighted code and
   keyboard copying of complete messages or individual code blocks.
+- Added loading, retry and empty states, accurate counts, keyboard navigation, shareable request links, and readable mobile layouts to the observe web browser.
 
 ### Changed
 
@@ -40,6 +41,7 @@
   and troubleshooting.
 - Changed Esc in chat to stop generation or deny a pending tool call without
   quitting; kept Ctrl+C and Ctrl+Q as explicit quit shortcuts.
+- Strengthened observe browser regression checks to verify the latest request details survived a delayed, non-aborting response.
 
 ### Security
 

@@ -209,3 +209,13 @@ def test_vendored_markdown_assets_match_provenance(tmp_path: Path) -> None:
                 assert len(served.content) > 100
                 if asset["path"].endswith(".js"):
                     assert scripts.index(asset["path"]) < scripts.index("static/app.js")
+
+
+def test_browser_assets_are_served(tmp_path: Path) -> None:
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        for asset, content_type in (("app.js", "javascript"), ("styles.css", "text/css")):
+            response = client.get(f"/static/{asset}")
+            assert response.status_code == 200
+            assert content_type in response.headers["content-type"]
+            assert response.content

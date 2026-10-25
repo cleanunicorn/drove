@@ -46,6 +46,7 @@ Each model-list entry retains the standard `id`, `object`, `created` and
 | `loaded` | Whether this model is currently loaded |
 | `size_bytes` | Total size on disk |
 | `capabilities` | Inferred capability labels (`text`, `vision`, `tools`, `reasoning`), an empty list for non-chat models, or `null` when unavailable |
+| `context_length` | Tokens one request can use, from `ctx_size` (or `-c` in `extra_args`) or the GGUF training context, divided across parallel slots like llama-server does; `null` when neither is known — never a guess |
 
 The inventory still includes speech models; the chat picker filters them using
 this metadata. Listing does not start any backend. Older drove servers and

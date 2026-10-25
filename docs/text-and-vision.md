@@ -102,7 +102,9 @@ while idle no longer quits. Use **Ctrl+C** or **Ctrl+Q** to quit. Prompts entere
 while a reply runs appear as removable queued messages; stopping pauses the
 queue until you choose **Resume queued**. Tool dialogs support **y**, **n/Esc**,
 **s**, and **a** for their four choices. Already-started tools finish before a
-stop settles. See [Chat controls](./cli.md#chat-controls) for details.
+stop settles. Running tools show live progress, including streamed shell output,
+and a header meter shows how full the context is after each reply. See
+[Chat controls](./cli.md#chat-controls) for details.
 
 Assistant replies show formatted Markdown and highlighted code. Tab to a message
 and use Ctrl+Y to copy its original text, or Ctrl+B to choose a code block. See

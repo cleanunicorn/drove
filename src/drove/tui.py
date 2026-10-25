@@ -39,7 +39,7 @@ from textual.widgets.option_list import Option
 from textual.worker import Worker
 
 from drove.chat_models import CatalogError, fetch_models_async
-from drove.config import ChatHint, load_config
+from drove.config import ChatHint, load_config, save_tui_completed_hints
 from drove.model_picker import ModelPicker
 from drove.sessions import Session, list_sessions, new_session, save_session
 from drove.tools import TOOL_DEFINITIONS, execute_tool
@@ -713,7 +713,6 @@ class ChatApp(App[None]):
         self.push_screen(ChatDetails(self._details_text()), focus_input)
 
     def on_resize(self, event: events.Resize) -> None:
-        self.set_class(event.size.width < 80, "compact")
         self.set_class(event.size.width < 50, "narrow")
         self.set_class(event.size.height < 24, "short")
 
@@ -1384,6 +1383,7 @@ class ChatApp(App[None]):
             "model": self._model,
             "messages": [{k: v for k, v in msg.items() if k != "stopped"} for msg in messages],
             "stream": True,
+            "stream_options": {"include_usage": True},
             "tools": TOOL_DEFINITIONS,
         }
         headers: dict[str, str] = {}
@@ -1475,9 +1475,7 @@ class ChatApp(App[None]):
         if self._config_path is None:
             return
         try:
-            cfg = load_config(self._config_path)
-            cfg = cfg.model_copy(update={"tui_completed_hints": sorted(self._completed_hints)})
-            cfg.save(self._config_path)
+            save_tui_completed_hints(list(self._completed_hints), self._config_path)
         except OSError, ValueError:
             if not self._hint_save_failed:
                 self.notify(

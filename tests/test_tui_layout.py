@@ -218,7 +218,13 @@ async def test_stream_usage_is_reported_only_in_info(tmp_path, monkeypatch):
     response = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
     response += "data: [DONE]\n\n"
     real_client = httpx.AsyncClient
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=response))
+    payloads = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, text=response)
+
+    transport = httpx.MockTransport(respond)
     monkeypatch.setattr(
         "drove.tui.httpx.AsyncClient", lambda **kwargs: real_client(transport=transport, **kwargs)
     )
@@ -226,6 +232,7 @@ async def test_stream_usage_is_reported_only_in_info(tmp_path, monkeypatch):
         app._start_turn("hi")
         await app.workers.wait_for_complete()
         await pilot.pause()
+        assert payloads[0]["stream_options"] == {"include_usage": True}
         assert app._last_usage == {
             "prompt_tokens": 123,
             "completion_tokens": 45,

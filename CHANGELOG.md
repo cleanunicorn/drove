@@ -5,7 +5,6 @@
 ### Changed
 
 - Redesigned terminal chat to give conversations more space, moved diagnostics into Info, and replaced persistent shortcut hints with guidance that retired after use or dismissal and remembered progress across launches.
-
 - Updated installation instructions to clone the repository and run `make install`.
 - Required agents to start each task in a separate Git worktree under `/tmp`.
 

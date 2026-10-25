@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
@@ -196,6 +197,18 @@ def load_config(path: Path | None = None) -> Config:
     # Point the TOML source at the requested file by temporarily updating model_config
     Config.model_config["toml_file"] = str(config_path)
     return Config()
+
+
+def save_tui_completed_hints(hints: list[ChatHint], path: Path | None = None) -> None:
+    """Persist chat tip progress without rewriting any other key.
+
+    Unlike ``Config.save``, this never writes env overrides or defaults into the file.
+    """
+    config_path = resolve_config_path(path)
+    data = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+    data["tui_completed_hints"] = sorted(hints)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_bytes(tomli_w.dumps(data).encode())
 
 
 def _migrate_legacy_config(config_path: Path) -> None:

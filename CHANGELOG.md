@@ -1,56 +1,7 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Fixed
-
-- Preserved custom configuration paths in download retry, resume, and repair
-  inspection commands so recovery reused the original model directory.
-- Kept model-picker cancellation, literal tool approvals, and saved partial replies
-  working together with Markdown chat rendering.
-- Fixed loaded-model warnings when deleting a namespace containing running models.
-- Fixed deletion previews for relative model-storage paths, including symlinked directories.
-- Preserved literal text in chat messages and tool details, preventing model-supplied
-  styling from obscuring tool approvals; made long arguments scrollable with
-  permission controls kept visible.
-- Made chat errors actionable while preserving literal user and error text,
-  labelled received chunk rates accurately, and warned when theme settings could
-  not be saved.
-- Stopped background observe scans when quitting the terminal browser so returning
-  to the shell no longer waited for the remaining log files.
-
-### Added
-
-- Added a configurable default model for model-less API requests and chat launches, with explicit model choices taking precedence and defaulted speech requests supplying the worker’s required model field.
-- Added unified model download progress, explicit resume/skip states, actionable failure and
-  interruption guidance, and completion summaries with configuration and next steps.
-- Added configuration-repair retries for completed downloads that preserve custom settings.
-- Added guided keyboard quantization selection with download sizes, local status,
-  advisory memory estimates, and safe cancellation.
-- Added contextual model deletion and download confirmations with file and size
-  previews, loaded-model warnings, and consistent safe defaults.
-- Added chat reply stopping with saved partial output, visible removable queued
-  prompts, and keyboard shortcuts for every tool confirmation choice.
-- Rendered assistant chat replies as streaming Markdown with highlighted code and
-  keyboard copying of complete messages or individual code blocks.
-- Added loading, retry and empty states, accurate counts, keyboard navigation, shareable request links, and readable mobile layouts to the observe web browser.
-
-### Changed
-
-- Unified CLI success, warning, and error feedback with actionable typo hints,
-  mutation confirmations, and readable integration summaries while preserving
-  plain config values, completion scripts, and dry-run output.
-- Changed Esc in chat to stop generation or deny a pending tool call without
-  quitting; kept Ctrl+C and Ctrl+Q as explicit quit shortcuts.
-- Strengthened observe browser regression checks to verify the latest request details survived a delayed, non-aborting response.
-- Improved the observe terminal browser with responsive paged search, safe search
-  Escape handling, helpful empty states, complete model names, and theme-aware details.
-
-### Security
-
-- Prevented logged content from executing HTML in observe web Markdown previews,
-  escaped record fields, and bundled pinned dependencies for offline rendering
-  while preserving ordinary Markdown formatting and safe links.
+## v0.11.0 (2026-10-25)
 
 
 ## v0.10.0 (2026-10-25)
@@ -70,6 +21,54 @@ Add six regression cases covering safetensors, bin and pt in local and namespace
 Sweep: 2 inventory-to-capability paths found; 1 fixed in the reviewed catalog change; 1 left in
   pre-existing bulk integration registration outside the review target.
 
+- **chat**: Follow buffered markdown layout while streaming
+  ([`5ac1bb3`](https://github.com/cleanunicorn/drove/commit/5ac1bb332f38ef14cb5de429730cd5286dab0198))
+
+- **chat**: Merge literal rendering from PR #127
+  ([`8bdb761`](https://github.com/cleanunicorn/drove/commit/8bdb761b1b77ceccd3864fcb032c78133bdcd142))
+
+# Conflicts: #	CHANGELOG.md #	docs/cli.md #	tests/test_tui.py
+
+- **chat**: Render messages and tool approvals literally
+  ([`6d97219`](https://github.com/cleanunicorn/drove/commit/6d97219cf0297db03b572d07abe168437b4d80a7))
+
+- **chat**: Scope stopped tool results to the current batch
+  ([`8108e82`](https://github.com/cleanunicorn/drove/commit/8108e8228a340413173e6050f5186c16bc6ae684))
+
+- **cli**: Normalize deletion preview display paths
+  ([`a3550eb`](https://github.com/cleanunicorn/drove/commit/a3550eb43925557db27633ca30e3e37e0549f1b0))
+
+- **cli**: Warn for loaded models beneath deletion targets
+  ([`92a92df`](https://github.com/cleanunicorn/drove/commit/92a92df061ebc6e0810cb94a836b2ea497e51f8f))
+
+- **download**: Preserve configuration in recovery commands
+  ([`2ab2521`](https://github.com/cleanunicorn/drove/commit/2ab2521d5a27869f014ef60c1080c9b246fb8af4))
+
+Retain the effective config path in Retry, Resume, and repair inspection commands. Replay
+  regressions cover failures and interruptions during transfer and configuration, including
+  shell-quoted paths.
+
+Resolve merged documentation inconsistencies around default model selection and Markdown chat
+  controls. Validation: formatting, lint, strict type checking, 797 tests, and both browser gates
+  passed. Independent review verified the recovery correction.
+
+- **download**: Retry configuration after completed transfers
+  ([`50c1086`](https://github.com/cleanunicorn/drove/commit/50c1086daa6d82012f0af26493c5e38f55a2f83d))
+
+- **observe**: Merge sanitized Markdown previews from PR #129
+  ([`f42164c`](https://github.com/cleanunicorn/drove/commit/f42164cb2042c2197e4dadfee14730fb706cbf3f))
+
+# Conflicts: #	CHANGELOG.md
+
+- **observe**: Sanitize offline Markdown previews
+  ([`3be0dbb`](https://github.com/cleanunicorn/drove/commit/3be0dbb1726ef9e90891a6367585975d7e3d3264))
+
+- **observe**: Stop background scans when quitting
+  ([`caf8c50`](https://github.com/cleanunicorn/drove/commit/caf8c50edc236bacb24aea884b3b2f51c2f5845a))
+
+- **proxy**: Supply the default model to speech workers
+  ([`540e28b`](https://github.com/cleanunicorn/drove/commit/540e28bc816c6d58b9ac1922b95ab3f0f96dd99d))
+
 ### Documentation
 
 - Redesign documentation around user tasks
@@ -79,6 +78,82 @@ Sweep: 2 inventory-to-capability paths found; 1 fixed in the reviewed catalog ch
 
 - **chat**: Add searchable model selection and in-chat switching
   ([`298c683`](https://github.com/cleanunicorn/drove/commit/298c6838a4c58c08965d0e6c9fd1a1570a772e8e))
+
+- **chat**: Merge Markdown replies and actionable errors from PR #130
+  ([`0bf2845`](https://github.com/cleanunicorn/drove/commit/0bf28455948ca53550fbf2e57d34b7f89151af3e))
+
+# Conflicts: #	CHANGELOG.md #	docs/cli.md #	docs/text-and-vision.md #	src/drove/tui.py
+  #	tests/test_tui.py
+
+- **chat**: Merge reply cancellation and prompt queues from PR #128
+  ([`52269b6`](https://github.com/cleanunicorn/drove/commit/52269b6a00aef0f8844e61bd6d4c863d02845f38))
+
+# Conflicts: #	CHANGELOG.md #	docs/cli.md #	src/drove/tui.py #	tests/test_tui.py
+
+- **chat**: Render markdown replies and actionable errors
+  ([`e6ddf64`](https://github.com/cleanunicorn/drove/commit/e6ddf64793b5a1020039bf1d226ab70481f1ee3a))
+
+- **chat**: Stop replies and manage queued prompts
+  ([`fe9db35`](https://github.com/cleanunicorn/drove/commit/fe9db351e5f161a5e92fa795be6f89e0c539778f))
+
+- **cli**: Merge actionable command feedback from PR #126
+  ([`9b32a95`](https://github.com/cleanunicorn/drove/commit/9b32a9517c9752538814337ed576b197416919d3))
+
+# Conflicts: #	src/drove/cli/main.py #	src/drove/cli/models.py #	src/drove/cli/output.py
+
+- **cli**: Merge contextual confirmations from PR #109
+  ([`b5a049d`](https://github.com/cleanunicorn/drove/commit/b5a049dbec3adda7396a29c6066310468f041711))
+
+# Conflicts: #	CHANGELOG.md #	docs/cli.md #	src/drove/cli/models.py #	tests/test_cli_models.py
+  #	tests/test_cli_output.py
+
+- **cli**: Show contextual model confirmations
+  ([`dd65433`](https://github.com/cleanunicorn/drove/commit/dd654333b59b0007d333b8a1fc16934adf8d6d30))
+
+- **cli**: Unify actionable command feedback
+  ([`856bca3`](https://github.com/cleanunicorn/drove/commit/856bca30919a83c00a42045aa721235da274b091))
+
+- **config**: Add a default model for server and chat
+  ([`eca8be2`](https://github.com/cleanunicorn/drove/commit/eca8be258c92311c0ebdbbe418809ad529a14628))
+
+- **config**: Merge default model support from PR #106
+  ([`6597503`](https://github.com/cleanunicorn/drove/commit/6597503ab1624d966e04cdb0a526af8d473dec31))
+
+# Conflicts: #	CHANGELOG.md #	docs/api.md #	docs/cli.md #	docs/text-and-vision.md
+  #	src/drove/cli/main.py #	tests/test_cli_chat.py #	tests/test_proxy.py
+
+- **download**: Merge progress and recovery guidance from PR #107
+  ([`6a8bc6d`](https://github.com/cleanunicorn/drove/commit/6a8bc6daf2c510643af8c3375bd316531d359b04))
+
+# Conflicts: #	CHANGELOG.md
+
+- **download**: Show unified progress and recovery guidance
+  ([`d04e324`](https://github.com/cleanunicorn/drove/commit/d04e324ab59c203d9677971a372e068dad74a44f))
+
+- **models**: Guide quantization selection
+  ([`6b7a037`](https://github.com/cleanunicorn/drove/commit/6b7a037a9becdfddc309fbd1dba3b7bea908a702))
+
+- **models**: Merge quantization guidance from PR #108
+  ([`58ae951`](https://github.com/cleanunicorn/drove/commit/58ae951f59bd8feeb84af0254b5ea48dea7517ca))
+
+# Conflicts: #	CHANGELOG.md #	docs/cli.md
+
+- **observe**: Add accessible request browsing states
+  ([`0780a8f`](https://github.com/cleanunicorn/drove/commit/0780a8fa3cc3392091bfa9d0998cfb133b168ded))
+
+- **observe**: Merge accessible request navigation from PR #131
+  ([`0a6a322`](https://github.com/cleanunicorn/drove/commit/0a6a322613b14e5ac257f28668eafdd91a78015e))
+
+# Conflicts: #	CHANGELOG.md #	docs/operations.md #	src/drove/observe_web_static/app.js
+  #	tests/test_observe_web.py
+
+- **observe**: Merge responsive terminal paging from PR #132
+  ([`d8e0bf5`](https://github.com/cleanunicorn/drove/commit/d8e0bf58f6399c5f902ad3bf8c9187c8b23e6ba4))
+
+# Conflicts: #	CHANGELOG.md
+
+- **observe**: Page terminal logs and keep search responsive
+  ([`412eafd`](https://github.com/cleanunicorn/drove/commit/412eafdce846db47ac9e5de29dea92619ebb196b))
 
 
 ## v0.9.0 (2026-10-24)

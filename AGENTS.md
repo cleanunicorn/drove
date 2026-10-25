@@ -75,7 +75,10 @@ run them (see [Gotchas](#gotchas)).
 
 ## Golden rules
 
-1. **Never commit directly to `main`.** Always branch, always PR — and
+1. **Start every task in a separate Git worktree under `/tmp`.** Create a
+   new branch from the latest `origin/main` and do all edits and checks in
+   that worktree. Leave the original checkout and other worktrees untouched.
+   **Never commit directly to `main`.** Always branch, always PR — and
    squash-merge. Merging can cut a release, and the squash commit (which
    carries the PR title) is what the release automation parses.
 2. **Never force-push a shared branch.**
@@ -122,14 +125,29 @@ run them (see [Gotchas](#gotchas)).
 
 ## The GitHub flow, step by step
 
-### 1. Start from an up-to-date `main`
+### 1. Fetch the latest `main`
+
+From the repository checkout, fetch without switching branches or changing
+any existing work:
 
 ```bash
-git checkout main
-git pull origin main
+git fetch origin main
 ```
 
-### 2. Create a branch
+### 2. Create a branch and worktree under `/tmp`
+
+Start every task in its own worktree. Use a unique directory under `/tmp`
+and a new branch based on `origin/main`:
+
+```bash
+worktree_dir=$(mktemp -d /tmp/drove-XXXXXXXX)
+git worktree add -b docs/short-description "$worktree_dir" origin/main
+cd "$worktree_dir"
+```
+
+Replace `docs/short-description` with the branch name for your task. Run all
+edits, checks, commits, and PR commands from this worktree; do not switch
+branches or modify files in the original checkout or another task's worktree.
 
 Branch names are short, lowercase, hyphenated, and prefixed by intent, matching
 the Conventional Commits type you expect the PR to use:

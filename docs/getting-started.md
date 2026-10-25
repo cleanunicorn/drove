@@ -9,8 +9,9 @@ and the first load depend on your connection and hardware.
 ## Prerequisites
 
 - **Linux or macOS.**
-- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** on your `PATH`.
-  drove needs Python 3.14 or later; uv can install that interpreter for you.
+- **Git and Make** on your `PATH`, plus **curl** if uv is not already installed.
+  `make install` bootstraps [uv](https://docs.astral.sh/uv/) if needed and uses
+  it to install Python 3.14 and drove.
 - **`llama-server`** from [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/master/tools/server)
   on your `PATH` for text and vision models. On macOS, `brew install llama.cpp`
   provides it. On Linux, use a [release binary](https://github.com/ggml-org/llama.cpp/releases)
@@ -24,24 +25,18 @@ Only serving audio? Go directly to [Speech-to-text](./speech-to-text.md) or
 ## 1. Install
 
 ```bash
-uv tool install --python 3.14 'drove[asr] @ git+https://github.com/cleanunicorn/drove'
-drove --version
-```
-
-The version command should print `drove` and a version number. `[asr]` includes
-speech-to-text dependencies; omit it for a minimal install. If your shell
-cannot find `drove`, run `uv tool update-shell`, then open a new terminal.
-
-Alternatively, install from a checkout:
-
-```bash
 git clone https://github.com/cleanunicorn/drove.git
 cd drove
 make install
+drove --version
 ```
 
 `make install` bootstraps uv if needed and installs the CLI as a uv tool.
-`make install DROVE_EXTRAS=` omits ASR dependencies. You do not need a global
+It includes speech-to-text dependencies by default;
+`make install DROVE_EXTRAS=` omits them. The version command should print
+`drove` and a version number. If your shell cannot find `drove`, follow the
+installer's instructions to add the tool directory to your `PATH`, then open
+a new terminal. You do not need a global
 install for [development checks](./contributing.md).
 
 ## 2. Initialize local config

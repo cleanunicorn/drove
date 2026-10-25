@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import httpx
-from textual import events, work
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -30,6 +33,7 @@ from textual.widgets import (
     TextArea,
 )
 from textual.widgets.option_list import Option
+from textual.worker import Worker
 
 from drove.sessions import Session, list_sessions, new_session, save_session
 from drove.tools import TOOL_DEFINITIONS, execute_tool
@@ -57,6 +61,12 @@ ChatApp {
     text-style: bold;
     margin-bottom: 0;
 }
+
+.queued { color: $text-muted; }
+.queued Label { color: $text-muted; }
+.queued Button { margin-top: 1; }
+#resume-queue { display: none; }
+#resume-queue.visible { display: block; }
 
 .user .message-header { color: $accent; }
 .assistant .message-header { color: $success; }
@@ -214,9 +224,10 @@ class ChatInput(TextArea):
 
 
 class Message(Static):
-    def __init__(self, role: str, content: str = "") -> None:
+    def __init__(self, role: str, content: str = "", *, stopped: bool = False) -> None:
         super().__init__()
         self._role = role
+        self._stopped = stopped
         self._content = content
         self._thinking = ""
         self._has_thinking_widget = False
@@ -229,8 +240,15 @@ class Message(Static):
             "error": "Error",
             "system-note": "System",
         }
-        yield Label(labels.get(self._role, self._role), classes="message-header")
+        heading = labels.get(self._role, self._role)
+        if self._stopped:
+            heading += " · Stopped"
+        yield Label(heading, classes="message-header")
         yield Label(self._content, classes="message-body", id=f"body-{id(self)}")
+
+    def mark_stopped(self) -> None:
+        self._stopped = True
+        self.query_one(".message-header", Label).update("Assistant · Stopped")
 
     def append_text(self, chunk: str) -> None:
         self._content += chunk
@@ -288,6 +306,17 @@ class Message(Static):
 class ToolConfirmationModal(ModalScreen[str]):
     """Modal to confirm tool execution."""
 
+    BINDINGS = [
+        Binding("y", "choose('allow-once')", "Allow once"),
+        Binding("n", "choose('deny-once')", "Deny once"),
+        Binding("escape", "choose('deny-once')", "Deny once", show=False),
+        Binding("s", "choose('allow-session')", "Allow for session"),
+        Binding("a", "choose('allow-always')", "Allow always"),
+    ]
+
+    def action_choose(self, choice: str) -> None:
+        self.dismiss(choice)
+
     def __init__(self, tool_name: str, arguments: str) -> None:
         super().__init__()
         self._tool_name = tool_name
@@ -302,11 +331,11 @@ class ToolConfirmationModal(ModalScreen[str]):
             )
             yield Label(f"Arguments: {self._arguments}", classes="message")
             with Horizontal(classes="buttons"):
-                yield Button("Allow Once", variant="primary", id="allow-once")
-                yield Button("Deny Once", variant="error", id="deny-once")
+                yield Button("Allow Once (y)", variant="primary", id="allow-once")
+                yield Button("Deny Once (n / Esc)", variant="error", id="deny-once")
             with Horizontal(classes="buttons"):
-                yield Button("Allow for Session", variant="default", id="allow-session")
-                yield Button("Allow Always", variant="default", id="allow-always")
+                yield Button("Allow for Session (s)", variant="default", id="allow-session")
+                yield Button("Allow Always (a)", variant="default", id="allow-always")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id)
@@ -351,23 +380,63 @@ class SessionPicker(ModalScreen[Session | None]):
             self.dismiss(self._sessions[idx])
 
 
+@dataclass
+class QueuedPrompt:
+    id: int
+    text: str
+    bubble: QueuedMessage
+
+
+class QueuedMessage(Static):
+    def __init__(self, prompt_id: int, text: str) -> None:
+        super().__init__(classes="message queued")
+        self.prompt_id = prompt_id
+        self.text = text
+
+    def compose(self) -> ComposeResult:
+        yield Label("You · Queued", classes="message-header")
+        yield Label(self.text, markup=False, classes="message-body")
+        yield Button("Cancel queued message", id=f"cancel-queued-{self.prompt_id}")
+
+
+@dataclass
+class ChatTurn:
+    session: Session
+    history: list[dict[str, Any]]
+    text: str
+    started: bool = False
+    stop_requested: bool = False
+    record: dict[str, Any] = field(default_factory=lambda: {"role": "assistant", "content": ""})
+    committed: bool = False
+    bubble: Message | None = None
+    tool_task: asyncio.Task[str] | None = None
+
+
 # ── Main app ────────────────────────────────────────────────────────────────────
 
 
 class ChatApp(App[None]):
     async def push_screen_wait(self, screen: ModalScreen[Any]) -> Any:  # type: ignore[override]
-        """Push a screen and wait for it to dismiss, returning the result."""
-        from asyncio import Future
+        """Await this modal without leaving a callback or screen behind on cancellation."""
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
 
-        future: Future[Any] = Future()
-        self.push_screen(screen, callback=future.set_result)
-        return await future
+        def dismissed(result: Any) -> None:
+            if not future.done():
+                future.set_result(result)
+
+        self.push_screen(screen, callback=dismissed)
+        try:
+            return await future
+        finally:
+            if screen in self.screen_stack and self.screen is screen:
+                screen.dismiss(None)
 
     CSS = CSS
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
-        Binding("escape", "quit", "Quit"),
+        Binding("ctrl+q", "quit", "Quit", priority=True, show=False),
+        Binding("escape", "stop_generation", "Stop"),
     ]
 
     is_generating: reactive[bool] = reactive(False)
@@ -390,7 +459,12 @@ class ChatApp(App[None]):
         self._config_path = config_path
         self._system_prompt = system_prompt
         self._api_key = api_key
-        self._queue: deque[str] = deque()
+        self._queue: deque[QueuedPrompt] = deque()
+        self._next_queue_id = 0
+        self._queue_paused = False
+        self._generation_worker: Worker[None] | None = None
+        self._turn: ChatTurn | None = None
+        self._quit_requested = False
         self._last_speed: float | None = None  # tok/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
         self.theme = theme
@@ -411,6 +485,7 @@ class ChatApp(App[None]):
             yield LoadingIndicator(id="spinner")
         yield OptionList(id="autocomplete")
         with Vertical(id="input-bar"):
+            yield Button("Resume queued", id="resume-queue")
             yield ChatInput(id="user-input")
         yield Footer()
 
@@ -436,7 +511,7 @@ class ChatApp(App[None]):
             if role in ("system", "tool"):
                 continue
             content = msg.get("content") or ""
-            bubble = Message(role, content)
+            bubble = Message(role, content, stopped=bool(msg.get("stopped")))
             await self.query_one("#messages").mount(bubble)
 
             # Render thinking as collapsible section
@@ -471,6 +546,12 @@ class ChatApp(App[None]):
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
 
+        if self.is_generating and cmd in {"/new", "/clear", "/sessions"}:
+            await self._show_note(
+                "Stop the reply and wait for any running tool before changing sessions."
+            )
+            return
+
         if cmd == "/help":
             lines = "\n".join(f"  {k:<12} {v}" for k, v in self._COMMANDS.items())
             await self._show_note(f"Available commands:\n{lines}")
@@ -479,7 +560,7 @@ class ChatApp(App[None]):
             self.query_one("#messages").remove_children()
             self._session = new_session(self._model, self._system_prompt)
             self._history = list(self._session.messages)
-            self._queue.clear()
+            self._clear_queue()
             self._session_allowed_tools.clear()
             self._update_status()
 
@@ -505,8 +586,15 @@ class ChatApp(App[None]):
                     await self._show_note(f"Theme set to '{arg}'.")
 
         elif cmd == "/save":
-            save_session(self._sessions_dir, self._session)
-            await self._show_note(f"Session saved  ({self._session.id})")
+            try:
+                if self._turn is not None:
+                    self._save_turn(self._turn, include_draft=True)
+                else:
+                    save_session(self._sessions_dir, self._session)
+            except Exception as error:
+                await self._show_note(f"Could not save the session: {error}")
+            else:
+                await self._show_note(f"Session saved  ({self._session.id})")
 
         else:
             await self._show_note(f"Unknown command '{cmd}'. Try /help.")
@@ -517,10 +605,13 @@ class ChatApp(App[None]):
         self._scroll_to_bottom()
 
     async def _load_session(self, session: Session) -> None:
+        if self.is_generating:
+            await self._show_note("Stop the reply before changing sessions.")
+            return
         self._session = session
         self._history = list(session.messages)
         self.query_one("#messages").remove_children()
-        self._queue.clear()
+        self._clear_queue()
         self._update_status()
         await self._replay_history()
 
@@ -551,11 +642,10 @@ class ChatApp(App[None]):
             self.run_worker(self._dispatch_command(text), exclusive=False)
             return
 
-        if self.is_generating:
-            self._queue.append(text)
-            self._update_status()
+        if self.is_generating or self._queue:
+            self._enqueue(text)
         else:
-            self._send_message(text)
+            self._start_turn(text)
 
     # ── Autocomplete ───────────────────────────────────────────────────────────
 
@@ -630,6 +720,8 @@ class ChatApp(App[None]):
             event.prevent_default()
             event.stop()
         elif event.key == "escape":
+            if self.is_generating:
+                self.action_stop_generation()
             self._hide_autocomplete()
             event.prevent_default()
             event.stop()
@@ -637,206 +729,296 @@ class ChatApp(App[None]):
     # ── Generation ──────────────────────────────────────────────────────────────
 
     def watch_is_generating(self, generating: bool) -> None:
-        spinner = self.query_one("#spinner", LoadingIndicator)
-        if generating:
-            spinner.add_class("visible")
+        self.query_one("#spinner", LoadingIndicator).set_class(generating, "visible")
+        self.refresh_bindings()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "stop_generation" and not self.is_generating:
+            return None
+        return True
+
+    async def action_quit(self) -> None:
+        # Textual cancels workers without awaiting their cleanup on exit. Settle the
+        # owned turn first so a running tool or saved partial reply is not abandoned.
+        if self.is_generating:
+            self._quit_requested = True
+            self.action_stop_generation()
         else:
-            spinner.remove_class("visible")
-            if self._queue:
-                next_msg = self._queue.popleft()
-                self._update_status()
-                self._send_message(next_msg)
+            self.exit()
 
-    @work(exclusive=True)
-    async def _send_message(self, text: str) -> None:
+    def action_stop_generation(self) -> None:
+        self._hide_autocomplete()
+        turn = self._turn
+        if turn is None or turn.stop_requested:
+            return
+        turn.stop_requested = True
+        self._queue_paused = True
+        if turn.started and self._generation_worker is not None:
+            self._generation_worker.cancel()
+        self._update_status()
+
+    def _enqueue(self, text: str) -> None:
+        self._next_queue_id += 1
+        bubble = QueuedMessage(self._next_queue_id, text)
+        self._queue.append(QueuedPrompt(self._next_queue_id, text, bubble))
+        self.query_one("#messages").mount(bubble)
+        self._update_status()
+        self._scroll_to_bottom()
+
+    def _clear_queue(self) -> None:
+        for prompt in self._queue:
+            prompt.bubble.remove()
+        self._queue.clear()
+        self._queue_paused = False
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if button_id == "resume-queue":
+            event.stop()
+            self._queue_paused = False
+            await self._dispatch_queued()
+        elif button_id.startswith("cancel-queued-"):
+            event.stop()
+            prompt_id = int(button_id.removeprefix("cancel-queued-"))
+            for prompt in self._queue:
+                if prompt.id == prompt_id:
+                    self._queue.remove(prompt)
+                    await prompt.bubble.remove()
+                    break
+            self._update_status()
+
+    async def _dispatch_queued(self) -> None:
+        if self.is_generating or self._queue_paused or not self._queue:
+            return
+        prompt = self._queue.popleft()
+        # Reserve ownership before awaiting widget removal or another submit may overtake it.
+        self._start_turn(prompt.text)
+        await prompt.bubble.remove()
+
+    def _start_turn(self, text: str) -> None:
+        if self.is_generating:
+            self._enqueue(text)
+            return
+        if not self._queue:
+            self._queue_paused = False
+        turn = ChatTurn(self._session, self._history, text)
+        turn.history.append({"role": "user", "content": text})
+        turn.session.messages = turn.history
+        self._turn = turn
         self.is_generating = True
+        self._update_status()
+        self._generation_worker = self.run_worker(self._send_message(turn), group="generation")
 
-        user_bubble = Message("user", text)
-        await self.query_one("#messages").mount(user_bubble)
-        self._history.append({"role": "user", "content": text})
-        self._session.messages = self._history
-        self._scroll_to_bottom(force=True)
+    def _save_turn(self, turn: ChatTurn, *, include_draft: bool = False) -> None:
+        messages = list(turn.history)
+        if include_draft and not turn.committed:
+            messages.append(dict(turn.record))
+        turn.session.messages = messages
+        save_session(self._sessions_dir, turn.session)
 
+    def _commit_draft(self, turn: ChatTurn) -> None:
+        if not turn.committed:
+            turn.history.append(turn.record)
+            turn.committed = True
+
+    def _finish_tool_history(self, turn: ChatTurn) -> None:
+        completed = {msg.get("tool_call_id") for msg in turn.history if msg["role"] == "tool"}
+        for call in turn.record.get("tool_calls", []):
+            if call["id"] not in completed:
+                turn.history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "content": "Error: Tool not executed because the reply was stopped.",
+                    }
+                )
+
+    async def _run_tool(self, turn: ChatTurn, name: str, arguments: str) -> str:
+        task = asyncio.create_task(asyncio.to_thread(execute_tool, name, arguments))
+        turn.tool_task = task
+        try:
+            while True:
+                try:
+                    return await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    # Threads cannot be cancelled safely. Retain ownership until effects/result
+                    # are known, and suppress later tools and requests after stop.
+                    turn.stop_requested = True
+                    self._queue_paused = True
+                    self._update_status()
+        finally:
+            turn.tool_task = None
+
+    async def _tool_allowed(self, name: str, arguments: str) -> bool:
+        if name not in {"write_file", "shell_execute", "fetch_url"}:
+            return True
+        if name in self._session_allowed_tools:
+            return True
+        try:
+            from drove.config import load_config
+
+            if name in load_config(self._config_path).allowed_tools:
+                return True
+        except Exception:
+            pass
+        choice = await self.push_screen_wait(ToolConfirmationModal(name, arguments))
+        if choice not in {"allow-once", "allow-session", "allow-always"}:
+            return False
+        if choice in {"allow-session", "allow-always"}:
+            self._session_allowed_tools.add(name)
+        if choice == "allow-always" and self._config_path is not None:
+            try:
+                from drove.config import load_config
+
+                cfg = load_config(self._config_path)
+                if name not in cfg.allowed_tools:
+                    cfg.allowed_tools.append(name)
+                    cfg.save(self._config_path)
+            except Exception:
+                pass
+        return True
+
+    async def _send_message(self, turn: ChatTurn) -> None:
+        turn.started = True
         t_start = time.monotonic()
         t_first: float | None = None
         token_count = 0
-
+        successful = False
         try:
+            await self.query_one("#messages").mount(Message("user", turn.text))
+            self._scroll_to_bottom(force=True)
             while True:
-                assistant_bubble = Message("assistant")
-                await self.query_one("#messages").mount(assistant_bubble)
-                self._scroll_to_bottom()
-
-                full_response = ""
-                full_thinking = ""
-                was_thinking = False
+                turn.bubble = Message("assistant")
+                await self.query_one("#messages").mount(turn.bubble)
+                if turn.stop_requested:
+                    raise asyncio.CancelledError
                 tool_calls: dict[int, dict[str, str]] = {}
-
-                async for event in self._stream_chat(self._history):
-                    kind = event["kind"]
-                    if t_first is None:
-                        t_first = time.monotonic()
-
-                    if kind == "thinking":
-                        token_count += 1
-                        was_thinking = True
-                        full_thinking += event["chunk"]
-                        await assistant_bubble.append_thinking(event["chunk"])
-                    elif kind == "content":
-                        token_count += 1
-                        if was_thinking:
-                            assistant_bubble.finish_thinking()
-                            was_thinking = False
-                        assistant_bubble.append_text(event["chunk"])
-                        full_response += event["chunk"]
-                    elif kind == "tool_call":
-                        idx = event["index"]
-                        if idx not in tool_calls:
-                            tool_calls[idx] = {
-                                "id": event.get("id", ""),
-                                "name": event.get("name", ""),
-                                "arguments": "",
-                            }
-                        if event.get("id"):
-                            tool_calls[idx]["id"] = event["id"]
-                        if event.get("name"):
-                            tool_calls[idx]["name"] = event["name"]
-                        tool_calls[idx]["arguments"] += event.get("arguments", "")
-                    self._scroll_to_bottom()
-
-                if was_thinking:
-                    assistant_bubble.finish_thinking()
-
+                async with aclosing(self._stream_chat(turn.history)) as stream:
+                    async for event in stream:
+                        if t_first is None:
+                            t_first = time.monotonic()
+                        if event["kind"] == "thinking":
+                            token_count += 1
+                            turn.record["thinking"] = (
+                                turn.record.get("thinking", "") + event["chunk"]
+                            )
+                            await turn.bubble.append_thinking(event["chunk"])
+                        elif event["kind"] == "content":
+                            token_count += 1
+                            turn.record["content"] += event["chunk"]
+                            turn.bubble.finish_thinking()
+                            turn.bubble.append_text(event["chunk"])
+                        elif event["kind"] == "tool_call":
+                            tc = tool_calls.setdefault(
+                                event["index"],
+                                {
+                                    "id": "",
+                                    "name": "",
+                                    "arguments": "",
+                                },
+                            )
+                            for key in ("id", "name"):
+                                if event.get(key):
+                                    tc[key] = event[key]
+                            tc["arguments"] += event.get("arguments", "")
+                        self._scroll_to_bottom()
+                turn.bubble.finish_thinking()
                 if not tool_calls:
-                    # No tool calls — save the final assistant message and break
-                    if full_response or full_thinking:
-                        assistant_msg: dict[str, Any] = {
-                            "role": "assistant",
-                            "content": full_response,
-                        }
-                        if full_thinking:
-                            assistant_msg["thinking"] = full_thinking
-                        self._history.append(assistant_msg)
-                        self._session.messages = self._history
-                        save_session(self._sessions_dir, self._session)
+                    self._commit_draft(turn)
+                    successful = True
                     break
-
-                # Build the assistant message with tool_calls for history
-                tool_call_msg: dict[str, Any] = {"role": "assistant"}
-                if full_response:
-                    tool_call_msg["content"] = full_response
-                else:
-                    tool_call_msg["content"] = None
-                tool_call_msg["tool_calls"] = [
+                calls = sorted(tool_calls.values(), key=lambda tc: tc["id"])
+                turn.record["tool_calls"] = [
                     {
                         "id": tc["id"],
                         "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": tc["arguments"],
-                        },
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
                     }
-                    for tc in sorted(tool_calls.values(), key=lambda t: t["id"])
+                    for tc in calls
                 ]
-                self._history.append(tool_call_msg)
-
-                # Execute each tool call and show results
-                for tc in sorted(tool_calls.values(), key=lambda t: t["id"]):
-                    name = tc["name"]
-                    args_str = tc["arguments"]
-
-                    allowed = False
-                    sensitive_tools = {"write_file", "shell_execute", "fetch_url"}
-
-                    if name not in sensitive_tools:
-                        allowed = True
-                    else:
-                        # Check session permission
-                        if name in self._session_allowed_tools:
-                            allowed = True
-                        else:
-                            # Check persistent permission
-                            try:
-                                from drove.config import load_config
-
-                                cfg = load_config(self._config_path)
-                                if name in cfg.allowed_tools:
-                                    allowed = True
-                            except Exception:
-                                pass
-
-                    if not allowed:
-                        res = await self.push_screen_wait(ToolConfirmationModal(name, args_str))
-                        if res == "allow-once":
-                            allowed = True
-                        elif res == "allow-session":
-                            allowed = True
-                            self._session_allowed_tools.add(name)
-                        elif res == "allow-always":
-                            allowed = True
-                            self._session_allowed_tools.add(name)
-                            # Persist to config
-                            try:
-                                from drove.config import load_config
-
-                                if self._config_path is not None:
-                                    cfg = load_config(self._config_path)
-                                    if name not in cfg.allowed_tools:
-                                        cfg.allowed_tools.append(name)
-                                        cfg.save(self._config_path)
-                            except Exception:
-                                pass
-                        else:
-                            allowed = False
-
-                    if allowed:
-                        result = execute_tool(name, args_str)
-                    else:
-                        result = "Error: Tool execution denied by user."
-
-                    # Append tool result to history
-                    self._history.append(
+                self._commit_draft(turn)
+                for tc in calls:
+                    if turn.stop_requested:
+                        break
+                    allowed = await self._tool_allowed(tc["name"], tc["arguments"])
+                    if turn.stop_requested:
+                        break
+                    result = (
+                        await self._run_tool(turn, tc["name"], tc["arguments"])
+                        if allowed
+                        else "Error: Tool execution denied by user."
+                    )
+                    turn.history.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc["id"],
                             "content": result,
                         }
                     )
-
-                    # Show as collapsible section
-                    await assistant_bubble.append_tool_call(
-                        tc["name"],
-                        tc["arguments"],
-                        result,
-                    )
+                    await turn.bubble.append_tool_call(tc["name"], tc["arguments"], result)
                     self._scroll_to_bottom()
-
-                self._session.messages = self._history
-                # Loop back to get the model's next response
-
-        except Exception as e:
-            await self.query_one("#messages").mount(Message("error", str(e)))
-
-        t_end = time.monotonic()
-        if t_first is not None:
-            self._last_ttft = t_first - t_start
-            gen_duration = t_end - t_first
-            self._last_speed = token_count / gen_duration if gen_duration > 0 else None
-        else:
-            self._last_speed = None
-            self._last_ttft = None
-
-        self._update_status()
-        self.is_generating = False
+                if turn.stop_requested:
+                    break
+                turn.record = {"role": "assistant", "content": ""}
+                turn.committed = False
+        except asyncio.CancelledError:
+            turn.stop_requested = True
+        except Exception as error:
+            self._queue_paused = True
+            await self.query_one("#messages").mount(Message("error", str(error)))
+        finally:
+            try:
+                if turn.stop_requested:
+                    turn.record["stopped"] = True
+                    self._commit_draft(turn)
+                    self._finish_tool_history(turn)
+                    self._queue_paused = True
+                elif not successful:
+                    # Keep partial output and a valid tool history after an unexpected failure too.
+                    if turn.record.get("content") or turn.record.get("thinking"):
+                        self._commit_draft(turn)
+                    self._finish_tool_history(turn)
+                if turn.stop_requested and (turn.bubble is None or not turn.bubble.is_mounted):
+                    turn.bubble = Message(
+                        "assistant", turn.record.get("content") or "", stopped=True
+                    )
+                    await self.query_one("#messages").mount(turn.bubble)
+                    if turn.record.get("thinking"):
+                        await turn.bubble.append_thinking(turn.record["thinking"])
+                if turn.bubble is not None and turn.bubble.is_mounted:
+                    turn.bubble.finish_thinking()
+                    if turn.stop_requested:
+                        turn.bubble.mark_stopped()
+                self._save_turn(turn)
+            except Exception as error:
+                successful = False
+                self._queue_paused = True
+                await self.query_one("#messages").mount(
+                    Message("error", f"Could not save the session: {error}")
+                )
+            finally:
+                elapsed = time.monotonic() - t_first if t_first is not None else 0
+                self._last_ttft = t_first - t_start if t_first is not None else None
+                self._last_speed = token_count / elapsed if elapsed > 0 else None
+                if self._turn is turn:
+                    self._turn = None
+                    self._generation_worker = None
+                    self.is_generating = False
+                    self._update_status()
+                    self.query_one("#user-input", ChatInput).focus()
+            if self._quit_requested:
+                self.exit()
+            elif successful and not turn.stop_requested:
+                await self._dispatch_queued()
 
     async def _stream_chat(
         self,
         messages: list[dict[str, Any]],
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncGenerator[dict[str, Any]]:
         """Yield event dicts: {kind: "thinking"/"content"/"tool_call", ...}."""
         payload = {
             "model": self._model,
-            "messages": messages,
+            "messages": [{k: v for k, v in msg.items() if k != "stopped"} for msg in messages],
             "stream": True,
             "tools": TOOL_DEFINITIONS,
         }
@@ -893,7 +1075,16 @@ class ChatApp(App[None]):
         if self._last_ttft is not None:
             parts.append(f"TTFT {self._last_ttft:.2f}s")
         if self._queue:
-            parts.append(f"{len(self._queue)} queued")
+            paused = " (paused)" if self._queue_paused else ""
+            parts.append(f"{len(self._queue)} queued{paused}")
+        if (
+            self._turn is not None
+            and self._turn.stop_requested
+            and self._turn.tool_task is not None
+        ):
+            parts.append("Stopping: waiting for running tool")
+        resume = self.query_one("#resume-queue", Button)
+        resume.set_class(bool(self._queue) and not self.is_generating, "visible")
         self.query_one("#status-label", Label).update("  •  ".join(parts))
 
     def _scroll_to_bottom(self, force: bool = False) -> None:

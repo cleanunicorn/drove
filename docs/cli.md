@@ -39,6 +39,29 @@ drove --config /path/to/config.toml server status -V
 For walkthroughs, see [Managing models](./models.md),
 [Text and vision](./text-and-vision.md), and [Running drove](./operations.md).
 
+## Chat controls
+
+In `drove chat`, **Esc stops the current reply** and returns focus to the input.
+The partial text and thinking stay visible, are saved to the session, and show a
+**Stopped** marker when resumed. Esc while idle does not quit; use **Ctrl+C** or
+**Ctrl+Q** to quit. Esc closes slash-command suggestions when idle.
+
+Messages entered during generation appear as **Queued** bubbles. Tab to a queued
+message's **Cancel queued message** button to remove it before it is sent. Normal
+replies send the queue in order. Stopping a reply or encountering an error pauses
+queued messages; **Resume queued** sends them in order. New input joins a paused
+queue without restarting it. Pending messages are not saved until sent.
+
+Tool confirmation shortcuts are **y** (allow once), **n** or **Esc** (deny once),
+**s** (allow for this session), and **a** (allow always). Esc in this dialog denies
+the call rather than stopping the whole turn. A tool that has already started
+cannot be undone: stopping shows a waiting status, retains its actual result,
+and prevents any remaining calls or follow-up model request. New turns, session changes, and an explicit quit wait until that tool finishes. Closing the client stream does
+not guarantee that a remote backend immediately stops computation.
+
+Use `/save` to save a partial reply without stopping it. `/new`, `/clear`, and
+`/sessions` require the current reply (and any running tool) to finish or stop.
+
 ## Config management
 
 ```bash

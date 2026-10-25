@@ -2,7 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added chat reply stopping with saved partial output, visible removable queued
+  prompts, and keyboard shortcuts for every tool confirmation choice.
+
+
 ### Changed
+
+- Changed Esc in chat to stop generation or deny a pending tool call without
+  quitting; kept Ctrl+C and Ctrl+Q as explicit quit shortcuts.
 
 - Redesigned the documentation around a focused first-request tutorial, task guides,
   and linked references; clarified model names, installation, configuration reloads,

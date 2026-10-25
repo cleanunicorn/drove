@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 from pathlib import Path
+from shlex import quote
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.text import Text
 
-from drove.cli.output import console, fields, heading, hint, section, table
+from drove.cli.output import (
+    console,
+    error,
+    fields,
+    heading,
+    hint,
+    info,
+    section,
+    success,
+    table,
+    unknown,
+    warning,
+)
 
 if TYPE_CHECKING:
     from drove.downloader import DownloadPlan, FileStatus
@@ -66,7 +79,10 @@ def _find_model(models_dir: Path, name: str) -> Path:
     try:
         return ModelStore(models_dir).resolve(name)
     except FileNotFoundError:
-        typer.echo(f"Model '{name}' not found.", err=True)
+        error(
+            unknown("model", name, (entry.name for entry in ModelStore(models_dir).list())),
+            next_step="List models: drove models list",
+        )
         raise typer.Exit(1)
 
 
@@ -157,11 +173,20 @@ def add_tts_model(
     directory = models_dir / name
     if directory.exists() or (models_dir / f"{name}.gguf").exists():
         raise typer.BadParameter(f"Model '{name}' already exists; use 'drove models config'.")
-    directory.mkdir(parents=True)
     primary = directory / "model.tts"
-    save_model_config(primary, cfg)
-    primary.touch()
-    typer.echo(f"Registered {name} ({engine}). POST /v1/audio/speech with model='{name}'.")
+    try:
+        directory.mkdir(parents=True)
+        save_model_config(primary, cfg)
+        primary.touch()
+    except OSError as exc:
+        error(
+            f"Could not finish registering '{name}': {exc}",
+            next_step="Check the model directory and permissions.",
+        )
+        raise typer.Exit(1) from exc
+    success(
+        f"Registered {name} ({engine}).", next_step=f"POST /v1/audio/speech with model='{name}'."
+    )
 
 
 @models_app.command("list")
@@ -282,7 +307,10 @@ def delete_model(
     root = _model_root(models_dir, name)
 
     if root is None:
-        typer.echo(f"Model '{name}' not found.", err=True)
+        error(
+            unknown("model", name, (entry.name for entry in ModelStore(models_dir).list())),
+            next_step="List models: drove models list",
+        )
         raise typer.Exit(1)
 
     target_str = f"{root}/"
@@ -290,18 +318,23 @@ def delete_model(
     if not yes:
         typer.confirm(f"Delete model '{name}' at {target_str}?", abort=True)
 
-    if root.is_dir():
-        shutil.rmtree(root)
-    else:
-        # Legacy: single file without directory
-        root.unlink()
-    typer.echo(f"Deleted {target_str}")
-
-    # Remove sidecar config if present (stored next to the root, not inside it)
     cfg_path = models_dir / f"{name}.toml"
-    if cfg_path.exists():
-        cfg_path.unlink()
-        typer.echo(f"Deleted config {cfg_path}")
+    had_sidecar = cfg_path.exists()
+    try:
+        if root.is_dir():
+            shutil.rmtree(root)
+        else:
+            root.unlink()
+        if had_sidecar:
+            cfg_path.unlink()
+    except OSError as exc:
+        error(
+            f"Could not finish deleting '{name}': {exc}",
+            next_step="Check remaining files and permissions before retrying.",
+        )
+        raise typer.Exit(1) from exc
+    detail = f" and config {cfg_path}" if had_sidecar else ""
+    success(f"Deleted {target_str}{detail}.", next_step="List remaining models: drove models list")
 
 
 def _fmt_size(b: int) -> str:
@@ -327,7 +360,9 @@ def _prompt_quant_choice(quants: dict[str, int]) -> str | None:
         raw = typer.prompt(f"Select quantization [1-{len(tags)}/a]").strip().lower()
         if raw in valid:
             break
-        typer.echo(f"Invalid choice '{raw}'.")
+        warning(
+            f"Invalid choice '{raw}'.", next_step="Choose a listed number or a for all variants."
+        )
 
     if raw == "a":
         return None
@@ -376,7 +411,7 @@ def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str 
         if len(variants) < 2:
             return None
         chosen = _prompt_quant_choice(variants)
-        typer.echo(f"Selected: {chosen or 'all variants'}")
+        info(f"Selected: {chosen or 'all variants'}")
         if chosen is None:
             plan.files = dict(plan.onnx_files)
             return None
@@ -390,7 +425,7 @@ def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str 
     if len(quants) < 2:
         return None
     chosen = _prompt_quant_choice(quants)
-    typer.echo(f"Selected: {chosen or 'all quantizations'}")
+    info(f"Selected: {chosen or 'all quantizations'}")
     if chosen is None:
         return None
     return _apply_quant_selection(plan, chosen, filter_by_quant(plan.files, chosen), name_override)
@@ -516,17 +551,20 @@ def download_model(
     models_dir = _models_dir(ctx)
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    typer.echo(f"Resolving {model_ref} ...")
+    info(f"Resolving {model_ref} ...")
     try:
         if tts_engine is None:
             plan = resolve_download(model_ref, name_override=name)
         else:
             plan = resolve_download(model_ref, name_override=name, tts_engine=tts_engine)
-    except ValueError as e:
-        typer.echo(str(e), err=True)
+    except (ValueError, OSError) as e:
+        error(str(e))
         raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"Failed to resolve repo: {e}", err=True)
+        error(
+            f"Failed to resolve repo: {e}",
+            next_step="Check the repository reference and network connection.",
+        )
         raise typer.Exit(1)
 
     _, quant = parse_model_ref(model_ref)
@@ -538,15 +576,16 @@ def download_model(
     all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
 
     if all_complete and not plan.is_tts:
-        typer.echo(
+        info(
             f"Model '{plan.local_name}' is already fully downloaded "
-            f"at {plan.destination(models_dir)}."
+            f"at {plan.destination(models_dir)}.",
+            next_step="Review the model with drove models info " + quote(plan.local_name),
         )
         raise typer.Exit(0)
 
     _print_download_plan(plan, models_dir, statuses, verbose=verbose)
     if plan.tts_engine == "kitten":
-        typer.echo(
+        warning(
             "KittenTTS 2 weights: Stellon Labs Community License (not Apache 2.0). "
             "Commercial use requires registration; revenue/funding limits and attribution apply.\n"
             "https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md"
@@ -564,7 +603,10 @@ def download_model(
     try:
         primary = plan.execute(models_dir, progress_cb=progress)
     except Exception as e:
-        typer.echo(f"Download failed: {e}", err=True)
+        error(
+            f"Download failed: {e}",
+            next_step="Check the network connection and retry the download.",
+        )
         raise typer.Exit(1)
 
     # Save download metadata to sidecar TOML
@@ -581,7 +623,7 @@ def download_model(
     )
 
     if plan.is_tts:
-        typer.echo(f"  Text-to-speech auto-configured: {plan.tts_engine}")
+        info(f"Text-to-speech auto-configured: {plan.tts_engine}")
 
     # Auto-configure speech-to-text models for the built-in ASR worker
     if plan.is_asr:
@@ -597,11 +639,13 @@ def download_model(
             model_cfg = load_model_config(primary)
             save_model_config(primary, model_cfg.model_copy(update=updates))
             for k, v in updates.items():
-                typer.echo(f"  {k} auto-configured: {v}")
+                info(f"{k} auto-configured: {v}")
         if not inferred:
-            typer.echo(
-                "  Could not infer the ASR model type. Set it with: "
-                f"drove models config '{plan.local_name}' asr_model <type>"
+            warning(
+                "Could not infer the ASR model type.",
+                next_step=(
+                    f"Set it with drove models config {quote(plan.local_name)} asr_model <type>."
+                ),
             )
 
     # Auto-configure mmproj if a multimodal projection file was downloaded
@@ -611,10 +655,13 @@ def download_model(
         model_cfg = load_model_config(primary)
         updated_cfg = model_cfg.model_copy(update={"mmproj": mmproj_name})
         save_model_config(primary, updated_cfg)
-        typer.echo(f"  mmproj auto-configured: {mmproj_name}")
+        info(f"mmproj auto-configured: {mmproj_name}")
 
     size_mb = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()) / 1_048_576
-    typer.echo(f"\nSaved as '{plan.local_name}'  ({size_mb:.1f} MB)")
+    success(
+        f"Saved as '{plan.local_name}' ({size_mb:.1f} MB).",
+        next_step=f"Review the model: drove models info {quote(plan.local_name)}",
+    )
 
 
 @models_app.command("config")
@@ -689,17 +736,30 @@ def model_config_cmd(
         effective_key = name
         effective_value = key
         if value is not None:
-            typer.echo("Too many arguments for global config mode.", err=True)
+            error(
+                "Too many arguments for global config mode.",
+                next_step="See drove models config --help.",
+            )
             raise typer.Exit(1)
 
         if unset:
             cfg = load_global_model_config(models_dir)
             if unset not in ModelConfig.model_fields:
-                typer.echo(f"Unknown key '{unset}'.", err=True)
+                error(
+                    unknown("key", unset, ModelConfig.model_fields),
+                    next_step="List valid keys: drove models config --global --all",
+                )
                 raise typer.Exit(1)
             updated = cfg.model_copy(update={unset: None})
-            save_global_model_config(models_dir, updated)
-            typer.echo(f"Unset '{unset}' from global config.")
+            try:
+                save_global_model_config(models_dir, updated)
+            except OSError as exc:
+                error(f"Could not write global model configuration: {exc}")
+                raise typer.Exit(1) from exc
+            success(
+                f"Unset '{unset}' from global config.",
+                next_step="Review effective settings: drove models config --global",
+            )
             return
 
         if effective_key is None:
@@ -717,6 +777,13 @@ def model_config_cmd(
             )
             return
 
+        if effective_key not in ModelConfig.model_fields:
+            error(
+                unknown("key", effective_key, ModelConfig.model_fields),
+                next_step="List valid keys: drove models config --global --all",
+            )
+            raise typer.Exit(1)
+
         if effective_value is None:
             cfg = load_global_model_config(models_dir)
             params = cfg.to_dict()
@@ -732,19 +799,20 @@ def model_config_cmd(
                 effective_key,
                 effective_value,
             )
-            typer.echo(
+            success(
                 f"Set '{effective_key}' = {effective_value} in global config.",
+                next_step="Review effective settings: drove models config --global",
             )
-        except ValueError as e:
-            typer.echo(str(e), err=True)
+        except (ValueError, OSError) as e:
+            error(str(e))
             raise typer.Exit(1)
         return
 
     # Per-model config mode — name is required
     if name is None:
-        typer.echo(
-            "Missing model name. Use --global for global config.",
-            err=True,
+        error(
+            "Missing model name.",
+            next_step="Use --global for global config or list models with drove models list.",
         )
         raise typer.Exit(1)
 
@@ -753,11 +821,21 @@ def model_config_cmd(
     if unset:
         cfg = load_model_config(model_path)
         if unset not in ModelConfig.model_fields:
-            typer.echo(f"Unknown key '{unset}'.", err=True)
+            error(
+                unknown("key", unset, ModelConfig.model_fields),
+                next_step=f"List valid keys: drove models config {quote(name)} --all",
+            )
             raise typer.Exit(1)
         updated = cfg.model_copy(update={unset: None})
-        save_model_config(model_path, updated)
-        typer.echo(f"Unset '{unset}' for model '{name}'.")
+        try:
+            save_model_config(model_path, updated)
+        except OSError as exc:
+            error(f"Could not write model configuration: {exc}")
+            raise typer.Exit(1) from exc
+        success(
+            f"Unset '{unset}' for model '{name}'.",
+            next_step=f"Review effective settings: drove models config {quote(name)}",
+        )
         return
 
     if key is None:
@@ -777,6 +855,13 @@ def model_config_cmd(
         )
         return
 
+    if key not in ModelConfig.model_fields:
+        error(
+            unknown("key", key, ModelConfig.model_fields),
+            next_step=f"List valid keys: drove models config {quote(name)} --all",
+        )
+        raise typer.Exit(1)
+
     if value is None:
         cfg = load_model_config(model_path)
         params = cfg.to_dict()
@@ -785,9 +870,12 @@ def model_config_cmd(
 
     try:
         set_model_config_key(model_path, key, value)
-        typer.echo(f"Set '{key}' = {value} for model '{name}'.")
-    except ValueError as e:
-        typer.echo(str(e), err=True)
+        success(
+            f"Set '{key}' = {value} for model '{name}'.",
+            next_step=f"Review effective settings: drove models config {quote(name)}",
+        )
+    except (ValueError, OSError) as e:
+        error(str(e))
         raise typer.Exit(1)
 
 

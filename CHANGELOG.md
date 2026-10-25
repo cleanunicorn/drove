@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Unified CLI success, warning, and error feedback with actionable typo hints,
+  mutation confirmations, and readable integration summaries while preserving
+  plain config values, completion scripts, and dry-run output.
+
 - Redesigned the documentation around a focused first-request tutorial, task guides,
   and linked references; clarified model names, installation, configuration reloads,
   and troubleshooting.

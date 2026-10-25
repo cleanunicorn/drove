@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from shlex import quote
 from typing import Annotated
 
 import typer
+
+from drove.cli.output import error, info, success
 
 completions_app = typer.Typer(help="Manage shell completions.", no_args_is_help=True)
 
@@ -91,7 +94,7 @@ def generate(
     try:
         script = _generate_script(shell)
     except Exception as e:
-        typer.echo(f"Error generating completion: {e}", err=True)
+        error(f"Could not generate completion: {e}")
         raise typer.Exit(1)
 
     typer.echo(script, nl=False)
@@ -116,31 +119,57 @@ def install(
     if not shell:
         detected = _detect_shell()
         if not detected:
-            typer.echo(
-                f"Could not detect current shell. Please specify one of: {', '.join(_SHELLS)}",
-                err=True,
+            error(
+                "Could not detect current shell.", next_step=f"Specify one of: {', '.join(_SHELLS)}"
             )
             raise typer.Exit(1)
         shell = detected
-        typer.echo(f"Detected shell: {shell}")
+        if dry_run:
+            typer.echo(f"Detected shell: {shell}")
+        else:
+            info(f"Detected shell: {shell}")
 
     shell = shell.lower()
     if shell not in _SHELLS:
-        typer.echo(f"Unknown shell '{shell}'. Choose from: {', '.join(_SHELLS)}", err=True)
+        error(f"Unknown shell '{shell}'.", next_step=f"Choose from: {', '.join(_SHELLS)}")
         raise typer.Exit(1)
 
     try:
         script = _generate_script(shell)
     except Exception as e:
-        typer.echo(f"Error generating completion: {e}", err=True)
+        error(f"Could not generate completion: {e}")
         raise typer.Exit(1)
 
     dest = _completion_path(shell)
-    typer.echo(f"Writing completion script → {dest}")
     if not dry_run:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(script)
+        activation = _ACTIVATION.get(shell, [])
+        rc_file = _SHELL_RC.get(shell)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(script)
+            if activation and rc_file:
+                missing = _missing_activation_lines(rc_file, activation)
+                if missing:
+                    _append_activation(rc_file, missing)
+        except OSError as exc:
+            error(
+                f"Could not finish installing completions: {exc}",
+                next_step="Check permissions for the script and shell config, then retry.",
+            )
+            raise typer.Exit(1) from exc
+        if shell == "fish":
+            next_step = "Fish loads completions automatically — no further steps needed."
+        elif shell == "powershell":
+            quoted_rc = "'" + str(rc_file).replace("'", "''") + "'"
+            next_step = f"Restart PowerShell or run: . {quoted_rc}"
+        else:
+            next_step = f"Restart your shell or run: source {quote(str(rc_file))}"
+        activation_note = f" Activation configured in {rc_file}." if rc_file else ""
+        success(f"Installed {shell} completions at {dest}.{activation_note}", next_step=next_step)
+        return
 
+    # Preserve the existing dry-run transcript, with no file writes.
+    typer.echo(f"Writing completion script → {dest}")
     # Report activation steps
     activation = _ACTIVATION.get(shell, [])
     rc_file = _SHELL_RC.get(shell)
@@ -154,9 +183,6 @@ def install(
             for line in missing:
                 typer.echo(f"    {line}")
             typer.echo("")
-            if not dry_run:
-                _append_activation(rc_file, missing)
-                typer.echo(f"(Added automatically to {rc_file})")
         else:
             typer.echo(f"Activation lines already present in {rc_file}.")
 

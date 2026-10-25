@@ -175,7 +175,8 @@ def test_status_offline_exit_and_watch_retry(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(httpx, "get", offline)
     result = CliRunner().invoke(app, ["server", "status"])
     assert result.exit_code == 1
-    assert "drove server" in result.stdout
+    assert "Warning: Server is not running." in result.stderr
+    assert "drove server" in result.stderr
     _print_status("http://localhost:8080", watch=True)  # Does not exit the refresh loop.
 
 

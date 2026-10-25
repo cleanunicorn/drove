@@ -12,7 +12,7 @@ import typer
 from drove.cli.completions import completions_app
 from drove.cli.integrate import integrate
 from drove.cli.models import _complete_model_name, models_app
-from drove.cli.output import console, fields, heading
+from drove.cli.output import console, error, fields, heading, info, success, unknown, warning
 from drove.cli.server import server_app
 from drove.config import Config, load_config, resolve_config_path
 
@@ -114,27 +114,43 @@ def config(
         # Get single key (supports dot notation for nested: llama_server.n_gpu_layers)
         val = _config_get(conf, key)
         if val is _MISSING:
-            typer.echo(f"Unknown key '{key}'.", err=True)
+            error(
+                unknown("key", key, _complete_config_key(ctx, "")),
+                next_step="List valid keys: drove config",
+            )
             raise typer.Exit(1)
         typer.echo(str(val))
         return
 
     # Set key — load, update, save
+    if _config_get(conf, key) is _MISSING:
+        error(
+            unknown("key", key, _complete_config_key(ctx, "")),
+            next_step="List valid keys: drove config",
+        )
+        raise typer.Exit(1)
     try:
         updated = _config_set(conf, key, value)
     except (ValueError, KeyError) as e:
-        typer.echo(str(e), err=True)
+        error(str(e))
         raise typer.Exit(1)
 
     if not cfg_path.exists():
-        typer.echo(
-            f"Config file not found at {cfg_path}. Run 'drove init' first or use --config.",
-            err=True,
+        error(
+            f"Config file not found at {cfg_path}.",
+            next_step="Run drove init first or use --config.",
         )
         raise typer.Exit(1)
 
-    updated.save(cfg_path)
-    typer.echo(f"Set {key} = {value}")
+    try:
+        updated.save(cfg_path)
+    except OSError as exc:
+        error(
+            f"Could not write configuration: {exc}",
+            next_step="Check the config path and permissions.",
+        )
+        raise typer.Exit(1) from exc
+    success(f"Set {key} = {value} in {cfg_path}.", next_step="Review configuration: drove config")
 
 
 _MISSING = object()
@@ -255,7 +271,10 @@ def chat(
     if resume:
         resume_session = latest_session(config.sessions_dir, model)
         if resume_session is None:
-            typer.echo(f"No saved sessions found for model '{model}'.")
+            warning(
+                f"No saved sessions found for model '{model}'.",
+                next_step="Start a new chat without --resume.",
+            )
             raise typer.Exit(1)
 
     tui = ChatApp(
@@ -284,30 +303,41 @@ def _select_model_from_endpoint(base_url: str, api_key: str | None) -> str | Non
         resp = httpx.get(url, headers=headers, timeout=5.0)
         resp.raise_for_status()
     except httpx.ConnectError:
-        typer.echo(f"Could not connect to {base_url}", err=True)
-        typer.echo("Is the server running?", err=True)
+        error(
+            f"Could not connect to {base_url}.",
+            next_step="Start drove server or check the endpoint URL.",
+        )
         return None
     except httpx.HTTPStatusError as e:
-        typer.echo(f"Failed to list models: {e.response.status_code}", err=True)
+        error(
+            f"Failed to list models: {e.response.status_code}.",
+            next_step="Check the endpoint URL and server status.",
+        )
         return None
     except httpx.HTTPError as e:
-        typer.echo(f"Failed to list models: {e}", err=True)
+        error(f"Failed to list models: {e}.", next_step="Check the endpoint URL and server status.")
         return None
 
     try:
         data = resp.json()
         model_list = data.get("data", [])
     except Exception:
-        typer.echo("Invalid response from /v1/models.", err=True)
+        error(
+            "Invalid response from /v1/models.",
+            next_step="Check the endpoint is OpenAI-compatible.",
+        )
         return None
 
     names: list[str] = [m["id"] for m in model_list if "id" in m]
     if not names:
-        typer.echo("No models available at this endpoint.", err=True)
+        error(
+            "No models available at this endpoint.",
+            next_step="Download a model with drove models download.",
+        )
         return None
 
     if len(names) == 1:
-        typer.echo(f"Using model: {names[0]}")
+        info(f"Using model: {names[0]}")
         return names[0]
 
     typer.echo("Available models:")
@@ -321,9 +351,9 @@ def _select_model_from_endpoint(base_url: str, api_key: str | None) -> str | Non
             choice = int(typer.prompt("Select a model", default="1"))
             if 1 <= choice <= len(names):
                 return names[choice - 1]
-            typer.echo(f"Please enter a number between 1 and {len(names)}")
+            warning(f"Please enter a number between 1 and {len(names)}.")
         except ValueError, TypeError:
-            typer.echo("Please enter a valid number")
+            warning("Please enter a valid number.")
 
 
 observe_app = typer.Typer(
@@ -370,10 +400,13 @@ def _observe_default(
 
     config = ctx.obj["config"]
     if not config.observe_dir.exists():
-        typer.echo("No observe logs found.")
-        typer.echo(
-            "Enable observation by setting 'observe = true' in your config, "
-            "then make some requests."
+        warning(
+            "No observe logs found.",
+            next_step=(
+                "Run drove config observe true, then make some requests."
+                if not config.observe
+                else "Make some requests through drove, then open observe again."
+            ),
         )
         raise typer.Exit(1)
 
@@ -406,15 +439,18 @@ def web(
     model: str | None = ctx.obj.get("observe_model")
 
     if not config.observe_dir.exists():
-        typer.echo("No observe logs found.")
-        typer.echo(
-            "Enable observation by setting 'observe = true' in your config, "
-            "then make some requests."
+        warning(
+            "No observe logs found.",
+            next_step=(
+                "Run drove config observe true, then make some requests."
+                if not config.observe
+                else "Make some requests through drove, then open observe again."
+            ),
         )
         raise typer.Exit(1)
 
     web_app = create_observe_app(config.observe_dir, model=model)
-    typer.echo(f"Observe web UI: http://{host}:{port}")
+    info(f"Observe web UI: http://{host}:{port}")
     uvicorn.run(web_app, host=host, port=port, log_level="warning")
 
 
@@ -433,11 +469,29 @@ def init_config(
     conf = ctx.obj["config"]
 
     if cfg_path.exists() and not force:
-        typer.echo(f"Config already exists: {cfg_path}")
-        typer.echo("Use --force to overwrite.")
+        warning(
+            f"Config already exists: {cfg_path}", next_step="Use drove init --force to overwrite."
+        )
         raise typer.Exit(1)
 
-    conf.save(cfg_path)
-    typer.echo(f"Config written to {cfg_path}")
-    typer.echo("")
-    typer.echo(cfg_path.read_text())
+    try:
+        conf.save(cfg_path)
+    except OSError as exc:
+        error(
+            f"Could not write configuration: {exc}",
+            next_step="Check the config path and permissions.",
+        )
+        raise typer.Exit(1) from exc
+    out = console()
+    fields(
+        out,
+        [
+            ("Config", cfg_path),
+            ("Models", conf.models_dir),
+            ("Listen", f"{conf.listen_host}:{conf.listen_port}"),
+            ("Idle timeout", f"{conf.idle_timeout_seconds} seconds"),
+        ],
+    )
+    success(
+        f"Config written to {cfg_path}.", next_step="Review drove config, then start drove server."
+    )

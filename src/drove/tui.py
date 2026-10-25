@@ -1405,7 +1405,12 @@ class ChatApp(App[None]):
             self._tool_seconds = 0
             self._tool_timer.resume()
             self._update_status()
-            result = await self._run_tool(turn, call["name"], call["arguments"])
+            try:
+                result = await self._run_tool(turn, call["name"], call["arguments"])
+            except Exception as error:
+                # The tool ran and crashed: show it as failed, then let the turn report the error.
+                entry.finish(f"Error executing tool: {error}", "failed")
+                raise
             entry.finish(str(result), "failed" if isinstance(result, ToolFailure) else "done")
             return str(result)
         finally:

@@ -128,6 +128,27 @@ async def test_done_and_failed_are_distinct(tmp_path, monkeypatch, result, state
         assert content == str(result) and type(content) is str
 
 
+async def test_tool_that_raises_after_starting_is_failed_not_skipped(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+
+    def crash(*args, **kwargs):
+        raise TypeError("expected str, not NoneType")
+
+    monkeypatch.setattr(app, "_stream_chat", tool_then_reply([], arguments='{"path": null}'))
+    monkeypatch.setattr("drove.tui.execute_tool", crash)
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: not app.is_generating)
+        [entry] = app.query(ToolCallEntry)
+        assert entry.state == "failed" and entry.has_class("-failed")
+        assert title(entry).startswith("✗ read_file failed → Error executing tool:")
+        body = str(entry.query_one(Collapsible).query_one(Label).render())
+        assert "expected str, not NoneType" in body
+        # The turn still ends in the existing error bubble with a paired tool history.
+        assert app.query("Message.error")
+        assert app._history[-1]["role"] == "tool"
+
+
 async def test_denied_tool_is_distinct_and_never_runs(tmp_path, monkeypatch):
     app = chat_app(tmp_path)
     requests: list = []

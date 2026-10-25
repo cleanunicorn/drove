@@ -697,6 +697,7 @@ def download_model(
             name,
             tts_engine,
             repair_config=repair_config or display.stage == "configuration",
+            config_path=ctx.obj.get("config_path"),
         )
         typer.echo("Download interrupted. Completed files were kept.", err=True)
         typer.echo("Cached partial data will be reused where supported by Hugging Face.", err=True)
@@ -711,6 +712,7 @@ def download_model(
             name,
             tts_engine,
             repair_config=repair_config or display.stage == "configuration",
+            config_path=ctx.obj.get("config_path"),
         )
         if display.stage == "configuration":
             message = "Files downloaded, but model configuration failed"
@@ -726,10 +728,17 @@ def download_model(
         if display.stage == "configuration":
             typer.echo(
                 "Inspect configuration: "
-                + shlex.join(["drove", "models", "config", plan.local_name]),
+                + _drove_command(ctx.obj.get("config_path"), "models", "config", plan.local_name),
                 err=True,
             )
         raise typer.Exit(1) from None
+
+
+def _drove_command(config_path: Path | None, *arguments: str) -> str:
+    args = ["drove"]
+    if config_path is not None:
+        args.extend(["--config", str(config_path)])
+    return shlex.join([*args, *arguments])
 
 
 def _download_retry_command(
@@ -739,9 +748,10 @@ def _download_retry_command(
     tts_engine: str | None,
     *,
     repair_config: bool = False,
+    config_path: Path | None = None,
 ) -> str:
     ref = f"{plan.repo_id}:{quant}" if quant else plan.repo_id
-    args = ["drove", "models", "download", ref]
+    args = ["models", "download", ref]
     if name is not None:
         args.extend(["--name", name])
     if tts_engine is not None:
@@ -752,7 +762,7 @@ def _download_retry_command(
     # picker for that case instead of silently changing the recovery scope.
     if not _retry_needs_all_choice(plan):
         args.append("--yes")
-    return shlex.join(args)
+    return _drove_command(config_path, *args)
 
 
 def _retry_needs_all_choice(plan: DownloadPlan) -> bool:

@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Preserved custom configuration paths in download retry, resume, and repair
+  inspection commands so recovery reused the original model directory.
+- Kept model-picker cancellation, literal tool approvals, and saved partial replies
+  working together with Markdown chat rendering.
 - Prevented unconverted model weights from appearing as chat-ready in model selection.
 - Fixed loaded-model warnings when deleting a namespace containing running models.
 - Fixed deletion previews for relative model-storage paths, including symlinked directories.

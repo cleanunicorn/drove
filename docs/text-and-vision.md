@@ -80,11 +80,11 @@ drove chat --resume                      # resume the latest saved session
 drove chat -s "You are a terse assistant."
 ```
 
-Without a model argument or configured default, the picker shows loaded state, disk size and inferred
-capabilities. Type to filter names, move with ↑/↓, and press Enter to select.
+Without a model argument or configured default, the picker shows loaded state,
+disk size and inferred capabilities. Type to filter names, move with ↑/↓, and press Enter to select.
 Esc or Ctrl+C cancels. A loaded chat model is preselected when available;
 known speech models and models with unreadable configuration are excluded.
-Pass a model name explicitly if stdin or stdout is redirected.
+Pass a model name or configure `default_model` if stdin or stdout is redirected.
 
 Inside chat, `/model` opens the same picker with the current model selected.
 Choosing another saves the current conversation and starts a separate one,
@@ -93,21 +93,16 @@ Cancel or select the current model to keep the conversation unchanged. Saved
 conversations can be reopened through `/sessions` when using their model.
 Type `/help` for all commands, including `/theme`.
 
-
-
 Set `default_model` to skip the picker when no model argument is supplied.
 An explicit model always wins, including with a remote endpoint. See
 [Default model](./configuration.md#default-model) for setup and clearing.
 
-Type `/help` inside chat for commands such as `/sessions` and `/theme`.
 Press **Esc** to stop a reply while retaining and saving the partial text; Esc
 while idle no longer quits. Use **Ctrl+C** or **Ctrl+Q** to quit. Prompts entered
 while a reply runs appear as removable queued messages; stopping pauses the
 queue until you choose **Resume queued**. Tool dialogs support **y**, **n/Esc**,
 **s**, and **a** for their four choices. Already-started tools finish before a
 stop settles. See [Chat controls](./cli.md#chat-controls) for details.
-
-
 
 Assistant replies show formatted Markdown and highlighted code. Tab to a message
 and use Ctrl+Y to copy its original text, or Ctrl+B to choose a code block. See

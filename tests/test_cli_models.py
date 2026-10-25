@@ -791,3 +791,76 @@ def test_symlink_namespace_preview_does_not_claim_target_contents_removed(tmp_pa
     assert "Not currently loaded" in result.output
     assert "symlink only" in result.output
     assert primary.exists()
+
+
+@pytest.mark.parametrize("stage", ["transfer", "configuration"])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_recovery_commands_preserve_custom_config(tmp_path, monkeypatch, stage, interrupt):
+    import shlex
+
+    import drove.cli.models as cli_models
+
+    models_dir = tmp_path / "custom models"
+    config_path = tmp_path / "custom config's.toml"
+    config_path.write_text(f'models_dir = "{models_dir}"\n')
+    plan = DownloadPlan("org/repo", {"model.gguf": 4}, "local-model", False)
+    monkeypatch.setattr("drove.downloader.resolve_download", lambda *a, **k: plan)
+    destinations = []
+    failed = False
+    finish = cli_models._finish_download
+
+    def fail_once():
+        nonlocal failed
+        if not failed:
+            failed = True
+            if interrupt:
+                raise KeyboardInterrupt
+            raise OSError("simulated failure")
+
+    def execute(self, destination, **kwargs):
+        destinations.append(destination)
+        if stage == "transfer":
+            fail_once()
+        primary = self.destination(destination) / "model.gguf"
+        primary.parent.mkdir(parents=True, exist_ok=True)
+        primary.write_bytes(b"gguf")
+        return primary
+
+    def configure(*args, **kwargs):
+        if stage == "configuration":
+            fail_once()
+        return finish(*args, **kwargs)
+
+    monkeypatch.setattr(DownloadPlan, "execute", execute)
+    monkeypatch.setattr(cli_models, "_finish_download", configure)
+    runner = CliRunner()
+    first = runner.invoke(
+        app, ["--config", str(config_path), "models", "download", plan.repo_id, "--yes"]
+    )
+    assert first.exit_code == (130 if interrupt else 1), first.output
+    label = "Resume: " if interrupt else "Retry: "
+    command = next(
+        line.removeprefix(label) for line in first.output.splitlines() if line.startswith(label)
+    )
+    args = shlex.split(command)
+    assert args[:3] == ["drove", "--config", str(config_path)]
+    if stage == "configuration":
+        assert "--repair-config" in args
+        if not interrupt:
+            inspect = next(
+                line.removeprefix("Inspect configuration: ")
+                for line in first.output.splitlines()
+                if line.startswith("Inspect configuration: ")
+            )
+            assert shlex.split(inspect) == [
+                "drove",
+                "--config",
+                str(config_path),
+                "models",
+                "config",
+                plan.local_name,
+            ]
+    retried = runner.invoke(app, args[1:])
+    assert retried.exit_code == 0, retried.output
+    assert destinations == [models_dir, models_dir]
+    assert (plan.destination(models_dir) / "model.gguf").is_file()

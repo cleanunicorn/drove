@@ -59,7 +59,8 @@ Older drove servers and third-party OpenAI-compatible endpoints may not report
 this metadata. Their model entries remain selectable with unknown labels; drove
 cannot verify chat capability from a model name alone. Explicit model arguments
 remain supported, including `drove chat MODEL --endpoint URL --api-key KEY`.
-When stdin or stdout is not a terminal, omit the picker by passing `MODEL`.
+When stdin or stdout is not a terminal, bypass the picker by passing `MODEL`
+or configuring `default_model`.
 
 Inside chat, type `/model` to choose another model without restarting the app.
 The current model is preselected. Switching saves the old conversation and starts
@@ -68,7 +69,6 @@ Cancel or select the same model to keep the current conversation. Switching is
 unavailable while replies or queued messages are pending. A failed catalog fetch
 or session save leaves the current model unchanged; saved conversations remain
 available through `/sessions` when using their model.
-
 
 `drove chat MODEL` uses that model. Without `MODEL`, it uses `default_model`
 from configuration, or opens the existing model picker when no default is set.
@@ -85,13 +85,11 @@ drove config default_model ""  # restore picker / server loaded-model fallback
 See [Default model](configuration.md#default-model) for server behavior and
 `DROVE_DEFAULT_MODEL` precedence.
 
-
 In `drove chat`, user text, thinking, and errors are shown literally: bracketed
 text such as `a[i]` is not treated as styling. Assistant replies render Markdown,
 while Rich-style tags remain literal. Tool confirmations show the tool
 name and exact arguments as plain text. Scroll within the confirmation to review
 long arguments; the permission buttons stay available below it.
-
 
 ## Chat controls
 
@@ -110,12 +108,12 @@ Tool confirmation shortcuts are **y** (allow once), **n** or **Esc** (deny once)
 **s** (allow for this session), and **a** (allow always). Esc in this dialog denies
 the call rather than stopping the whole turn. A tool that has already started
 cannot be undone: stopping shows a waiting status, retains its actual result,
-and prevents any remaining calls or follow-up model request. New turns, session changes, and an explicit quit wait until that tool finishes. Closing the client stream does
-not guarantee that a remote backend immediately stops computation.
+and prevents any remaining calls or follow-up model request. New turns, session
+changes, and an explicit quit wait until that tool finishes. Closing the client
+stream does not guarantee that a remote backend immediately stops computation.
 
 Use `/save` to save a partial reply without stopping it. `/new`, `/clear`, and
 `/sessions` require the current reply (and any running tool) to finish or stop.
-
 
 ## Chat presentation and copying
 
@@ -168,6 +166,9 @@ The `CAPABILITY` column in `drove models list` shows model capabilities:
 
 ### Download progress and recovery
 
+Printed retry, resume, and repair inspection commands preserve the effective
+`--config` path so recovery uses the same model directory.
+
 Downloads show one overall byte progress display with the active file, transfer
 speed and estimated time remaining. Existing complete files are **skipped**;
 a transport-reported saved offset is **resumed**. A short final file is marked
@@ -200,7 +201,6 @@ Esc/Ctrl+C to cancel. The picker shows sizes, local status and advisory RAM
 estimates. `:QUANT` and `--yes` bypass it for scripts. See
 [Choosing a download variant](./models.md#choosing-a-download-variant) for the
 memory estimate and download-all behavior.
-
 
 Before deleting a model, drove lists the files and sidecar configuration it will
 remove, their count, and estimated reclaimed space. It checks the configured

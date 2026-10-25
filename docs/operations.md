@@ -112,7 +112,6 @@ tables, and safe links work without a CDN or external network access. Images,
 embedded content, styling, and unsafe links are omitted from previews. If a
 preview dependency cannot load, the raw text stays visible.
 
-
 The web browser shows the number loaded and the API's total (for example,
 `100 of 4,213 requests`), with separate loading, empty, and retry states for
 searches and request details. A failed **Load more** keeps the rows already

@@ -423,3 +423,16 @@ def test_status_displays_audio(monkeypatch: pytest.MonkeyPatch, capsys, verbose:
     assert "Transcription" in output and "Speech" in output
     assert "12.5s audio" in output and "3.5s audio" in output
     assert "1.2s processing" in output and "2.1s processing" in output
+
+
+def test_config_default_model_set_get_clear(tmp_path: Path) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text("")
+    runner = CliRunner()
+    prefix = ["-c", str(custom), "config", "default_model"]
+    assert runner.invoke(app, [*prefix, "org/model:Q4_K_M"]).exit_code == 0
+    assert runner.invoke(app, prefix).stdout == "org/model:Q4_K_M\n"
+    assert 'default_model = "org/model:Q4_K_M"' in custom.read_text()
+    assert runner.invoke(app, [*prefix, ""]).exit_code == 0
+    assert "default_model" not in custom.read_text()
+    assert runner.invoke(app, prefix).stdout == "None\n"

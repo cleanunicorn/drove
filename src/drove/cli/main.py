@@ -247,6 +247,8 @@ def chat(
         base_url = base_url.replace("//0.0.0.0:", "//127.0.0.1:")
 
     if model is None:
+        model = config.default_model
+    if model is None:
         model = _select_model_from_endpoint(base_url, api_key)
         if model is None:
             raise typer.Exit(1)

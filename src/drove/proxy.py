@@ -179,6 +179,9 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     async def proxy(request: Request, path: str) -> StreamingResponse:
         stats.request_started()
         model_name = await _extract_model(request)
+        current_config: Config = app.state.config
+        if model_name is None:
+            model_name = current_config.default_model
 
         if model_name is None:
             if not manager.is_running:
@@ -224,7 +227,6 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
             body = await request.body()
 
             # Build observe context if observation is enabled
-            current_config: Config = app.state.config
             obs_ctx: ObserveContext | None = None
             if current_config.observe:
                 from datetime import datetime

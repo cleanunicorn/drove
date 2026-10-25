@@ -229,10 +229,14 @@ Engines run in their own Python 3.12 environments that `uv` builds on first use,
 
 <br>
 
+Set a preferred model with `drove config default_model "org/model:Q4_K_M"`.
+It is used by `drove chat` and API requests that omit `model`; explicit model
+choices still win. See [default-model configuration](docs/configuration.md#default-model).
+
 `drove chat` is a full TUI client with saved sessions and themes. By default it talks to your local drove server, but it can point at **any** OpenAI-compatible API:
 
 ```bash
-drove chat                                   # pick a model from the local server
+drove chat                                   # use the default model, or pick one
 drove chat unsloth/Qwen3-8B-GGUF             # chat with a specific local model
 drove chat --resume                          # resume the latest saved session
 drove chat -s "You are a terse assistant."   # set a system prompt

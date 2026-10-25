@@ -69,6 +69,23 @@ drove serve
 drove chat
 ```
 
+## Chat model selection
+
+`drove chat MODEL` uses that model. Without `MODEL`, it uses `default_model`
+from configuration, or opens the existing model picker when no default is set.
+The same order applies with `--endpoint`; an explicit model overrides the
+configured identifier for remote APIs too. `--resume` looks up sessions for
+the selected model.
+
+```bash
+drove config default_model "org/model:Q4_K_M"
+drove chat
+drove config default_model ""  # restore picker / server loaded-model fallback
+```
+
+See [Default model](configuration.md#default-model) for server behavior and
+`DROVE_DEFAULT_MODEL` precedence.
+
 ## Config management
 
 ```bash

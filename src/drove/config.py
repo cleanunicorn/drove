@@ -85,6 +85,7 @@ class Config(BaseSettings):
     )
 
     models_dir: Path = DEFAULT_MODELS_DIR
+    default_model: str | None = None
     sessions_dir: Path = DEFAULT_SESSIONS_DIR
     observe: bool = False
     observe_dir: Path = DEFAULT_OBSERVE_DIR
@@ -126,6 +127,11 @@ class Config(BaseSettings):
     def expand_path(cls, v: Any) -> Path:
         return Path(v).expanduser()
 
+    @field_validator("default_model")
+    @classmethod
+    def normalize_default_model(cls, value: str | None) -> str | None:
+        return value if value is not None and value.strip() else None
+
     @field_validator("max_memory", mode="before")
     @classmethod
     def validate_max_memory(cls, v: Any) -> str:
@@ -163,6 +169,8 @@ class Config(BaseSettings):
                 k: v for k, v in self.llama_server.model_dump().items() if v is not None
             },
         }
+        if self.default_model is not None:
+            data["default_model"] = self.default_model
         path.write_bytes(tomli_w.dumps(data).encode())
 
 

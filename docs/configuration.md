@@ -25,6 +25,37 @@ prompt_cache_ttl_seconds = 3600
 n_gpu_layers = -1
 ```
 
+## Default model
+
+Set `default_model` to a model ID shown by `drove models list`:
+
+```toml
+default_model = "org/model:Q4_K_M"
+```
+
+Or use `drove config default_model "org/model:Q4_K_M"` after `drove init`.
+`DROVE_DEFAULT_MODEL` overrides the file value. The default is unset; remove
+its TOML key or run `drove config default_model ""` to clear it. A blank
+environment value also means unset.
+
+An explicit API `model` or chat model argument always wins. When an API
+request omits `model`, drove lazily starts the configured default, even if
+another model is already loaded. If that default is missing, the request
+returns an actionable 404; it does not silently select another model. With
+no default, the server keeps its existing loaded-model fallback (or returns
+400 when none is loaded). The request body is forwarded unchanged. This
+setting applies across proxy endpoints, so speech requests should explicitly
+name a suitable speech model when the default is a chat model.
+
+`drove chat` without a model argument uses the configured default before
+opening the picker. This also applies to `--endpoint`: the identifier is sent
+to that endpoint without requiring a local model file. Pass an explicit model
+to override it. Resuming a session uses the selected model.
+
+Changes and removal take effect for subsequent server requests after config
+reload, without restarting. Models are validated when used, allowing you to
+configure a default before downloading it; startup does not preload it.
+
 ## Speech request timeout
 
 `speech_timeout_seconds` controls how long the proxy waits for a response from

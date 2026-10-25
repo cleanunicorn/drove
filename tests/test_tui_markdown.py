@@ -316,7 +316,7 @@ async def test_speed_is_received_chunk_rate_not_tokens(app, monkeypatch, elapsed
     monkeypatch.setattr(ChatApp, "_stream_chat", stream)
     async with app.run_test():
         await start_turn(app, "go").wait()
-        status = plain(app.query_one("#status-label", Label))
+        status = app._details_text()
         assert "tok/s" not in status
         if elapsed:
             assert app._last_speed == 1.5
@@ -394,7 +394,7 @@ async def test_tool_only_events_do_not_claim_content_throughput(app, monkeypatch
     async with app.run_test():
         await start_turn(app, "go").wait()
         assert app._last_speed is None
-        assert "chunks/s" not in plain(app.query_one("#status-label", Label))
+        assert "chunks/s" not in app._details_text()
 
 
 async def test_invalid_theme_retains_existing_selection(app):

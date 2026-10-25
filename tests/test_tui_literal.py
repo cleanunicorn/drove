@@ -184,10 +184,12 @@ async def test_status_values_are_literal(tmp_path: Path) -> None:
     app._base_url = "http://[::1]:8080/[/x]"
     async with app.run_test() as pilot:
         await pilot.pause()
-        status = app.query_one("#status-label", Label)
-        assert_literal(
-            status, f"  model: {app._model}  •  {app._base_url}  •  session: {app._session.id}"
-        )
+        await pilot.click("#chat-details")
+        await pilot.pause()
+        details = app.screen.query_one("#details-content", Label)
+        assert_literal(details, app._details_text())
+        assert app._model in details.render().plain
+        assert app._base_url in details.render().plain
 
 
 async def test_approved_arguments_match_executed_string(

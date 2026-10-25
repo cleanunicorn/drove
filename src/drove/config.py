@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import tomli_w
 from pydantic import Field, field_validator
@@ -68,6 +69,9 @@ class LlamaServerDefaults(BaseSettings):
     threads: int | None = None
 
 
+ChatHint = Literal["send", "newline", "commands", "details", "stop"]
+
+
 class Config(BaseSettings):
     """Global drove configuration.
 
@@ -107,6 +111,7 @@ class Config(BaseSettings):
     prompt_cache_timeout_seconds: int = 60  # max wait for a single save/restore call
     llama_server_host: str = "127.0.0.1"
     tui_theme: str = "textual-dark"
+    tui_completed_hints: list[ChatHint] = []
 
     llama_server: LlamaServerDefaults = LlamaServerDefaults()
 
@@ -165,6 +170,7 @@ class Config(BaseSettings):
             "prompt_cache_timeout_seconds": self.prompt_cache_timeout_seconds,
             "llama_server_host": self.llama_server_host,
             "tui_theme": self.tui_theme,
+            "tui_completed_hints": self.tui_completed_hints,
             "llama_server": {
                 k: v for k, v in self.llama_server.model_dump().items() if v is not None
             },
@@ -191,6 +197,18 @@ def load_config(path: Path | None = None) -> Config:
     # Point the TOML source at the requested file by temporarily updating model_config
     Config.model_config["toml_file"] = str(config_path)
     return Config()
+
+
+def save_tui_completed_hints(hints: list[ChatHint], path: Path | None = None) -> None:
+    """Persist chat tip progress without rewriting any other key.
+
+    Unlike ``Config.save``, this never writes env overrides or defaults into the file.
+    """
+    config_path = resolve_config_path(path)
+    data = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+    data["tui_completed_hints"] = sorted(hints)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_bytes(tomli_w.dumps(data).encode())
 
 
 def _migrate_legacy_config(config_path: Path) -> None:

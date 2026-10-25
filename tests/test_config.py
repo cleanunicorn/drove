@@ -8,7 +8,12 @@ import pytest
 import tomli_w
 from pydantic import ValidationError
 
-from drove.config import load_config, parse_size, resolve_config_path
+from drove.config import (
+    load_config,
+    parse_size,
+    resolve_config_path,
+    save_tui_completed_hints,
+)
 
 
 def test_defaults(tmp_path: Path) -> None:
@@ -170,3 +175,37 @@ def test_default_model_env_precedence(tmp_path: Path, monkeypatch: pytest.Monkey
     assert load_config(path).default_model == "env-model"
     monkeypatch.setenv("DROVE_DEFAULT_MODEL", " ")
     assert load_config(path).default_model is None
+
+
+def test_tutorial_progress_round_trips_without_losing_settings(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg = load_config(cfg_file)
+    cfg.listen_port = 1234
+    cfg.tui_theme = "textual-light"
+    cfg.tui_completed_hints = ["send", "commands"]
+    cfg.save(cfg_file)
+    reloaded = load_config(cfg_file)
+    assert reloaded.tui_completed_hints == ["send", "commands"]
+    assert reloaded.listen_port == 1234
+    assert reloaded.tui_theme == "textual-light"
+
+
+def test_saving_tip_progress_keeps_env_overrides_out_of_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('listen_port = 8080\nallowed_tools = ["shell_execute"]\n')
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9999")
+    save_tui_completed_hints(["send", "commands"], cfg_file)
+    assert cfg_file.read_text() == (
+        'listen_port = 8080\nallowed_tools = [\n    "shell_execute",\n]\n'
+        'tui_completed_hints = [\n    "commands",\n    "send",\n]\n'
+    )
+    monkeypatch.delenv("DROVE_LISTEN_PORT")
+    assert load_config(cfg_file).tui_completed_hints == ["commands", "send"]
+
+
+def test_saving_tip_progress_creates_minimal_file(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "nested" / "config.toml"
+    save_tui_completed_hints([], cfg_file)
+    assert cfg_file.read_text() == "tui_completed_hints = []\n"

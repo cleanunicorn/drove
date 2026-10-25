@@ -28,10 +28,7 @@ from textual.widgets import (
     Button,
     Collapsible,
     DataTable,
-    Footer,
-    Header,
     Label,
-    LoadingIndicator,
     Markdown,
     OptionList,
     Static,
@@ -42,6 +39,7 @@ from textual.widgets.option_list import Option
 from textual.worker import Worker
 
 from drove.chat_models import CatalogError, fetch_models_async
+from drove.config import ChatHint, load_config, save_tui_completed_hints
 from drove.model_picker import ModelPicker
 from drove.sessions import Session, list_sessions, new_session, save_session
 from drove.tools import TOOL_DEFINITIONS, execute_tool
@@ -49,112 +47,97 @@ from drove.tools import TOOL_DEFINITIONS, execute_tool
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
 CSS = """
-ChatApp {
-    background: $surface;
+ChatApp { background: $background; }
+#chat-header { height: 1; padding: 0 1; background: $surface; }
+#brand { width: 1fr; color: $accent; text-style: bold; }
+#chat-header Button {
+    width: auto; min-width: 0; height: 1; border: none;
+    background: transparent; margin-left: 1;
 }
-
+#chat-header Button:hover, #chat-header Button:focus { background: $boost; color: $accent; }
+#conversation { height: 1fr; }
 #messages {
-    height: 1fr;
-    padding: 1 2;
-    overflow-y: auto;
-    overflow-x: hidden;
+    height: 1fr; padding: 0 1; overflow-y: auto; overflow-x: hidden;
+    scrollbar-size: 1 1;
 }
-
+#conversation.empty #messages { display: none; }
+#welcome { display: none; height: 1fr; align: center middle; padding: 0 2; }
+#conversation.empty #welcome { display: block; }
+#welcome-content { width: 100%; max-width: 68; height: auto; }
+#welcome-title { text-style: bold; color: $text; }
+#welcome-description { color: $text-muted; margin-bottom: 1; width: 100%; }
+#welcome-actions { height: auto; }
+#welcome-actions Button {
+    width: auto; min-width: 0; height: 1; border: none; margin-right: 1;
+    background: $surface; color: $text;
+}
+#welcome-actions Button:hover, #welcome-actions Button:focus { background: $boost; }
 .message {
-    margin-bottom: 1;
-    width: 100%;
+    margin: 0 0 1 0; padding: 0 0 0 1; border-left: solid $panel; width: 100%; height: auto;
 }
-
-.message:focus {
-    border-left: solid $accent;
-}
-
-.message-header {
-    text-style: bold;
-    margin-bottom: 0;
-}
-
-.queued { color: $text-muted; }
-.queued Label { color: $text-muted; }
-.queued Button { margin-top: 1; }
-#resume-queue { display: none; }
-#resume-queue.visible { display: block; }
-
+.message:focus { border-left: solid $accent; background: $boost; }
+.message-header { text-style: bold; margin: 0; }
+.user { border-left: solid $accent; }
 .user .message-header { color: $accent; }
 .assistant .message-header { color: $success; }
+.error { border-left: solid $error; }
 .error .message-header { color: $error; }
 .system-note .message-header { color: $warning; }
-
-.message-body {
-    padding-left: 2;
-    color: $text;
-    width: 1fr;
-}
-
+.queued { color: $text-muted; border-left: dashed $panel; }
+.queued Label { color: $text-muted; }
+.queued Button, #resume-queue { min-width: 0; height: 1; border: none; }
+#resume-queue { display: none; }
+#resume-queue.visible { display: block; }
+.message-body { color: $text; width: 1fr; padding: 0; }
+.message-body MarkdownListItem MarkdownParagraph { margin: 0; }
+.message-body MarkdownHeader { margin: 1 0 0 0; }
+.message-body MarkdownFence > Label { padding: 0 1; }
 .error .message-body { color: $error; }
-.system-note .message-body { color: $text-muted; text-style: italic; }
-
-.thinking-section {
-    margin-bottom: 0;
-    padding-left: 2;
-}
-
-.thinking-section Label {
-    color: $text-muted;
-    text-style: italic;
-    width: 1fr;
-}
-
-.tool-call-section {
-    margin-bottom: 0;
-    padding-left: 2;
-}
-
-.tool-call-section Label {
-    color: $text-muted;
-    width: 1fr;
-}
-
+.system-note .message-body { color: $text-muted; }
+.thinking-section, .tool-call-section { margin: 0; padding: 0; }
+.thinking-section Label { color: $text-muted; text-style: italic; width: 1fr; }
+.tool-call-section Label { color: $text-muted; width: 1fr; }
 #autocomplete {
-    display: none;
-    height: auto;
-    max-height: 10;
-    margin: 0 2;
-    background: $panel;
-    border: solid $accent;
+    display: none; height: auto; max-height: 6; margin: 0 1;
+    background: $surface; border-left: solid $accent;
 }
-
-#autocomplete.visible {
-    display: block;
-}
-
-#input-bar {
-    height: auto;
-    padding: 1 2;
-    border-top: solid $panel;
-}
-
+#autocomplete.visible { display: block; }
+#input-bar { height: auto; padding: 0 1; }
+#composer { height: auto; border-top: solid $panel; }
+#composer:focus-within { border-top: solid $accent; }
 #user-input {
-    width: 1fr;
-    height: auto;
-    min-height: 3;
-    max-height: 12;
+    width: 1fr; height: auto; min-height: 1; max-height: 6;
+    border: none; background: $surface; padding: 0 1;
 }
-
-#status-bar {
-    height: 1;
-    padding: 0 2;
-    background: $panel;
-    color: $text-muted;
+#send-message, #stop-reply {
+    width: 6; min-width: 6; height: 1; border: none;
+    background: $surface; padding: 0;
 }
-
-LoadingIndicator {
-    height: 1;
-    width: auto;
-    display: none;
+#send-message { color: $accent; }
+#stop-reply { display: none; color: $error; }
+#composer.generating #send-message { display: none; }
+#composer.generating #stop-reply { display: block; }
+#guidance { height: 1; padding: 0 1; }
+#guidance-label { width: 1fr; color: $text-muted; text-wrap: nowrap; text-overflow: ellipsis; }
+#dismiss-tip { width: 3; min-width: 3; height: 1; border: none; background: transparent; }
+#status-bar { display: none; height: 1; padding: 0 1; color: $text-muted; }
+#status-bar.visible { display: block; }
+#activity-label { width: auto; margin-right: 1; color: $accent; }
+#status-label { width: 1fr; text-overflow: ellipsis; text-wrap: nowrap; }
+ChatApp.narrow #change-model, ChatApp.narrow #open-sessions { display: none; }
+ChatApp.narrow #welcome-actions { layout: vertical; }
+ChatApp.narrow #welcome-actions Button { margin: 0; }
+ChatApp.short #welcome-description { display: none; }
+ChatApp.short #user-input { max-height: 4; }
+ChatDetails { align: center middle; }
+#details-dialog {
+    width: 90%; max-width: 76; height: 14; max-height: 85%;
+    background: $surface; border: round $panel; padding: 0 1;
 }
-
-LoadingIndicator.visible { display: block; }
+#details-title { text-style: bold; color: $accent; }
+#details-scroll { height: 1fr; overflow-x: hidden; }
+#details-content { width: 100%; }
+#close-details { height: 1; min-width: 0; border: none; margin-top: 1; }
 
 ToolConfirmationModal {
     align: center middle;
@@ -247,7 +230,7 @@ class ChatInput(TextArea):
     """TextArea that sends Enter as submit and Shift+Enter as newline."""
 
     BINDINGS = [
-        Binding("enter", "submit", "Send", priority=True),
+        Binding("enter", "submit", "Send", priority=True, show=False),
     ]
 
     def action_submit(self) -> None:
@@ -256,9 +239,13 @@ class ChatInput(TextArea):
     class Submitted(TextArea.Changed):
         pass
 
+    class NewlineInserted(TextArea.Changed):
+        pass
+
     def _on_key(self, event: events.Key) -> None:  # type: ignore[override]
         if event.key == "shift+enter":
             self.insert("\n")
+            self.post_message(self.NewlineInserted(self))
             event.prevent_default()
             event.stop()
 
@@ -579,6 +566,30 @@ def _chat_error(error: Exception, base_url: str) -> str:
     return str(error) or f"Chat request failed ({type(error).__name__}). Check drove server status."
 
 
+class ChatDetails(ModalScreen[None]):
+    """Connection and last-reply diagnostics, shown only on request."""
+
+    BINDINGS = [Binding("escape,enter", "close", "Close")]
+
+    def __init__(self, details: str) -> None:
+        super().__init__()
+        self.details = details
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="details-dialog"):
+            yield Label("Chat info", id="details-title")
+            with ScrollableContainer(id="details-scroll"):
+                yield Label(self.details, id="details-content", markup=False)
+            yield Button("Close · Esc", id="close-details", compact=True)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.action_close()
+
+
 # ── Main app ────────────────────────────────────────────────────────────────────
 
 
@@ -635,6 +646,14 @@ class ChatApp(App[None]):
         self._model_picker_open = False
         self._last_speed: float | None = None  # received chunks/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
+        self._last_usage: dict[str, int] = {}
+        self._completed_hints: set[ChatHint] = set()
+        self._hint_save_failed = False
+        if config_path is not None:
+            try:
+                self._completed_hints.update(load_config(config_path).tui_completed_hints)
+            except OSError, ValueError:
+                pass
         self.theme = theme
         self._session_allowed_tools: set[str] = set()
 
@@ -646,20 +665,59 @@ class ChatApp(App[None]):
             self._history = list(self._session.messages)
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield ScrollableContainer(id="messages")
+        with Horizontal(id="chat-header"):
+            yield Label("drove", id="brand")
+            yield Button(
+                "Model", id="change-model", compact=True, tooltip="Choose a model · /model"
+            )
+            yield Button(
+                "Sessions", id="open-sessions", compact=True, tooltip="Saved conversations"
+            )
+            yield Button("+ New", id="new-chat", compact=True, tooltip="New conversation · /new")
+            yield Button(
+                "Info", id="chat-details", compact=True, tooltip="Connection and reply details"
+            )
+        with Vertical(id="conversation", classes="empty"):
+            with Vertical(id="welcome"):
+                with Vertical(id="welcome-content"):
+                    yield Label("What are we working on?", id="welcome-title")
+                    yield Label(
+                        "Ask a question, explore an idea, or work through code.",
+                        id="welcome-description",
+                    )
+                    with Horizontal(id="welcome-actions"):
+                        yield Button("Choose model", id="welcome-model", compact=True)
+                        yield Button("Resume session", id="welcome-sessions", compact=True)
+                        yield Button("Commands", id="welcome-help", compact=True)
+            yield ScrollableContainer(id="messages")
         with Horizontal(id="status-bar"):
+            yield Label("", id="activity-label", markup=False)
             yield Label("", id="status-label", markup=False)
-            yield LoadingIndicator(id="spinner")
         yield OptionList(id="autocomplete")
         with Vertical(id="input-bar"):
-            yield Button("Resume queued", id="resume-queue")
-            yield ChatInput(id="user-input")
-        yield Footer()
+            yield Button("Resume queued", id="resume-queue", compact=True)
+            with Horizontal(id="composer"):
+                yield ChatInput(id="user-input", placeholder="Message…")
+                yield Button("Send", id="send-message", compact=True, tooltip="Send message")
+                yield Button("Stop", id="stop-reply", compact=True, tooltip="Stop reply")
+        with Horizontal(id="guidance"):
+            yield Label("", id="guidance-label", markup=False)
+            yield Button("×", id="dismiss-tip", compact=True, tooltip="Dismiss this tip")
+
+    def action_show_details(self) -> None:
+        self._learn_hint("details")
+
+        def focus_input(result: None) -> None:
+            self.query_one("#user-input", ChatInput).focus()
+
+        self.push_screen(ChatDetails(self._details_text()), focus_input)
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.set_class(event.size.width < 50, "narrow")
+        self.set_class(event.size.height < 24, "short")
 
     def on_mount(self) -> None:
         self.title = "drove chat"
-        self.sub_title = self._model
         self._update_status()
         self.query_one("#user-input", ChatInput).focus()
 
@@ -701,7 +759,9 @@ class ChatApp(App[None]):
     # ── Slash commands ──────────────────────────────────────────────────────────
 
     _COMMANDS = {
-        "/help": "Show this help",
+        "/help": "Show commands and keyboard shortcuts",
+        "/info": "Show connection, context, and last-reply details",
+        "/tips": "/tips [off] — restart guidance or hide all tips",
         "/sessions": "Browse and resume saved sessions",
         "/model": "Choose a model and start a new conversation",
         "/new": "Start a new session",
@@ -721,19 +781,36 @@ class ChatApp(App[None]):
             )
             return
 
-        if cmd == "/help":
+        if cmd == "/info":
+            self.action_show_details()
+        elif cmd == "/tips":
+            if arg not in {"", "off"}:
+                await self._show_note("Use /tips to restart guidance or /tips off to hide it.")
+                return
+            self._completed_hints = set(self._HINTS) if arg == "off" else set()
+            self._save_hint_progress()
+            self._update_guidance()
+        elif cmd == "/help":
+            self._learn_hint("commands")
             lines = "\n".join(f"  {k:<12} {v}" for k, v in self._COMMANDS.items())
-            await self._show_note(f"Available commands:\n{lines}")
+            await self._show_note(
+                f"Available commands:\n{lines}\n\n"
+                "Enter send · Shift+Enter newline · Esc stop reply\n"
+                "Ctrl+C / Ctrl+Q quit · Tab focus messages and controls\n"
+                "Ctrl+Y copy focused message · Ctrl+B copy its code"
+            )
 
         elif cmd == "/model":
             await self._choose_model()
 
         elif cmd in ("/clear", "/new"):
-            self.query_one("#messages").remove_children()
+            await self.query_one("#messages").remove_children()
             self._session = new_session(self._model, self._system_prompt)
             self._history = list(self._session.messages)
             self._clear_queue()
             self._session_allowed_tools.clear()
+            self._last_speed = self._last_ttft = None
+            self._last_usage = {}
             self._update_status()
 
         elif cmd == "/sessions":
@@ -814,7 +891,7 @@ class ChatApp(App[None]):
             self._history = list(session.messages)
             self._session_allowed_tools.clear()
             self._last_speed = self._last_ttft = None
-            self.sub_title = selected
+            self._last_usage = {}
             await self.query_one("#messages").remove_children()
             self._update_status()
             self.query_one("#user-input", ChatInput).focus()
@@ -824,6 +901,7 @@ class ChatApp(App[None]):
     async def _show_note(self, text: str) -> None:
         bubble = Message("system-note", text)
         await self.query_one("#messages").mount(bubble)
+        self._update_status()
         self._scroll_to_bottom()
 
     async def _load_session(self, session: Session) -> None:
@@ -832,7 +910,9 @@ class ChatApp(App[None]):
             return
         self._session = session
         self._history = list(session.messages)
-        self.query_one("#messages").remove_children()
+        self._last_speed = self._last_ttft = None
+        self._last_usage = {}
+        await self.query_one("#messages").remove_children()
         self._clear_queue()
         self._update_status()
         await self._replay_history()
@@ -862,10 +942,12 @@ class ChatApp(App[None]):
             self.run_worker(self._show_note("Finish choosing a model before sending a message."))
             return
 
+        self._learn_hint("send")
         self._hide_autocomplete()
         textarea.clear()
 
         if text.startswith("/"):
+            self._learn_hint("commands")
             self.run_worker(self._dispatch_command(text), exclusive=False)
             return
 
@@ -925,6 +1007,9 @@ class ChatApp(App[None]):
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         self.action_submit()
 
+    def on_chat_input_newline_inserted(self, event: ChatInput.NewlineInserted) -> None:
+        self._learn_hint("newline")
+
     def on_key(self, event: events.Key) -> None:
         ac = self.query_one("#autocomplete", OptionList)
         ac_visible = ac.has_class("visible")
@@ -956,7 +1041,10 @@ class ChatApp(App[None]):
     # ── Generation ──────────────────────────────────────────────────────────────
 
     def watch_is_generating(self, generating: bool) -> None:
-        self.query_one("#spinner", LoadingIndicator).set_class(generating, "visible")
+        self.query_one("#composer").set_class(generating, "generating")
+        self.query_one("#user-input", ChatInput).placeholder = (
+            "Queue a follow-up…" if generating else "Message…"
+        )
         self.refresh_bindings()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -980,6 +1068,7 @@ class ChatApp(App[None]):
         turn = self._turn
         if turn is None or turn.stop_requested:
             return
+        self._learn_hint("stop")
         turn.stop_requested = True
         self._queue_paused = True
         if turn.started and self._generation_worker is not None:
@@ -1002,7 +1091,35 @@ class ChatApp(App[None]):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
-        if button_id == "resume-queue":
+        commands = {
+            "change-model": "/model",
+            "welcome-model": "/model",
+            "open-sessions": "/sessions",
+            "welcome-sessions": "/sessions",
+            "new-chat": "/new",
+            "welcome-help": "/help",
+        }
+        if button_id == "chat-details":
+            event.stop()
+            self.action_show_details()
+        elif button_id == "dismiss-tip":
+            event.stop()
+            hint = self._next_hint()
+            if hint is not None:
+                self._learn_hint(hint)
+            self.query_one(ChatInput).focus()
+        elif button_id in commands:
+            event.stop()
+            self.run_worker(self._dispatch_command(commands[button_id]))
+            self.query_one("#user-input", ChatInput).focus()
+        elif button_id == "send-message":
+            event.stop()
+            self.action_submit()
+            self.query_one("#user-input", ChatInput).focus()
+        elif button_id == "stop-reply":
+            event.stop()
+            self.action_stop_generation()
+        elif button_id == "resume-queue":
             event.stop()
             self._queue_paused = False
             await self._dispatch_queued()
@@ -1030,6 +1147,7 @@ class ChatApp(App[None]):
             return
         if not self._queue:
             self._queue_paused = False
+        self._last_usage = {}
         turn = ChatTurn(self._session, self._history, text)
         turn.history.append({"role": "user", "content": text})
         turn.session.messages = turn.history
@@ -1136,7 +1254,9 @@ class ChatApp(App[None]):
                         async for event in stream:
                             if t_first is None and event["kind"] in {"thinking", "content"}:
                                 t_first = time.monotonic()
-                            if event["kind"] == "thinking":
+                            if event["kind"] == "usage":
+                                self._last_usage = event["usage"]
+                            elif event["kind"] == "thinking":
                                 chunk_count += 1
                                 turn.record["thinking"] = (
                                     turn.record.get("thinking", "") + event["chunk"]
@@ -1263,6 +1383,7 @@ class ChatApp(App[None]):
             "model": self._model,
             "messages": [{k: v for k, v in msg.items() if k != "stopped"} for msg in messages],
             "stream": True,
+            "stream_options": {"include_usage": True},
             "tools": TOOL_DEFINITIONS,
         }
         headers: dict[str, str] = {}
@@ -1286,6 +1407,20 @@ class ChatApp(App[None]):
                         break
                     try:
                         obj = json.loads(data)
+                        usage = obj.get("usage")
+                        if isinstance(usage, dict):
+                            yield {
+                                "kind": "usage",
+                                "usage": {
+                                    key: value
+                                    for key, value in usage.items()
+                                    if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                                    and type(value) is int
+                                    and value >= 0
+                                },
+                            }
+                        if not obj.get("choices"):
+                            continue
                         delta = obj["choices"][0]["delta"]
 
                         reasoning = delta.get("reasoning_content", "")
@@ -1309,12 +1444,78 @@ class ChatApp(App[None]):
 
     # ── Helpers ─────────────────────────────────────────────────────────────────
 
+    _HINTS: dict[ChatHint, str] = {
+        "send": "Enter sends your message.",
+        "newline": "Shift+Enter adds a new line.",
+        "commands": "Type / to explore commands.",
+        "details": "Info keeps model, connection, and reply details out of your way.",
+        "stop": "Esc stops the current reply; your partial text is saved.",
+    }
+
+    def _next_hint(self) -> ChatHint | None:
+        if self.is_generating and "stop" not in self._completed_hints:
+            return "stop"
+        return next(
+            (key for key in self._HINTS if key != "stop" and key not in self._completed_hints), None
+        )
+
+    def _update_guidance(self) -> None:
+        hint = self._next_hint()
+        self.query_one("#guidance").display = hint is not None
+        self.query_one("#guidance-label", Label).update(self._HINTS[hint] if hint else "")
+
+    def _learn_hint(self, hint: ChatHint) -> None:
+        if hint in self._completed_hints:
+            return
+        self._completed_hints.add(hint)
+        self._save_hint_progress()
+        self._update_guidance()
+
+    def _save_hint_progress(self) -> None:
+        if self._config_path is None:
+            return
+        try:
+            save_tui_completed_hints(list(self._completed_hints), self._config_path)
+        except OSError, ValueError:
+            if not self._hint_save_failed:
+                self.notify(
+                    "Tip progress could not be saved; remembered for this run only.",
+                    severity="warning",
+                )
+                self._hint_save_failed = True
+
+    def _details_text(self) -> str:
+        speed = (
+            f"{self._last_speed:.1f} chunks/s (received)"
+            if self._last_speed is not None
+            else "Not available"
+        )
+        ttft = f"{self._last_ttft:.2f}s" if self._last_ttft is not None else "Not available"
+        prompt = self._last_usage.get("prompt_tokens")
+        completion = self._last_usage.get("completion_tokens")
+        return (
+            f"Model: {self._model}\nEndpoint: {self._base_url}\n"
+            f"Session: {self._session.id}\n"
+            f"Context messages: {len(self._history)}\n"
+            f"Last prompt tokens: {prompt if prompt is not None else 'Not reported'}\n"
+            "Last completion tokens: "
+            f"{completion if completion is not None else 'Not reported'}\n"
+            f"Last reply speed: {speed}\nTime to first token: {ttft}"
+        )
+
     def _update_status(self) -> None:
-        parts = [f"  model: {self._model}", self._base_url, f"session: {self._session.id}"]
-        if self._last_speed is not None:
-            parts.append(f"{self._last_speed:.1f} chunks/s (received)")
-        if self._last_ttft is not None:
-            parts.append(f"TTFT {self._last_ttft:.2f}s")
+        self.query_one("#conversation").set_class(
+            not any(msg["role"] != "system" for msg in self._history)
+            and not self.query_one("#messages").children,
+            "empty",
+        )
+        activity = "Replying…" if self.is_generating else ""
+        if self._turn is not None and self._turn.stop_requested:
+            activity = "Stopping…"
+        elif self._queue_paused and self._queue:
+            activity = "Queue paused"
+        self.query_one("#activity-label", Label).update(activity)
+        parts = []
         if self._queue:
             paused = " (paused)" if self._queue_paused else ""
             parts.append(f"{len(self._queue)} queued{paused}")
@@ -1324,9 +1525,14 @@ class ChatApp(App[None]):
             and self._turn.tool_task is not None
         ):
             parts.append("Stopping: waiting for running tool")
-        resume = self.query_one("#resume-queue", Button)
-        resume.set_class(bool(self._queue) and not self.is_generating, "visible")
-        self.query_one("#status-label", Label).update("  •  ".join(parts))
+        self.query_one("#resume-queue", Button).set_class(
+            bool(self._queue) and not self.is_generating, "visible"
+        )
+        self.query_one("#status-label", Label).update("  ·  ".join(parts))
+        self.query_one("#status-bar").set_class(bool(activity or parts), "visible")
+        if isinstance(self.screen, ChatDetails):
+            self.screen.query_one("#details-content", Label).update(self._details_text())
+        self._update_guidance()
 
     def _scroll_to_bottom(self, force: bool = False) -> None:
         container = self.query_one("#messages", ScrollableContainer)

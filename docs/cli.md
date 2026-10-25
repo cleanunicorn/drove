@@ -93,6 +93,23 @@ long arguments; the permission buttons stay available below it.
 
 ## Chat controls
 
+Chat keeps the toolbar and composer to one row each, with a single line separating
+input from the conversation. Messages use a narrow role marker and minimal padding.
+The **Info** button (or `/info`) opens model, endpoint, session, timing and context
+details on demand. Token counts appear only when the endpoint reports usage; unknown
+counts are labeled **Not reported**. Reply speed is received chunks/s, not tokens/s.
+The activity row appears only while replying, stopping, or managing queued messages.
+
+One compact tip teaches a single action at a time. Sending, inserting a newline,
+using commands, opening Info, or stopping a reply retires the corresponding tip.
+The **×** button dismisses a tip without changing your draft. Progress is saved in
+the active configuration and remembered across conversations and launches; with
+no configuration path, it is remembered for the current run. Once the relevant tips
+are complete, the guidance row disappears and the conversation gains that space.
+Use `/tips` to restart guidance, `/tips off` to hide all tips, and `/help` for the
+full command and shortcut reference. Narrow terminals keep **Info** and **+ New**
+visible; `/model` and `/sessions` remain available when their buttons are hidden.
+
 In `drove chat`, **Esc stops the current reply** and returns focus to the input.
 The partial text and thinking stay visible, are saved to the session, and show a
 **Stopped** marker when resumed. Esc while idle does not quit; use **Ctrl+C** or
@@ -133,7 +150,7 @@ request was sent, not that the operating-system clipboard was verified.
 
 Connection errors suggest `drove server status` and `drove serve`. Proxy errors show
 the returned message and an appropriate next step instead of a raw JSON response.
-The status bar's **chunks/s (received)** is client-observed content/reasoning events
+Info's **chunks/s (received)** is client-observed content/reasoning events
 per second from the first such event to completion, including tool waits. It is
 not a token-generation rate, and events can contain different amounts of text.
 

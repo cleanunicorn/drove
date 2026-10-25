@@ -8,7 +8,6 @@
   inspection commands so recovery reused the original model directory.
 - Kept model-picker cancellation, literal tool approvals, and saved partial replies
   working together with Markdown chat rendering.
-- Prevented unconverted model weights from appearing as chat-ready in model selection.
 - Fixed loaded-model warnings when deleting a namespace containing running models.
 - Fixed deletion previews for relative model-storage paths, including symlinked directories.
 - Preserved literal text in chat messages and tool details, preventing model-supplied
@@ -22,7 +21,6 @@
 
 ### Added
 
-- Added searchable keyboard model selection with loaded state, size and capabilities, plus safe in-chat model switching that saved the previous conversation.
 - Added a configurable default model for model-less API requests and chat launches, with explicit model choices taking precedence and defaulted speech requests supplying the worker’s required model field.
 - Added unified model download progress, explicit resume/skip states, actionable failure and
   interruption guidance, and completion summaries with configuration and next steps.
@@ -42,9 +40,6 @@
 - Unified CLI success, warning, and error feedback with actionable typo hints,
   mutation confirmations, and readable integration summaries while preserving
   plain config values, completion scripts, and dry-run output.
-- Redesigned the documentation around a focused first-request tutorial, task guides,
-  and linked references; clarified model names, installation, configuration reloads,
-  and troubleshooting.
 - Changed Esc in chat to stop generation or deny a pending tool call without
   quitting; kept Ctrl+C and Ctrl+Q as explicit quit shortcuts.
 - Strengthened observe browser regression checks to verify the latest request details survived a delayed, non-aborting response.
@@ -56,6 +51,34 @@
 - Prevented logged content from executing HTML in observe web Markdown previews,
   escaped record fields, and bundled pinned dependencies for offline rendering
   while preserving ordinary Markdown formatting and safe links.
+
+
+## v0.10.0 (2026-10-25)
+
+### Bug Fixes
+
+- **chat**: Exclude unservable weights from model selection
+  ([`61b0ee3`](https://github.com/cleanunicorn/drove/commit/61b0ee324a1e29b638556f62398d9f0eea7f571c))
+
+Resolve catalog entries through ModelStore before advertising chat capabilities. Keep unsupported
+  weights visible in inventory with unknown capabilities.
+
+Add six regression cases covering safetensors, bin and pt in local and namespaced directories,
+  including availability after conversion to GGUF. All six failed before the fix; make fmt, make
+  lint, make typecheck and make test pass (491 tests).
+
+Sweep: 2 inventory-to-capability paths found; 1 fixed in the reviewed catalog change; 1 left in
+  pre-existing bulk integration registration outside the review target.
+
+### Documentation
+
+- Redesign documentation around user tasks
+  ([`7d84e00`](https://github.com/cleanunicorn/drove/commit/7d84e00bded189c55ef4db5a1c6bc5e83f3c78c4))
+
+### Features
+
+- **chat**: Add searchable model selection and in-chat switching
+  ([`298c683`](https://github.com/cleanunicorn/drove/commit/298c6838a4c58c08965d0e6c9fd1a1570a772e8e))
 
 
 ## v0.9.0 (2026-10-24)

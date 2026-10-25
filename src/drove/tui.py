@@ -348,8 +348,6 @@ class ToolOutputTail:
 class ToolCallEntry(Vertical):
     """One tool call, shown from the moment it starts and updated in place when it ends."""
 
-    _STATES = ("pending", "running", "done", "failed", "denied", "stopped", "finished")
-
     def __init__(self, name: str, arguments: str, result: str | None = None) -> None:
         super().__init__(classes="tool-call")
         self.tool_name = name

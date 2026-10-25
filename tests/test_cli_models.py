@@ -331,3 +331,74 @@ def test_retry_for_all_onnx_variants_preserves_picker(monkeypatch):
     command = _download_retry_command(plan, None, None, None)
     assert "--yes" not in command  # --yes would silently select only the default variant.
     assert command == "drove models download " + plan.repo_id
+
+
+@pytest.mark.parametrize("kind", ["projector", "asr", "metadata"])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_printed_configuration_retry_repairs_missing_settings(
+    tmp_path, download_cli, monkeypatch, kind, interrupt
+):
+    import shlex
+
+    from typer.testing import CliRunner
+
+    from drove.cli import models
+    from drove.config import Config
+    from drove.model_config import load_download_info, load_model_config, set_model_config_key
+
+    if kind == "asr":
+        plan = DownloadPlan(
+            "istupakov/parakeet-tdt-0.6b-v3-onnx", {"model.onnx": 10}, "model", False
+        )
+    else:
+        plan = DownloadPlan(
+            "org/repo",
+            {"model.gguf": 10},
+            "model",
+            False,
+            mmproj_files={"mmproj.gguf": 3},
+        )
+    writer_name = "save_download_info" if kind == "metadata" else "save_model_config"
+    writer = getattr(models, writer_name)
+    calls = []
+
+    def fail_once(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            if interrupt:
+                raise KeyboardInterrupt
+            raise OSError("configuration storage temporarily unavailable")
+        return writer(*args, **kwargs)
+
+    monkeypatch.setattr(models, writer_name, fail_once)
+    first = download_cli(plan)
+    assert first.exit_code == (130 if interrupt else 1), first.output
+    assert ("interrupted" if interrupt else "configuration failed") in first.output
+    command = next(
+        line.split(": ", 1)[1]
+        for line in first.output.splitlines()
+        if line.startswith(("Retry: ", "Resume: "))
+    )
+    primary = plan.destination(tmp_path) / next(iter(plan.files))
+    set_model_config_key(primary, "ctx_size", "1234")
+    # Preserve independent user choices made before retry, even if inference disagrees.
+    if kind == "metadata":
+        set_model_config_key(primary, "mmproj", "custom-projector.gguf")
+
+    def no_network(**kwargs):
+        pytest.fail("repair must reuse every complete payload")
+
+    monkeypatch.setattr("drove.downloader.hf_hub_download", no_network)
+    second = CliRunner().invoke(
+        models.models_app, shlex.split(command)[2:], obj={"config": Config(models_dir=tmp_path)}
+    )
+    assert second.exit_code == 0, second.output
+    assert len(calls) == 2
+    cfg = load_model_config(primary)
+    assert cfg.ctx_size == 1234
+    assert load_download_info(primary).repo_id == plan.repo_id
+    if kind == "asr":
+        assert cfg.asr_model == "nemo-parakeet-tdt-0.6b-v3"
+    else:
+        assert cfg.mmproj == ("custom-projector.gguf" if kind == "metadata" else "mmproj.gguf")
+    assert "Download complete" in second.output

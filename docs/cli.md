@@ -18,7 +18,7 @@ the command; subcommand options follow it.
 | `drove chat [MODEL]` | Open terminal chat | `-r, --resume`, `-s, --system`, `-e, --endpoint`, `-k, --api-key` |
 | `drove config [KEY] [VALUE]` | Show, get, or set global settings | Dotted keys, e.g. `llama_server.n_gpu_layers` |
 | `drove models list` | List installed models | `-V, --verbose` |
-| `drove models download REF` | Download `org/repo[:QUANT]` | `-n, --name`, `-y, --yes`, `--tts-engine`, `-V, --verbose` |
+| `drove models download REF` | Download `org/repo[:QUANT]` | `-n, --name`, `-y, --yes`, `--tts-engine`, `--repair-config`, `-V, --verbose` |
 | `drove models add-tts NAME` | Register a TTS engine | `--engine`, `--voice`, `--device` |
 | `drove models info NAME` | Inspect a model | `-V, --verbose` |
 | `drove models config [NAME] [KEY] [VALUE]` | Show or edit model parameters | `-g, --global`, `--unset KEY`, `--all` |
@@ -79,9 +79,11 @@ ONNX variant). Transfer errors identify
 the failed file and exit with status 1. Completed files and Hugging Face's partial
 cache are kept: repeat the printed command to skip complete files and reuse cached
 partial data where supported. A changed remote file or transport may still require
-retransmission. Configuration errors are reported separately from transfer errors;
-inspect the model's settings with `drove models config <name>` if configuration needs
-repair.
+retransmission. Configuration errors are reported separately from transfer errors.
+Their printed retry includes `--repair-config`: it reuses complete payloads, retries
+download metadata, and fills missing inferred settings without replacing customized
+values. Ordinary already-complete downloads remain read-only. You can inspect the
+result with `drove models config <name>`.
 
 The completion report shows the model name, location, actual directory size,
 automatic projector/ASR/TTS settings and a next command. Text models suggest

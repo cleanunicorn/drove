@@ -487,6 +487,16 @@ def download_model(
         str | None,
         typer.Option(help="TTS engine for a compatible repo (auto-detected for known models)."),
     ] = None,
+    repair_config: Annotated[
+        bool,
+        typer.Option(
+            "--repair-config",
+            help=(
+                "Retry download metadata and fill missing inferred settings "
+                "without replacing custom values."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Download a model from HuggingFace Hub.
 
@@ -538,7 +548,7 @@ def download_model(
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
     all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
 
-    if all_complete and not plan.is_tts:
+    if all_complete and not plan.is_tts and not repair_config:
         _download_summary(plan, models_dir, existing=True)
         raise typer.Exit(0)
 
@@ -558,15 +568,21 @@ def download_model(
 
     from drove.cli.download_progress import DownloadDisplay
 
-    retry = _download_retry_command(plan, quant, name, tts_engine)
     display = DownloadDisplay(plan.total_bytes)
     try:
         with display:
             primary = plan.execute(models_dir, event_cb=display.update)
         display.stage = "configuration"
-        _finish_download(plan, primary, quant)
+        _finish_download(plan, primary, quant, missing_only=repair_config)
         _download_summary(plan, models_dir)
     except KeyboardInterrupt:
+        retry = _download_retry_command(
+            plan,
+            quant,
+            name,
+            tts_engine,
+            repair_config=repair_config or display.stage == "configuration",
+        )
         typer.echo("Download interrupted. Completed files were kept.", err=True)
         typer.echo("Cached partial data will be reused where supported by Hugging Face.", err=True)
         typer.echo(f"Resume: {retry}", err=True)
@@ -574,6 +590,13 @@ def download_model(
             typer.echo("Choose all variants again when prompted.", err=True)
         raise typer.Exit(130) from None
     except Exception as e:
+        retry = _download_retry_command(
+            plan,
+            quant,
+            name,
+            tts_engine,
+            repair_config=repair_config or display.stage == "configuration",
+        )
         if display.stage == "configuration":
             message = "Files downloaded, but model configuration failed"
         else:
@@ -595,7 +618,12 @@ def download_model(
 
 
 def _download_retry_command(
-    plan: DownloadPlan, quant: str | None, name: str | None, tts_engine: str | None
+    plan: DownloadPlan,
+    quant: str | None,
+    name: str | None,
+    tts_engine: str | None,
+    *,
+    repair_config: bool = False,
 ) -> str:
     ref = f"{plan.repo_id}:{quant}" if quant else plan.repo_id
     args = ["drove", "models", "download", ref]
@@ -603,6 +631,8 @@ def _download_retry_command(
         args.extend(["--name", name])
     if tts_engine is not None:
         args.extend(["--tts-engine", tts_engine])
+    if repair_config:
+        args.append("--repair-config")
     # ONNX --yes resolves the default variant, not all variants. Keep the
     # picker for that case instead of silently changing the recovery scope.
     if not _retry_needs_all_choice(plan):
@@ -620,7 +650,9 @@ def _retry_needs_all_choice(plan: DownloadPlan) -> bool:
     )
 
 
-def _finish_download(plan: DownloadPlan, primary: Path, quant: str | None) -> None:
+def _finish_download(
+    plan: DownloadPlan, primary: Path, quant: str | None, *, missing_only: bool = False
+) -> None:
     """Publish metadata and inferred settings before reporting success."""
     all_files = (
         sorted(plan.file_names) + sorted(plan.mmproj_files.keys()) + sorted(plan.extra_files.keys())
@@ -637,11 +669,17 @@ def _finish_download(plan: DownloadPlan, primary: Path, quant: str | None) -> No
             updates["asr_quantization"] = quant.lower()
         if updates:
             model_cfg = load_model_config(primary)
-            save_model_config(primary, model_cfg.model_copy(update=updates))
+            if missing_only:
+                updates = {
+                    key: value for key, value in updates.items() if getattr(model_cfg, key) is None
+                }
+            if updates:
+                save_model_config(primary, model_cfg.model_copy(update=updates))
     if plan.mmproj_files:
         mmproj_name = Path(sorted(plan.mmproj_files.keys())[0]).name
         model_cfg = load_model_config(primary)
-        save_model_config(primary, model_cfg.model_copy(update={"mmproj": mmproj_name}))
+        if not missing_only or model_cfg.mmproj is None:
+            save_model_config(primary, model_cfg.model_copy(update={"mmproj": mmproj_name}))
 
 
 def _download_summary(plan: DownloadPlan, models_dir: Path, *, existing: bool = False) -> None:

@@ -294,6 +294,31 @@ comments in a `.jsonc` file are not preserved.
 | `-f, --file PATH` | Edit this config file instead of the auto-detected one. |
 | `-n, --dry-run` | Print the resulting config without writing it. |
 
+## Observe browser
+
+`drove observe` opens the request log browser; `-m MODEL` keeps browsing and
+search scoped to one model. Enable logging with `observe = true` in the config
+and make requests first. An empty log and a search with no matches show separate
+instructions.
+
+The browser loads 100 records at a time. Use **Previous** and **Next** below the
+list to change pages, and **r** to refresh from the first page. Press **/** to
+focus search; typing waits briefly before searching all record fields. Disk
+search runs in the background, so the input remains usable even when a complete
+search takes longer. Newer searches replace older results. Full-text search
+still scans the log; paging does not create a search index.
+
+While search has focus, **Esc** clears a nonempty query; another **Esc** returns
+to the list. **q** quits outside the search input, as does **Ctrl+C**; Esc outside
+search retains its quit behavior. Full model names and endpoints are kept in the
+list: use **←/→** to scroll long columns horizontally. Select a row to inspect its
+cached page snapshot; refresh to reload files changed on disk.
+
+JSON, headers and raw responses follow the active Textual theme, including
+`textual-dark` and `textual-light` (configured with `tui_theme`). Unreadable
+records are skipped within a page but still counted in an unfiltered total; a
+page containing only unreadable records offers navigation or refresh guidance.
+
 ## Shell completions
 
 ```bash

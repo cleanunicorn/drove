@@ -13,6 +13,8 @@
 - Made chat errors actionable while preserving literal user and error text,
   labelled received chunk rates accurately, and warned when theme settings could
   not be saved.
+- Stopped background observe scans when quitting the terminal browser so returning
+  to the shell no longer waited for the remaining log files.
 
 ### Added
 
@@ -42,6 +44,8 @@
 - Changed Esc in chat to stop generation or deny a pending tool call without
   quitting; kept Ctrl+C and Ctrl+Q as explicit quit shortcuts.
 - Strengthened observe browser regression checks to verify the latest request details survived a delayed, non-aborting response.
+- Improved the observe terminal browser with responsive paged search, safe search
+  Escape handling, helpful empty states, complete model names, and theme-aware details.
 
 ### Security
 

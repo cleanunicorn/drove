@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added contextual model deletion and download confirmations with file and size
+  previews, loaded-model warnings, and consistent safe defaults.
+
 ### Changed
 
 - Redesigned the documentation around a focused first-request tutorial, task guides,

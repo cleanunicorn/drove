@@ -62,6 +62,19 @@ drove models config <name>
 The `CAPABILITY` column in `drove models list` shows model capabilities:
 `vision` (multimodal projection), `stt` (speech-to-text), and `tts` (text-to-speech).
 
+Before deleting a model, drove lists the files and sidecar configuration it will
+remove, their count, and estimated reclaimed space. It checks the configured
+server and warns if the model is loaded, including active requests when known.
+An unreachable or invalid status response is shown as unknown; offline deletion
+still works. This is a snapshot: deletion does not stop a loaded backend, and open
+files or hard links can delay or reduce the space reclaimed.
+
+Download confirmation appears directly below the plan summary and states the
+approximate amount left to transfer. File details (`--verbose`) and applicable
+license notices appear before that summary. Both actions default to **No** when
+you press Enter; `--yes` / `-y` skips every question. Deletion with `--yes` also
+skips the server-status request.
+
 ### Text-to-speech models
 
 ```bash
@@ -167,6 +180,7 @@ Default reports prioritize the next decision; detail is available on demand:
 | `models info <name>` | Capabilities, size/file count, origin, quantization, explicit model overrides | `--verbose` / `-V`: local paths and downloaded file inventory |
 | `models config <name>` | Effective non-null values and their sources | `--all`: include unset parameters |
 | `models download <repo>` | Model, destination, file count, total size, approximate remaining transfer, completed-file count | `--verbose` / `-V`: every file and its resume state |
+| `models delete <name>` | Exact files and sidecars, estimated space, loaded-state warning, safe confirmation | `--yes` / `-y`: skip confirmation and status request |
 
 These options follow the subcommand (for example, `drove server status -V`).
 
@@ -205,6 +219,7 @@ Configuration reports retain explicit `0` and `false` values. Unset model
 parameters are hidden with a count and a hint to use `--all`. Global
 `drove config` continues to show all application settings, and single-value
 queries such as `drove config listen_port` remain plain values for shell scripts.
-Confirmation prompts and exit codes are unchanged.
+Confirmation prompts share the report style, include the action consequences,
+and default to No. Declining or reaching end-of-input aborts with a nonzero exit code.
 
 [Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)

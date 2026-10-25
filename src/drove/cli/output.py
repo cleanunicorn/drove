@@ -6,8 +6,10 @@ Console detects redirected output and NO_COLOR without application settings.
 
 from collections.abc import Iterable
 
+import typer
 from rich import box
 from rich.console import Console
+from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
 
@@ -53,3 +55,13 @@ def fields(out: Console, rows: Iterable[tuple[str, object]]) -> None:
 
 def hint(out: Console, message: str) -> None:
     out.print(Text(message, style="dim"))
+
+
+def confirm_action(out: Console, action: str) -> None:
+    """Ask for explicit consent; rejection and EOF retain CLI abort semantics."""
+    try:
+        accepted = Confirm.ask(Text(action, style="bold"), console=out, default=False)
+    except EOFError:
+        raise typer.Abort() from None
+    if not accepted:
+        raise typer.Abort()

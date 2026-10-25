@@ -106,6 +106,12 @@ The web browser UI listens at `http://127.0.0.1:8877` by default; use
 request and response content; enable logging when you want that content saved.
 Disable future logging with `drove config observe false`.
 
+In the web UI, **MD** previews `content` and `reasoning_content` as sanitized
+Markdown; **RAW** restores the exact logged text. Headings, lists, code blocks,
+tables, and safe links work without a CDN or external network access. Images,
+embedded content, styling, and unsafe links are omitted from previews. If a
+preview dependency cannot load, the raw text stays visible.
+
 ![Request log browser](../assets/observe-tui.svg)
 
 ## Apply configuration changes

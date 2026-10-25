@@ -36,6 +36,12 @@
 - Changed Esc in chat to stop generation or deny a pending tool call without
   quitting; kept Ctrl+C and Ctrl+Q as explicit quit shortcuts.
 
+### Security
+
+- Prevented logged content from executing HTML in observe web Markdown previews,
+  escaped record fields, and bundled pinned dependencies for offline rendering
+  while preserving ordinary Markdown formatting and safe links.
+
 
 ## v0.9.0 (2026-10-24)
 

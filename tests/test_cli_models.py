@@ -488,3 +488,50 @@ def test_delete_relative_models_directory(
     assert result.exit_code == (0 if deleted else 1), result.output
     assert "local/local.gguf" in result.output and "local/local.toml" in result.output
     assert primary.exists() is not deleted
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_namespace_delete_warns_for_loaded_descendant(tmp_path, monkeypatch, alias):
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
+    model = tmp_path / "org" / "child"
+    model.mkdir(parents=True)
+    primary = model / "child.gguf"
+    primary.write_bytes(b"GGUF")
+    save_download_info(primary, DownloadInfo(repo_id="upstream/repo", files=[primary.name]))
+    loaded_name = "upstream/repo" if alias else "org/child"
+
+    def get(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"models": [{"name": loaded_name, "active_requests": 2}]},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx, "get", get)
+    result = CliRunner().invoke(app, ["models", "delete", "org"], input="n\n")
+    assert result.exit_code == 1, result.output
+    assert "currently loaded:" in result.output
+    assert loaded_name in result.output and "2 active requests" in result.output
+    assert "Not currently loaded" not in result.output
+    assert primary.exists()
+
+
+def test_symlink_namespace_preview_does_not_claim_target_contents_removed(tmp_path, monkeypatch):
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
+    outside = tmp_path.parent / (tmp_path.name + "-contents")
+    primary = _make_model(outside, "child")
+    (tmp_path / "org").symlink_to(outside, target_is_directory=True)
+
+    def get(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"models": [{"name": "org/child", "active_requests": 2}]},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx, "get", get)
+    result = CliRunner().invoke(app, ["models", "delete", "org"], input="n\n")
+    assert result.exit_code == 1
+    assert "Not currently loaded" in result.output
+    assert "symlink only" in result.output
+    assert primary.exists()

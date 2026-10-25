@@ -9,6 +9,8 @@
 
 ### Fixed
 
+- Fixed loaded-model warnings when deleting a namespace containing running models.
+
 - Fixed deletion previews for relative model-storage paths, including symlinked directories.
 
 ### Changed

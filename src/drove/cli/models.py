@@ -331,11 +331,19 @@ def _loaded_warning(ctx: typer.Context, models_dir: Path, root: Path) -> str:
             raise ValueError("Invalid status")
         store = ModelStore(models_dir)
         matched: list[str] = []
+        resolved_root = root.resolve()
+        recursive = root.is_dir() and not root.is_symlink()
         for model in data["models"]:
             if not isinstance(model, dict) or not isinstance(model.get("name"), str):
                 raise ValueError("Invalid model status")
             candidate = store.find_root(model["name"])
-            if candidate is not None and candidate.resolve() == root.resolve():
+            if candidate is None:
+                continue
+            resolved_candidate = candidate.resolve()
+            affected = resolved_candidate == resolved_root or (
+                recursive and resolved_candidate.is_relative_to(resolved_root)
+            )
+            if affected:
                 active = model.get("active_requests")
                 requests = (
                     f" ({active} active requests)"

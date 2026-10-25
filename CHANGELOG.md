@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added unified model download progress, explicit resume/skip states, actionable failure and
+  interruption guidance, and completion summaries with configuration and next steps.
+
 ### Changed
 
 - Redesigned the documentation around a focused first-request tutorial, task guides,

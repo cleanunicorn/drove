@@ -33,7 +33,7 @@ def hub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr("drove.downloader.HfApi", lambda: api)
     downloaded: list[str] = []
 
-    def download(*, repo_id: str, filename: str, local_dir: str) -> str:
+    def download(*, repo_id: str, filename: str, local_dir: str, tqdm_class=None) -> str:
         downloaded.append(filename)
         path = Path(local_dir) / filename
         path.parent.mkdir(parents=True, exist_ok=True)

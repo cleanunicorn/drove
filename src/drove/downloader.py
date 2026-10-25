@@ -5,13 +5,76 @@ from __future__ import annotations
 import enum
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import TracebackType
+from typing import Literal
 
 from huggingface_hub import HfApi, hf_hub_download
 
 from drove.backend import infer_tts_engine
 
 type ProgressCallback = Callable[[int, int, str], None]
+
+
+type DownloadState = Literal[
+    "new", "retrying", "resumed", "progress", "skipped", "complete", "configuring"
+]
+
+
+@dataclass(frozen=True)
+class DownloadEvent:
+    """Absolute payload progress; transferred excludes preexisting byte credits."""
+
+    filename: str
+    index: int
+    count: int
+    state: DownloadState
+    completed: float
+    total: int
+    transferred: float = 0
+
+
+type EventCallback = Callable[[DownloadEvent], None]
+
+
+def _progress_adapter(
+    report: Callable[[float, float, bool], None],
+) -> type:
+    """Implement Hub's public tqdm_class protocol without rendering a second bar.
+
+    Hub supplies display kwargs plus initial/total, then calls update and the
+    context-manager methods. Counting must work even when disable=True.
+    """
+
+    class TransferProgress:
+        def __init__(
+            self, *, initial: float = 0, total: float | None = None, **kwargs: object
+        ) -> None:
+            self.n = max(0, initial)
+            self.total = total
+            report(self.n, 0, initial > 0)
+
+        def update(self, amount: float = 1) -> None:
+            amount = max(0, amount)
+            self.n += amount
+            report(self.n, amount, False)
+
+        def close(self) -> None:
+            pass
+
+        def __enter__(self) -> TransferProgress:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_value: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            self.close()
+
+    return TransferProgress
 
 
 class FileStatus(enum.Enum):
@@ -296,6 +359,8 @@ class DownloadPlan:
         self,
         models_dir: Path,
         progress_cb: ProgressCallback | None = None,
+        *,
+        event_cb: EventCallback | None = None,
     ) -> Path:
         """Download all files and return the path to the model entry point."""
         dest = self.destination(models_dir)
@@ -307,27 +372,87 @@ class DownloadPlan:
         )
         total_count = len(all_files)
         statuses = self.check_local_files(models_dir)
+        sizes = self._all_remote_files()
+        finished = 0.0
 
         for i, repo_file in enumerate(all_files):
             status, _ = statuses.get(repo_file, (FileStatus.MISSING, 0))
             if status == FileStatus.COMPLETE:
                 if progress_cb:
                     progress_cb(i + 1, total_count, f"{repo_file} (skipped)")
+                finished += sizes[repo_file]
+                if event_cb:
+                    event_cb(
+                        DownloadEvent(
+                            repo_file, i + 1, total_count, "skipped", finished, self.total_bytes
+                        )
+                    )
                 continue
             if progress_cb:
                 progress_cb(i + 1, total_count, repo_file)
-            downloaded = hf_hub_download(
-                repo_id=self.repo_id,
-                filename=repo_file,
-                local_dir=str(dest),
-            )
+
+            def report(position: float, transferred: float, resumed: bool) -> None:
+                if event_cb:
+                    event_cb(
+                        DownloadEvent(
+                            repo_file,
+                            i + 1,
+                            total_count,
+                            "resumed" if resumed else "progress",
+                            finished + min(max(0, position), sizes[repo_file]),
+                            self.total_bytes,
+                            transferred,
+                        )
+                    )
+
+            if event_cb:
+                event_cb(
+                    DownloadEvent(
+                        repo_file,
+                        i + 1,
+                        total_count,
+                        "retrying" if status == FileStatus.INCOMPLETE else "new",
+                        finished,
+                        self.total_bytes,
+                    )
+                )
+                downloaded = hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename=repo_file,
+                    local_dir=str(dest),
+                    tqdm_class=_progress_adapter(report),
+                )
+            else:
+                downloaded = hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename=repo_file,
+                    local_dir=str(dest),
+                )
             # Flatten any repo subdirectory structure
             downloaded_path = Path(downloaded)
             flat_path = dest / downloaded_path.name
             if not self.is_tts and downloaded_path != flat_path and downloaded_path.exists():
                 downloaded_path.rename(flat_path)
+            finished += sizes[repo_file]
+            if event_cb:
+                event_cb(
+                    DownloadEvent(
+                        repo_file, i + 1, total_count, "complete", finished, self.total_bytes
+                    )
+                )
 
         if self.is_tts:
+            if event_cb:
+                event_cb(
+                    DownloadEvent(
+                        "model.tts",
+                        total_count,
+                        total_count,
+                        "configuring",
+                        finished,
+                        self.total_bytes,
+                    )
+                )
             # Prepare worker settings before publishing the entry: a running
             # proxy may discover it as soon as the marker becomes visible.
             from drove.model_config import load_model_config, save_model_config

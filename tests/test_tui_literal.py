@@ -162,7 +162,9 @@ async def test_live_messages_and_stream_error_are_literal(
     monkeypatch.setattr(ChatApp, "_stream_chat", stream)
     app = chat_app(tmp_path)
     async with app.run_test() as pilot:
-        await app._send_message(text).wait()
+        app._start_turn(text)
+        assert app._generation_worker is not None
+        await app._generation_worker.wait()
         await pilot.pause()
         for role in ["user", "assistant", "error"]:
             assert_literal(app.query_one(f"Message.{role} .message-body", Label), text)
@@ -212,7 +214,9 @@ async def test_approved_arguments_match_executed_string(
     monkeypatch.setattr("drove.tui.execute_tool", execute)
     app = chat_app(tmp_path)
     async with app.run_test() as pilot:
-        worker = app._send_message("test")
+        app._start_turn("test")
+        worker = app._generation_worker
+        assert worker is not None
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, ToolConfirmationModal)

@@ -100,6 +100,13 @@ An explicit model always wins, including with a remote endpoint. See
 [Default model](./configuration.md#default-model) for setup and clearing.
 
 Type `/help` inside chat for commands such as `/sessions` and `/theme`.
+Press **Esc** to stop a reply while retaining and saving the partial text; Esc
+while idle no longer quits. Use **Ctrl+C** or **Ctrl+Q** to quit. Prompts entered
+while a reply runs appear as removable queued messages; stopping pauses the
+queue until you choose **Resume queued**. Tool dialogs support **y**, **n/Esc**,
+**s**, and **a** for their four choices. Already-started tools finish before a
+stop settles. See [Chat controls](./cli.md#chat-controls) for details.
+
 The TUI can also use a remote OpenAI-compatible endpoint:
 
 ```bash

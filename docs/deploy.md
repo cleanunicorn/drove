@@ -1,5 +1,7 @@
 # Release process
 
+[Docs](./README.md) / Release process
+
 This document describes how a new version of `drove` is cut. The process is **fully automated** by [`python-semantic-release`](https://python-semantic-release.readthedocs.io/) and runs on every push to `main`. As the repo maintainer you do **not** edit version numbers, tag commits, or publish releases by hand — your job is to make sure each PR carries the correct metadata so the automation produces the right result.
 
 ## TL;DR
@@ -232,3 +234,5 @@ Use a non-bumping type (`chore:`, `docs:`, `refactor:`, etc.) for the PR title. 
 - Push directly to `main`.
 
 The automation owns all of these. Doing them by hand will desynchronise the version, tags, and changelog and confuse the next semantic-release run.
+
+[Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)

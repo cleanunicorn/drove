@@ -1,13 +1,75 @@
 # Configuration
 
-`drove` reads global settings from:
+[Docs](./README.md) / Configuration
 
-- `~/.config/drove/config.toml`
-- or a custom path set with `DROVE_CONFIG`
+Global settings control the proxy and resource limits. Model parameters control
+individual backends; see [Per-model config](#per-model-config).
 
-Environment variables with the `DROVE_` prefix override file values.
+[Sources](#sources-and-precedence) · [Defaults](#global-settings) ·
+[Reload](#reload-behavior) · [Timeouts](#speech-request-timeout) ·
+[Eviction](#model-eviction) · [Prompt cache](#prompt-cache) · [Model keys](#per-model-config)
+
+## Sources and precedence
+
+The config path is selected by `--config PATH`, then `DROVE_CONFIG`, then
+`~/.config/drove/config.toml`. Root options come before the subcommand:
+
+```bash
+drove --config /path/to/config.toml config
+```
+
+Within that file, `DROVE_*` environment variables override TOML values, which
+override built-in defaults. For example, `DROVE_LISTEN_PORT=9000` overrides
+`listen_port`. Nested fields accept a double underscore, such as
+`DROVE_LLAMA_SERVER__N_GPU_LAYERS=0`.
+
+```bash
+drove config                              # show effective values and the selected path
+drove config listen_port                  # get one value
+drove config idle_timeout_seconds 3600    # save a value to the selected file
+```
+
+## Global settings
+
+Paths below are relative to your home directory. These are built-in defaults,
+not the example budget in the next section.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `default_model` | unset | Preferred model for requests and chat without an explicit model; see [Default model](#default-model) |
+| `models_dir` | `~/.local/share/drove/models` | Downloaded model storage |
+| `sessions_dir` | `~/.local/share/drove/sessions` | Saved chat sessions |
+| `listen_host` | `0.0.0.0` | Proxy bind address (all interfaces) |
+| `listen_port` | `8080` | Proxy port |
+| `llama_server_bin` | `llama-server` | Binary name or path |
+| `llama_server_host` | `127.0.0.1` | Backend bind address |
+| `startup_timeout_seconds` | `300` | Wait for backend health |
+| `speech_timeout_seconds` | `600` | Read timeout for speech synthesis |
+| `idle_timeout_seconds` | `1800` | Idle duration before backend shutdown |
+| `max_loaded_models` | `1` | Concurrent model count (`0` = unlimited) |
+| `max_memory` | `"0"` | Estimated combined model memory budget (`"0"` = unlimited) |
+| `observe` | `false` | Save request/response logs |
+| `observe_dir` | `~/.local/share/drove/observe` | Request log storage |
+| `prompt_cache` | `true` | Persist llama-server KV caches across shutdowns |
+| `prompt_cache_dir` | `~/.local/share/drove/prompt-cache` | KV cache storage |
+| `prompt_cache_ttl_seconds` | `3600` | Cache expiry (`0` = never) |
+| `prompt_cache_timeout_seconds` | `60` | Timeout per cache save/restore |
+| `allowed_tools` | `[]` | Chat TUI tool allowlist |
+| `tui_theme` | `textual-dark` | TUI theme |
+| `llama_server.n_gpu_layers` | `-1` | Default GPU layer offload |
+| `llama_server.threads` | unset | Default backend thread count |
+
+## Reload behavior
+
+The proxy watches the selected TOML file and reloads supported settings when it
+changes. `listen_host` and `listen_port` require a proxy restart; the logs flag
+those deferred changes. Updated model arguments apply when a backend next
+starts, so restart the proxy if they must apply immediately. Environment
+variables belong to the running process; restart it to change its environment.
 
 ## Example config
+
+This example sets a 24 GB model budget; the built-in budget is unlimited.
 
 ```toml
 models_dir = "~/.local/share/drove/models"
@@ -145,10 +207,25 @@ Notes:
 
 ## Per-model config
 
-Each model can have a sidecar config file in the models directory:
+Use `drove models config <name>` to inspect effective values and their sources.
+Per-model sidecars override `_global.toml` in the models directory, which
+overrides `[llama_server]` defaults (`n_gpu_layers` and `threads`) from the
+global config. Unset values fall back to backend defaults.
+
+```bash
+drove models config qwen ctx_size 8192
+drove models config --global ctx_size 16384
+drove models config qwen --unset ctx_size
+```
+
+A sidecar is the primary model file with its extension replaced by `.toml`.
+For a legacy flat file:
 
 - model file: `~/.local/share/drove/models/<name>.gguf`
 - config file: `~/.local/share/drove/models/<name>.toml`
+
+For directory-based downloads, both files live inside the model directory.
+See [Managing models](./models.md#set-runtime-parameters) for the workflow.
 
 Example:
 
@@ -242,3 +319,5 @@ Raise it before first use:
 ```bash
 drove config startup_timeout_seconds 1800
 ```
+
+[Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)

@@ -1,5 +1,10 @@
 # Architecture
 
+[Docs](./README.md) / Architecture
+
+drove separates request routing, model lifecycle, and backend execution.
+The CLI and TUI use the same configuration and model store as the proxy.
+
 ## Request flow
 
 ```text
@@ -15,15 +20,15 @@ Client → FastAPI proxy (drove port)
 
 ## Core modules
 
-- `src/drove/proxy.py` — OpenAI-compatible reverse proxy
-- `src/drove/server_manager.py` — lifecycle management for backend subprocesses
-- `src/drove/backend.py` — picks the backend for a model (llama-server, ASR worker, or TTS worker)
-- `src/drove/workers/asr.py` — built-in ONNX speech-to-text worker
-- `src/drove/workers/tts_runtime/` — text-to-speech worker (`worker.py`), the Kokoro, Qwen3-TTS,
+- [`proxy.py`](../src/drove/proxy.py) — OpenAI-compatible reverse proxy
+- [`server_manager.py`](../src/drove/server_manager.py) — lifecycle management for backend subprocesses
+- [`backend.py`](../src/drove/backend.py) — picks the backend for a model (llama-server, ASR worker, or TTS worker)
+- [`workers/asr.py`](../src/drove/workers/asr.py) — built-in ONNX speech-to-text worker
+- [`workers/tts_runtime/`](../src/drove/workers/tts_runtime/) — text-to-speech worker (`worker.py`), the Kokoro, Qwen3-TTS,
   Chatterbox, Fish, and KittenTTS 2 engines (`engines.py`), and one pinned requirements file per engine
-- `src/drove/config.py` — global config loading + defaults
-- `src/drove/model_config.py` — per-model config parsing
-- `src/drove/cli/` — Typer CLI
+- [`config.py`](../src/drove/config.py) — global config loading + defaults
+- [`model_config.py`](../src/drove/model_config.py) — per-model config parsing
+- [`cli/`](../src/drove/cli/) — Typer CLI
 
 ## Process model
 
@@ -39,3 +44,5 @@ Client → FastAPI proxy (drove port)
   budget. Only llama-server models use the prompt (KV) cache.
 - `drove` keeps request-path behavior transparent by forwarding requests directly.
 - After inactivity timeout, the backend process is terminated to release resources.
+
+[Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)

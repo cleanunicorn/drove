@@ -1,73 +1,43 @@
 # CLI reference
 
-## Output
+[Docs](./README.md) / CLI reference
 
-![Server status report](../assets/cli-status.svg)
+Use `drove <command> --help` for the complete option list. Root options precede
+the command; subcommand options follow it.
 
-[See the verbose status view](../assets/cli-status-verbose.svg).
-
-Inspection commands use a shared layout with cyan headings, compact tables, and
-muted labels. Model names and paths wrap to fit the terminal and are printed
-literally, including brackets. Redirected output has no ANSI color codes;
-`NO_COLOR=1` disables color in the terminal too.
-
-Default reports prioritize the next decision; detail is available on demand:
-
-| Command | Default view | More detail |
-| --- | --- | --- |
-| `server status` | Endpoint, uptime, active requests, errors, network exposure (non-loopback bind only), loaded models, approximate idle-unload countdown | `--verbose` / `-V`: listen address, load/idle durations, backend memory/CPU, token counts, speed, first-token latency |
-| `models list` | Name, capability, size, total disk usage | `--verbose` / `-V`: storage directory, custom-config indicator, download origin/files |
-| `models info <name>` | Capabilities, size/file count, origin, quantization, explicit model overrides | `--verbose` / `-V`: local paths and downloaded file inventory |
-| `models config <name>` | Effective non-null values and their sources | `--all`: include unset parameters |
-| `models download <repo>` | Model, destination, file count, total size, approximate remaining transfer, completed-file count | `--verbose` / `-V`: every file and its resume state |
-
-These options follow the subcommand (for example, `drove server status -V`).
-
-Audio traffic in `drove server status` includes successful transcription and speech
-request counts, audio seconds, and processing seconds since startup. Processing time
-includes the backend request and response transfer, excluding model startup. Audio
-duration is reported by the bundled workers for all supported response formats.
-The root `drove --verbose` option still controls debug logging.
-
-Status always shows nonzero errors, labeled as cumulative since server startup.
-The endpoint URL is the address `status` connects to, so a `0.0.0.0` bind shows as
-`127.0.0.1`. When the server listens on anything other than loopback — the default
-`listen_host = "0.0.0.0"` included — a `listening on …` line shows the real bind
-address, because the server is reachable from other machines.
-An idle-unload countdown is approximate: active requests prevent idle unloading,
-and eviction or configuration changes can unload a model sooner. Busy models show
-`—`; expired timers show `due`. Download estimates use remote file sizes and local
-partial files; the actual transfer may vary with cache reuse or retries.
-
-`--watch` refreshes the screen only in a terminal; redirected watch output appends
-snapshots. Stop watching with Ctrl+C. An unused server stays concise:
-
-```text
-drove / Server
-http://127.0.0.1:8080/v1
-
-running · up 12m 4s · 0 active requests
-listening on all interfaces (0.0.0.0:8080)
-
-Loaded models · 0
-No models loaded. Models start on the first request.
-Use --verbose for process, timing, and token details.
-```
-
-Configuration reports retain explicit `0` and `false` values. Unset model
-parameters are hidden with a count and a hint to use `--all`. Global
-`drove config` continues to show all application settings, and single-value
-queries such as `drove config listen_port` remain plain values for shell scripts.
-Confirmation prompts and exit codes are unchanged.
+[Commands](#core-commands) · [Config](#config-management) · [Models](#models-management) ·
+[Agents](#coding-agent-integration) · [Completions](#shell-completions) · [Output](#output)
 
 ## Core commands
 
+| Command | Purpose | Useful options |
+| --- | --- | --- |
+| `drove init` | Write the config file with defaults | `-f, --force` overwrites |
+| `drove serve` / `drove server` | Start the proxy | `--host`, `--port` |
+| `drove server status` | Inspect the running proxy | `-w, --watch [N]`, `-V, --verbose` |
+| `drove chat [MODEL]` | Open terminal chat | `-r, --resume`, `-s, --system`, `-e, --endpoint`, `-k, --api-key` |
+| `drove config [KEY] [VALUE]` | Show, get, or set global settings | Dotted keys, e.g. `llama_server.n_gpu_layers` |
+| `drove models list` | List installed models | `-V, --verbose` |
+| `drove models download REF` | Download `org/repo[:QUANT]` | `-n, --name`, `-y, --yes`, `--tts-engine`, `-V, --verbose` |
+| `drove models add-tts NAME` | Register a TTS engine | `--engine`, `--voice`, `--device` |
+| `drove models info NAME` | Inspect a model | `-V, --verbose` |
+| `drove models config [NAME] [KEY] [VALUE]` | Show or edit model parameters | `-g, --global`, `--unset KEY`, `--all` |
+| `drove models delete NAME` | Remove local model files and config | `-y, --yes` |
+| `drove integrate AGENT [MODEL…]` | Configure pi, opencode, or Kilo Code | `-d, --default`, `-n, --dry-run`, `--remove` |
+| `drove observe` | Browse request logs in a TUI | `-m, --model` |
+| `drove observe web` | Serve the request log web UI | `--host`, `--port` (default `127.0.0.1:8877`) |
+| `drove completions generate [SHELL]` | Print a completion script | Shell: bash, zsh, fish, powershell |
+| `drove completions install [SHELL]` | Install shell completions | Shell auto-detected if omitted |
+
+Global options: `-c, --config PATH`, `-v, --verbose` (debug logging),
+`--version`, and `--help`. For example:
+
 ```bash
-drove --help
-drove init
-drove serve
-drove chat
+drove --config /path/to/config.toml server status -V
 ```
+
+For walkthroughs, see [Managing models](./models.md),
+[Text and vision](./text-and-vision.md), and [Running drove](./operations.md).
 
 ## Chat model selection
 
@@ -133,7 +103,7 @@ drove models config kokoro tts_device cuda
 
 | `models add-tts` option | Meaning |
 |--|--|
-| `--engine` | `kokoro` (default), `qwen`, `chatterbox`, or `fish`. |
+| `--engine` | `kokoro` (default), `qwen`, `chatterbox`, `fish`, or `kitten`. |
 | `--voice` | Default voice, alias, or absolute reference WAV path. Omit to inherit the global setting (`female` otherwise). |
 | `--device` | `auto`, `cpu`, `cuda`, or `mps`. Omit to inherit the global setting (`auto` otherwise). |
 
@@ -193,3 +163,65 @@ comments in a `.jsonc` file are not preserved.
 ```bash
 drove completions --help
 ```
+
+## Output
+
+![Server status report](../assets/cli-status.svg)
+
+[See the verbose status view](../assets/cli-status-verbose.svg).
+
+Inspection commands use a shared layout with cyan headings, compact tables, and
+muted labels. Model names and paths wrap to fit the terminal and are printed
+literally, including brackets. Redirected output has no ANSI color codes;
+`NO_COLOR=1` disables color in the terminal too.
+
+Default reports prioritize the next decision; detail is available on demand:
+
+| Command | Default view | More detail |
+| --- | --- | --- |
+| `server status` | Endpoint, uptime, active requests, errors, network exposure (non-loopback bind only), loaded models, approximate idle-unload countdown | `--verbose` / `-V`: listen address, load/idle durations, backend memory/CPU, token counts, speed, first-token latency |
+| `models list` | Name, capability, size, total disk usage | `--verbose` / `-V`: storage directory, custom-config indicator, download origin/files |
+| `models info <name>` | Capabilities, size/file count, origin, quantization, explicit model overrides | `--verbose` / `-V`: local paths and downloaded file inventory |
+| `models config <name>` | Effective non-null values and their sources | `--all`: include unset parameters |
+| `models download <repo>` | Model, destination, file count, total size, approximate remaining transfer, completed-file count | `--verbose` / `-V`: every file and its resume state |
+
+These options follow the subcommand (for example, `drove server status -V`).
+
+Audio traffic in `drove server status` includes successful transcription and speech
+request counts, audio seconds, and processing seconds since startup. Processing time
+includes the backend request and response transfer, excluding model startup. Audio
+duration is reported by the bundled workers for all supported response formats.
+The root `drove --verbose` option still controls debug logging.
+
+Status always shows nonzero errors, labeled as cumulative since server startup.
+The endpoint URL is the address `status` connects to, so a `0.0.0.0` bind shows as
+`127.0.0.1`. When the server listens on anything other than loopback — the default
+`listen_host = "0.0.0.0"` included — a `listening on …` line shows the real bind
+address, because the server is reachable from other machines.
+An idle-unload countdown is approximate: active requests prevent idle unloading,
+and eviction or configuration changes can unload a model sooner. Busy models show
+`—`; expired timers show `due`. Download estimates use remote file sizes and local
+partial files; the actual transfer may vary with cache reuse or retries.
+
+`--watch` refreshes the screen only in a terminal; redirected watch output appends
+snapshots. Stop watching with Ctrl+C. An unused server stays concise:
+
+```text
+drove / Server
+http://127.0.0.1:8080/v1
+
+running · up 12m 4s · 0 active requests
+listening on all interfaces (0.0.0.0:8080)
+
+Loaded models · 0
+No models loaded. Models start on the first request.
+Use --verbose for process, timing, and token details.
+```
+
+Configuration reports retain explicit `0` and `false` values. Unset model
+parameters are hidden with a count and a hint to use `--all`. Global
+`drove config` continues to show all application settings, and single-value
+queries such as `drove config listen_port` remain plain values for shell scripts.
+Confirmation prompts and exit codes are unchanged.
+
+[Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)

@@ -13,6 +13,8 @@
 - Added unified model download progress, explicit resume/skip states, actionable failure and
   interruption guidance, and completion summaries with configuration and next steps.
 - Added configuration-repair retries for completed downloads that preserve custom settings.
+- Added guided keyboard quantization selection with download sizes, local status,
+  advisory memory estimates, and safe cancellation.
 
 ### Changed
 

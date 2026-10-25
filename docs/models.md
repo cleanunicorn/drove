@@ -34,6 +34,30 @@ avoid ambiguity when you keep more than one quantization.
 Downloads live under `~/.local/share/drove/models/` by default. Set `models_dir`
 in the [global configuration](./configuration.md) to use another disk.
 
+## Choosing a download variant
+
+When a GGUF or ONNX repository has several variants, use ↑/↓ and Enter to
+choose. The picker uses your `tui_theme` and shows each variant's full download
+size (weights plus companion files), whether it is fully or partly downloaded,
+and an advisory memory estimate. Unknown metadata is shown explicitly.
+
+The estimate compares weights and projector size with 80% of available host
+RAM. It is not a guarantee: context size, KV cache, runtime overhead and GPU
+placement affect actual requirements. A fitting `Q4_K_M` (GGUF) or `int8`
+(ONNX) is preferred; otherwise the smallest known fitting variant is selected.
+Oversized variants remain selectable. With no memory information, the picker
+shows that limitation instead of claiming a fit.
+
+**Download every variant** is separated below the individual variants and
+shows the total with shared files counted once. Files found in a different
+all-variants directory are labeled with that location; they are not silently
+moved or reused in a new quantization directory. Esc or Ctrl+C cancels without
+downloading. The usual download/resume confirmation follows selection.
+
+For scripts or redirected output, pass `org/repo:QUANT` or `--yes` to bypass
+the picker. Existing `--yes` behavior is unchanged: all GGUF files, or the
+resolved default ONNX variant. TTS and single-variant repositories skip it.
+
 ## Inspect what is installed
 
 | Command | Use it to… |

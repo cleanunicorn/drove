@@ -137,6 +137,12 @@ automatic projector/ASR/TTS settings and a next command. Text models suggest
 `drove serve` for audio API requests. An already-complete model shows the same useful
 summary without downloading again.
 
+For multi-variant downloads, use ↑/↓ and Enter to select a quantization, or
+Esc/Ctrl+C to cancel. The picker shows sizes, local status and advisory RAM
+estimates. `:QUANT` and `--yes` bypass it for scripts. See
+[Choosing a download variant](./models.md#choosing-a-download-variant) for the
+memory estimate and download-all behavior.
+
 ### Text-to-speech models
 
 ```bash

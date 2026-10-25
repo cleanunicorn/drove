@@ -170,3 +170,16 @@ def test_default_model_env_precedence(tmp_path: Path, monkeypatch: pytest.Monkey
     assert load_config(path).default_model == "env-model"
     monkeypatch.setenv("DROVE_DEFAULT_MODEL", " ")
     assert load_config(path).default_model is None
+
+
+def test_tutorial_progress_round_trips_without_losing_settings(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg = load_config(cfg_file)
+    cfg.listen_port = 1234
+    cfg.tui_theme = "textual-light"
+    cfg.tui_completed_hints = ["send", "commands"]
+    cfg.save(cfg_file)
+    reloaded = load_config(cfg_file)
+    assert reloaded.tui_completed_hints == ["send", "commands"]
+    assert reloaded.listen_port == 1234
+    assert reloaded.tui_theme == "textual-light"

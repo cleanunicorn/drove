@@ -396,6 +396,11 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
 - **Configuration:** global settings only via `config.py`; per-model settings
   only via sidecar TOMLs (`drove models config` edits them). No scattered env
   reads.
+- **Interface design:** prioritize space for active content. Use thin delimiters
+  and minimal padding; show diagnostics on demand. Teach one action at a time in
+  a single compact guidance area, retire tips after use or dismissal, remember
+  progress across launches, and let users reopen help. Keep actionable states
+  (errors, stopping, paused queues, permission choices) visible when relevant.
 - **Async:** the server path is fully async; tests run with
   `asyncio_mode = "auto"` — no markers needed.
 - **Registering new components:** a new llama-server flag becomes a

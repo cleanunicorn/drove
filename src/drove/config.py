@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import tomli_w
 from pydantic import Field, field_validator
@@ -68,6 +68,9 @@ class LlamaServerDefaults(BaseSettings):
     threads: int | None = None
 
 
+ChatHint = Literal["send", "newline", "commands", "details", "stop"]
+
+
 class Config(BaseSettings):
     """Global drove configuration.
 
@@ -107,6 +110,7 @@ class Config(BaseSettings):
     prompt_cache_timeout_seconds: int = 60  # max wait for a single save/restore call
     llama_server_host: str = "127.0.0.1"
     tui_theme: str = "textual-dark"
+    tui_completed_hints: list[ChatHint] = []
 
     llama_server: LlamaServerDefaults = LlamaServerDefaults()
 
@@ -165,6 +169,7 @@ class Config(BaseSettings):
             "prompt_cache_timeout_seconds": self.prompt_cache_timeout_seconds,
             "llama_server_host": self.llama_server_host,
             "tui_theme": self.tui_theme,
+            "tui_completed_hints": self.tui_completed_hints,
             "llama_server": {
                 k: v for k, v in self.llama_server.model_dump().items() if v is not None
             },

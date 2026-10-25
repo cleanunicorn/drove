@@ -56,6 +56,7 @@ not the example budget in the next section.
 | `prompt_cache_timeout_seconds` | `60` | Timeout per cache save/restore |
 | `allowed_tools` | `[]` | Chat TUI tool allowlist |
 | `tui_theme` | `textual-dark` | TUI theme |
+| `tui_completed_hints` | `[]` | Learned/dismissed chat tips; `/tips` resets them |
 | `llama_server.n_gpu_layers` | `-1` | Default GPU layer offload |
 | `llama_server.threads` | unset | Default backend thread count |
 

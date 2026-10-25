@@ -52,7 +52,7 @@ async def test_switch_saves_old_session_resets_state_and_changes_next_payload(
             assert app._history == [{"role": "system", "content": "remember this prompt"}]
             assert not app._session_allowed_tools
             assert app._last_speed is None and app._last_ttft is None
-            assert app.sub_title == "b"
+            assert "Model: b\n" in app._details_text()
             assert isinstance(app.focused, ChatInput)
             assert list_sessions(tmp_path, "a")[0].messages == old_session.messages
             assert "/model" in app._COMMANDS

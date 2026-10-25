@@ -15,6 +15,7 @@ from drove.chat_models import (
     parse_models,
 )
 from drove.config import Config
+from tests.test_gguf import _kv_string, _kv_uint32, write_gguf
 
 
 @pytest.mark.parametrize("extension", ["safetensors", "bin", "pt"])
@@ -35,6 +36,7 @@ def test_catalog_excludes_unconverted_weights_from_chat(
         "loaded": False,
         "size_bytes": 7,
         "capabilities": None,
+        "context_length": None,
     }
     assert [model.id for model in parse_models({"data": catalog})] == ["ready"]
 
@@ -93,6 +95,38 @@ def test_optional_fields_are_defensive() -> None:
             ]
         }
     ) == [ChatModel("a")]
+
+
+@pytest.mark.parametrize("value", [True, 0, -5, "4096", 4096.0, None])
+def test_invalid_context_length_is_unknown(value: object) -> None:
+    [model] = parse_models(
+        {"data": [{"id": "a", "drove": {"chat": True, "context_length": value}}]}
+    )
+    assert model.context_length is None
+
+
+def test_context_length_round_trips_from_the_catalog(tmp_path: Path) -> None:
+    config = Config(models_dir=tmp_path)
+    write_gguf(
+        tmp_path / "trained.gguf",
+        [_kv_string("general.architecture", "qwen3"), _kv_uint32("qwen3.context_length", 32768)],
+    )
+    write_gguf(tmp_path / "sized.gguf", [_kv_string("general.architecture", "qwen3")])
+    (tmp_path / "sized.toml").write_text("ctx_size = 8192\n")
+    write_gguf(tmp_path / "unknown.gguf", [_kv_string("general.architecture", "qwen3")])
+
+    catalog = model_catalog(config, set())
+
+    assert {row["id"]: row["drove"]["context_length"] for row in catalog} == {  # type: ignore[index]
+        "sized": 8192,
+        "trained": 32768,
+        "unknown": None,
+    }
+    assert {model.id: model.context_length for model in parse_models({"data": catalog})} == {
+        "sized": 8192,
+        "trained": 32768,
+        "unknown": None,
+    }
 
 
 def test_sync_fetch_preserves_auth_and_url() -> None:

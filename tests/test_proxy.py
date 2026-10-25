@@ -372,7 +372,7 @@ def test_model_listing_keeps_core_fields_and_adds_trustworthy_chat_metadata(tmp_
     config = make_config(tmp_path)
     (config.models_dir / "chat.gguf").write_bytes(b"chat")
     (config.models_dir / "vision.gguf").write_bytes(b"vision")
-    (config.models_dir / "vision.toml").write_text('mmproj = "projector.gguf"\n')
+    (config.models_dir / "vision.toml").write_text('mmproj = "projector.gguf"\nctx_size = 8192\n')
     for name, extension in (("speech", ".onnx"), ("voice", ".tts")):
         folder = config.models_dir / name
         folder.mkdir()
@@ -381,7 +381,7 @@ def test_model_listing_keeps_core_fields_and_adds_trustworthy_chat_metadata(tmp_
     (config.models_dir / "override.toml").write_text('backend = "asr"\n')
     (config.models_dir / "broken.gguf").write_bytes(b"data")
     (config.models_dir / "broken.toml").write_text('ctx_size = "bad"\n')
-    from unittest.mock import PropertyMock
+    from unittest.mock import AsyncMock, PropertyMock
 
     with (
         patch(
@@ -389,10 +389,14 @@ def test_model_listing_keeps_core_fields_and_adds_trustworthy_chat_metadata(tmp_
             new_callable=PropertyMock,
             return_value=["chat"],
         ),
+        patch(
+            "drove.server_manager.ServerManager.ensure_running", new_callable=AsyncMock
+        ) as ensure_running,
         TestClient(create_app(config)) as client,
     ):
         response = client.get("/v1/models")
     assert response.status_code == 200
+    ensure_running.assert_not_awaited()
     rows = {row["id"]: row for row in response.json()["data"]}
     assert set(rows) == {"chat", "vision", "speech", "voice", "override", "broken"}
     for name, row in rows.items():
@@ -407,8 +411,10 @@ def test_model_listing_keeps_core_fields_and_adds_trustworthy_chat_metadata(tmp_
         "loaded": True,
         "size_bytes": 4,
         "capabilities": ["text", "tools"],
+        "context_length": None,
     }
     assert "vision" in rows["vision"]["drove"]["capabilities"]
+    assert rows["vision"]["drove"]["context_length"] == 8192
     assert rows["vision"]["drove"]["loaded"] is False
     assert all(rows[name]["drove"]["chat"] is False for name in ("speech", "voice", "override"))
     assert rows["broken"]["drove"]["chat"] is None

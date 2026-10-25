@@ -124,6 +124,36 @@ def test_unknown_context_falls_back(tmp_path: Path) -> None:
     [spec] = collect_model_specs(config)
 
     assert spec.context_window == FALLBACK_CONTEXT
+    assert spec.known_context_window is None
+
+
+@pytest.mark.parametrize(
+    ("training", "sidecar", "known"),
+    [
+        (131072, "", 131072),
+        (131072, "ctx_size = 16384\n", 16384),
+        (None, "ctx_size = 16384\n", 16384),
+        (131072, 'ctx_size = 16384\nextra_args = ["-c", "65536"]\n', 65536),
+        (131072, 'ctx_size = 16384\nextra_args = ["--ctx-size=0"]\n', 131072),
+        (None, "ctx_size = 0\n", None),
+        (None, 'extra_args = ["-c", "-1"]\n', None),
+        (131072, "ctx_size = 32768\nn_parallel = 4\n", 8192),
+        (8192, "ctx_size = 65536\n", 8192),
+    ],
+)
+def test_known_context_window_is_only_reported_when_configured_or_trained(
+    tmp_path: Path, training: int | None, sidecar: str, known: int | None
+) -> None:
+    config = _config(tmp_path)
+    primary = _model(config.models_dir, "m", ctx=training)
+    if sidecar:
+        primary.with_suffix(".toml").write_text(sidecar)
+
+    [spec] = collect_model_specs(config)
+
+    assert spec.known_context_window == known
+    if known is not None:
+        assert spec.context_window == known
 
 
 def test_template_without_tools_disables_tool_calls(tmp_path: Path) -> None:

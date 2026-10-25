@@ -17,6 +17,8 @@ class ChatModel:
     size_bytes: int | None = None
     loaded: bool | None = None
     capabilities: tuple[str, ...] | None = None
+    #: Tokens one request can use; None when the endpoint does not know.
+    context_length: int | None = None
 
 
 class CatalogError(ValueError):
@@ -33,6 +35,7 @@ def model_catalog(config: Config, loaded: set[str]) -> list[dict[str, object]]:
             "loaded": entry.name in loaded,
             "size_bytes": entry.total_bytes,
             "capabilities": None,
+            "context_length": None,
         }
         try:
             primary = store.resolve(entry.name)
@@ -52,6 +55,7 @@ def model_catalog(config: Config, loaded: set[str]) -> list[dict[str, object]]:
                 if spec.reasoning:
                     capabilities.append("reasoning")
                 metadata["capabilities"] = capabilities
+                metadata["context_length"] = spec.known_context_window
             else:
                 metadata["capabilities"] = []
         models.append(
@@ -86,6 +90,7 @@ def parse_models(payload: object) -> list[ChatModel]:
         size = metadata.get("size_bytes")
         loaded = metadata.get("loaded")
         capabilities = metadata.get("capabilities")
+        context = metadata.get("context_length")
         models[name] = ChatModel(
             name,
             size if type(size) is int and size >= 0 else None,
@@ -94,6 +99,7 @@ def parse_models(payload: object) -> list[ChatModel]:
             if isinstance(capabilities, list)
             and all(isinstance(value, str) for value in capabilities)
             else None,
+            context if type(context) is int and context > 0 else None,
         )
     if not models:
         raise CatalogError("No chat models available at this endpoint.")

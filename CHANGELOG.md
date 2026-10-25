@@ -8,6 +8,8 @@
 
 ### Changed
 
+- Strengthened observe browser regression checks to verify the latest request details survived a delayed, non-aborting response.
+
 - Redesigned the documentation around a focused first-request tutorial, task guides,
   and linked references; clarified model names, installation, configuration reloads,
   and troubleshooting.

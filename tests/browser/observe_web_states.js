@@ -133,13 +133,44 @@ for (const failure of [{status:404},{malformed:true},{disconnect:true}]) {
   await act('#detail .retry','press','Enter');
   await waitText('.timestamp','2025-01-02T12:34:56');
 }
-await config({rules:[{path:'/api/records/record-1',hold:'old-detail'}]});
+// Keep the actual HTTP response alive despite cancellation to exercise the version
+// fallback. Observe showRecord completion, including its render/catch/finally work.
+const raceRecords = await page.evaluate(async () => {
+  const records = await Promise.all([1, 2].map(async id =>
+    (await fetch('/api/records/record-' + id)).json()));
+  records[0].model = 'older-detail-marker';
+  records[1].model = 'latest-detail-marker';
+  window.raceCompleted = [];
+  window.raceOriginalFetch = window.fetch;
+  window.raceOriginalShowRecord = showRecord;
+  window.fetch = (input, options) => window.raceOriginalFetch(input,
+    String(input).includes('/api/records/record-1') ? {...options, signal:undefined} : options);
+  showRecord = async id => {
+    try { return await window.raceOriginalShowRecord(id); }
+    finally { window.raceCompleted.push(id); }
+  };
+  return records;
+});
+await config({seen:[],rules:[
+  {path:'/api/records/record-1',hold:'old-detail',json:raceRecords[0]},
+  {path:'/api/records/record-2',json:raceRecords[1]}
+]});
 await act('.record[data-id="record-1"]');
+await waitText('#detail','Loading request details');
+await page.waitForFunction(async()=> (await (await fetch('/__test/seen')).json()).some(r=>r.path==='/api/records/record-1'));
 await act('.record[data-id="record-2"]');
-await waitText('.timestamp','2025-01-02T12:34:56');
+await waitText('#detail h2','latest-detail-marker');
+await page.waitForFunction(()=>window.raceCompleted.includes('record-2'));
 await release('old-detail');
+await page.waitForFunction(()=>window.raceCompleted.includes('record-1'));
+check((await text('#detail h2')).includes('latest-detail-marker'), 'late non-aborting response cannot overwrite latest detail content');
+check(!(await text('#detail')).includes('older-detail-marker'), 'older detail marker remains absent after stale continuation settles');
 check(await page.locator('.record[data-id="record-2"]').getAttribute('aria-pressed')==='true','new detail stays selected');
 check((await page.evaluate(()=>location.hash))==='#record=record-2','selection in URL');
+await page.evaluate(()=>{
+  window.fetch = window.raceOriginalFetch;
+  showRecord = window.raceOriginalShowRecord;
+});
 await auditContrast('selected');
 await page.locator('.record[data-id="record-2"]').hover();
 await auditContrast('selected hover');

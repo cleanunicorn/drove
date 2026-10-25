@@ -274,3 +274,43 @@ def test_partial_delete_failure_never_claims_success(cli, monkeypatch) -> None:
     assert result.exit_code == 1 and "Error:" in result.stderr
     assert "Could not finish deleting" in result.stderr and "Success:" not in result.output
     assert sidecar.exists() and not (models / "coder.gguf").exists()
+
+
+@pytest.mark.parametrize("stage", ["directory", "sidecar", "marker"])
+def test_failed_tts_registration_reports_partial_write_without_success(
+    cli, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    runner, cfg, models = cli
+    directory = models / "voice"
+    primary = directory / "model.tts"
+    sidecar = directory / "model.toml"
+    if stage == "sidecar":
+        monkeypatch.setattr(
+            "drove.cli.models.save_model_config", Mock(side_effect=OSError("sidecar read-only"))
+        )
+    else:
+        operation = "mkdir" if stage == "directory" else "touch"
+        original = getattr(Path, operation)
+        target = directory if stage == "directory" else primary
+
+        def fail_target(path, *args, **kwargs):
+            if path == target:
+                raise OSError(f"{stage} read-only")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, operation, fail_target)
+
+    result = runner.invoke(
+        app, ["-c", str(cfg), "models", "add-tts", "voice", "--engine", "kokoro"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Error: Could not finish registering 'voice'" in result.stderr
+    assert f"{stage} read-only" in result.stderr
+    assert "Next:" in result.stderr and "permissions" in result.stderr
+    assert "Success:" not in result.output
+    assert not primary.exists()
+    assert directory.exists() is (stage != "directory")
+    assert sidecar.exists() is (stage == "marker")
+    if stage == "marker":
+        assert 'tts_engine = "kokoro"' in sidecar.read_text()

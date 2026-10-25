@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Improved the observe terminal browser with responsive paged search, safe search
+  Escape handling, helpful empty states, complete model names, and theme-aware details.
+
 - Redesigned the documentation around a focused first-request tutorial, task guides,
   and linked references; clarified model names, installation, configuration reloads,
   and troubleshooting.

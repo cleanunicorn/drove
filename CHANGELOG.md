@@ -6,6 +6,12 @@
 
 - Added searchable keyboard model selection with loaded state, size and capabilities, plus safe in-chat model switching that saved the previous conversation.
 
+### Changed
+
+- Redesigned the documentation around a focused first-request tutorial, task guides,
+  and linked references; clarified model names, installation, configuration reloads,
+  and troubleshooting.
+
 
 ## v0.9.0 (2026-10-24)
 

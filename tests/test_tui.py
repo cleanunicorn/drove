@@ -397,3 +397,49 @@ async def test_invalid_theme_retains_existing_selection(app):
         await app._dispatch_command("/theme does-not-exist")
         assert app.theme == original
         assert "Unknown theme" in plain(app.query_one(".system-note .message-body", Label))
+
+
+async def test_markdown_burst_follows_bottom_after_final_layout(app, monkeypatch):
+    async def stream(self, history):
+        yield {"kind": "content", "chunk": "# Burst\n\n" + "- item\n" * 80}
+
+    monkeypatch.setattr(ChatApp, "_stream_chat", stream)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await app._send_message("go").wait()
+        await pilot.pause()
+        container = app.query_one("#messages")
+        assert container.max_scroll_y > 50
+        assert container.scroll_y == container.max_scroll_y
+
+
+@pytest.mark.parametrize("manual_scroll", [False, True])
+async def test_paced_markdown_follows_only_until_user_scrolls(app, monkeypatch, manual_scroll):
+    rendered = asyncio.Event()
+    next_chunk = asyncio.Queue()
+
+    async def stream(self, history):
+        yield {"kind": "content", "chunk": "# Begin\n\n" + "- first\n" * 50}
+        rendered.set()
+        for index in range(5):
+            await next_chunk.get()
+            yield {"kind": "content", "chunk": f"\n## Section {index}\n\n" + "line\n\n" * 4}
+
+    monkeypatch.setattr(ChatApp, "_stream_chat", stream)
+    async with app.run_test(size=(80, 24)) as pilot:
+        worker = app._send_message("go")
+        await asyncio.wait_for(rendered.wait(), 5)
+        await pilot.pause()
+        container = app.query_one("#messages")
+        assert container.max_scroll_y > 20
+        if manual_scroll:
+            container.scroll_to(y=0, animate=False, immediate=True)
+        for _ in range(5):
+            next_chunk.put_nowait(None)
+            await pilot.pause()
+            if manual_scroll:
+                assert container.scroll_y == 0
+            else:
+                assert container.scroll_y == container.max_scroll_y
+        await worker.wait()
+        await pilot.pause()
+        assert container.scroll_y == (0 if manual_scroll else container.max_scroll_y)

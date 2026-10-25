@@ -1052,7 +1052,8 @@ class ChatApp(App[None]):
 
     def _scroll_to_bottom(self, force: bool = False) -> None:
         container = self.query_one("#messages", ScrollableContainer)
-        # Auto-scroll only if already near the bottom or forced
-        near_bottom = (container.max_scroll_y - container.scroll_y) <= 5
-        if force or near_bottom:
-            container.scroll_end(animate=False)
+        # Anchoring follows later Markdown layout updates, not just queued source.
+        # Textual releases the anchor when the user scrolls, and restores it only
+        # when they return to the bottom. Do not re-enable it on every chunk.
+        if force or (not container.is_anchored and container.scroll_y >= container.max_scroll_y):
+            container.anchor()

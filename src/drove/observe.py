@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from concurrent.futures import CancelledError
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 
@@ -279,45 +281,66 @@ def load_record(path: Path) -> ObserveRecord:
     return _record_from_dict(data)
 
 
-def _record_dirs(observe_dir: Path, model: str | None) -> list[Path]:
+def _check_cancelled(stop: Event | None) -> None:
+    if stop is not None and stop.is_set():
+        raise CancelledError("Record scan stopped")
+
+
+def _record_dirs(observe_dir: Path, model: str | None, stop: Event | None = None) -> list[Path]:
     """Resolve the directories that hold record JSON files.
 
     If model is None, walks two levels deep so namespaced models
     (``org/repo:quant``) are found alongside legacy flat model dirs.
     """
+    _check_cancelled(stop)
     if model:
         return [observe_dir / model]
 
     dirs: list[Path] = []
     for d in observe_dir.iterdir():
+        _check_cancelled(stop)
         if not d.is_dir():
             continue
-        if any(d.glob("*.json")):
+        has_records = False
+        for entry in d.iterdir():
+            _check_cancelled(stop)
+            if entry.match("*.json"):
+                has_records = True
+                break
+        if has_records:
             dirs.append(d)
         else:
             # Treat as namespace — scan one level deeper
             for sub in d.iterdir():
+                _check_cancelled(stop)
                 if sub.is_dir():
                     dirs.append(sub)
     return dirs
 
 
-def _record_paths(observe_dir: Path, model: str | None) -> list[Path]:
+def _record_paths(observe_dir: Path, model: str | None, stop: Event | None = None) -> list[Path]:
     """All record file paths, newest first.
 
     Sorted by filename, which begins with the record id's timestamp prefix
     (``YYYYMMDD-HHMMSS``), so the order matches a timestamp sort without
     reading any files.
     """
+    _check_cancelled(stop)
     if not observe_dir.exists():
         return []
 
     paths: list[Path] = []
-    for d in _record_dirs(observe_dir, model):
+    for d in _record_dirs(observe_dir, model, stop):
+        _check_cancelled(stop)
         if not d.exists():
             continue
-        paths.extend(d.glob("*.json"))
+        for entry in d.iterdir():
+            _check_cancelled(stop)
+            if entry.match("*.json"):
+                paths.append(entry)
+    _check_cancelled(stop)
     paths.sort(key=lambda p: p.name, reverse=True)
+    _check_cancelled(stop)
     return paths
 
 
@@ -341,18 +364,22 @@ def list_records_page(
     model: str | None = None,
     offset: int = 0,
     limit: int = 100,
+    *,
+    stop: Event | None = None,
 ) -> tuple[list[tuple[Path, ObserveRecord]], int]:
     """Return one page of records (newest first) plus the total record count.
 
     Only the files within the requested window are read from disk; the rest
     are ordered by filename alone, so large logs do not pay the cost of
     parsing every record on each call.  Files that fail to load are skipped
-    in the page but still counted in the total.
+    in the page but still counted in the total. An optional stop event raises
+    CancelledError between filesystem operations when the caller shuts down.
     """
-    paths = _record_paths(observe_dir, model)
+    paths = _record_paths(observe_dir, model, stop)
     total = len(paths)
     page: list[tuple[Path, ObserveRecord]] = []
     for p in paths[offset : offset + limit]:
+        _check_cancelled(stop)
         try:
             page.append((p, load_record(p)))
         except json.JSONDecodeError, KeyError, ValueError:
@@ -366,16 +393,20 @@ def search_records_page(
     model: str | None = None,
     offset: int = 0,
     limit: int = 100,
+    *,
+    stop: Event | None = None,
 ) -> tuple[list[tuple[Path, ObserveRecord]], int]:
     """Return one page of records matching query (newest first) plus the total match count.
 
     Search has to parse every record to evaluate the match, but only the
     matches inside the requested window are kept, so memory stays bounded by
-    the page size rather than the full log.
+    the page size rather than the full log. An optional stop event raises
+    CancelledError between filesystem operations when the caller shuts down.
     """
     page: list[tuple[Path, ObserveRecord]] = []
     matched = 0
-    for p in _record_paths(observe_dir, model):
+    for p in _record_paths(observe_dir, model, stop):
+        _check_cancelled(stop)
         try:
             record = load_record(p)
         except json.JSONDecodeError, KeyError, ValueError:

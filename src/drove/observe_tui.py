@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event
 
 from rich.syntax import Syntax
 from rich.text import Text
@@ -394,6 +395,7 @@ class ObserveApp(App[None]):
         self._query_running = False
         self._loading = False
         self._closed = False
+        self._stop_scan = Event()
         self._debounce: Timer | None = None
         self._selected: str | None = None
         self._detail_version = 0
@@ -423,6 +425,7 @@ class ObserveApp(App[None]):
         self._request_page()
 
     def on_unmount(self) -> None:
+        self._stop_scan.set()
         self._closed = True
         self._generation += 1
         self._pending = None
@@ -486,9 +489,16 @@ class ObserveApp(App[None]):
     def _read_page(self, request: PageRequest) -> tuple[list[tuple[Path, ObserveRecord]], int]:
         if request.query:
             return search_records_page(
-                self._observe_dir, request.query, self._model, request.offset, self.PAGE_SIZE
+                self._observe_dir,
+                request.query,
+                self._model,
+                request.offset,
+                self.PAGE_SIZE,
+                stop=self._stop_scan,
             )
-        return list_records_page(self._observe_dir, self._model, request.offset, self.PAGE_SIZE)
+        return list_records_page(
+            self._observe_dir, self._model, request.offset, self.PAGE_SIZE, stop=self._stop_scan
+        )
 
     async def _query_loop(self) -> None:
         try:

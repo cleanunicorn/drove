@@ -377,3 +377,68 @@ async def test_q_is_visible_quit_key(tmp_path: Path) -> None:
         app.query_one(DataTable).focus()
         await pilot.press("q")
         assert not app.is_running
+
+
+@pytest.mark.parametrize("query", ["", "absent"])
+def test_run_quits_during_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query: str) -> None:
+    """Exercise App.run's executor shutdown, rather than an existing pytest loop."""
+    import time
+
+    import drove.observe as storage
+
+    for n in range(40):
+        save_record(tmp_path, record(number=n))
+    started = threading.Event()
+    reads = 0
+    load = storage.load_record
+
+    def slow_load(path: Path) -> ObserveRecord:
+        nonlocal reads
+        reads += 1
+        started.set()
+        time.sleep(0.04)
+        return load(path)
+
+    monkeypatch.setattr(storage, "load_record", slow_load)
+    app = ObserveApp(tmp_path)
+    app._search = query
+    quit_at = 0.0
+
+    async def quit_when_reading(pilot):
+        nonlocal quit_at
+        async with asyncio.timeout(5):
+            while not started.is_set():
+                await asyncio.sleep(0.005)
+        quit_at = time.monotonic()
+        await pilot.press("q")
+
+    app.run(headless=True, auto_pilot=quit_when_reading)
+    assert quit_at
+    assert time.monotonic() - quit_at < 0.8
+    assert reads < 10  # A full uncancelled scan takes at least 1.6 seconds.
+    assert app._stop_scan.is_set()
+
+
+def test_scan_cancellation_during_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import CancelledError
+
+    from drove.observe import list_records_page
+
+    folder = tmp_path / "model"
+    folder.mkdir()
+    stop = threading.Event()
+    visited = []
+
+    def entries(path: Path):
+        for n in range(100):
+            visited.append(n)
+            if n == 3:
+                stop.set()
+            yield path / f"{n}.json"
+
+    monkeypatch.setattr(Path, "iterdir", entries)
+    with pytest.raises(CancelledError):
+        list_records_page(tmp_path, model="model", stop=stop)
+    assert visited == [0, 1, 2, 3]

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopped background observe scans when quitting the terminal browser so returning
+  to the shell no longer waited for the remaining log files.
+
 ### Changed
 
 - Improved the observe terminal browser with responsive paged search, safe search

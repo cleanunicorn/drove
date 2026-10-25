@@ -366,3 +366,49 @@ def test_audio_status(tmp_path: Path, endpoint: str, status: int, duration: str 
     assert data["tokens"]["total"] == 0
     assert data["tokens"]["ttft"]["last_seconds"] is None
     assert data["requests"]["active"] == 0
+
+
+def test_model_listing_keeps_core_fields_and_adds_trustworthy_chat_metadata(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    (config.models_dir / "chat.gguf").write_bytes(b"chat")
+    (config.models_dir / "vision.gguf").write_bytes(b"vision")
+    (config.models_dir / "vision.toml").write_text('mmproj = "projector.gguf"\n')
+    for name, extension in (("speech", ".onnx"), ("voice", ".tts")):
+        folder = config.models_dir / name
+        folder.mkdir()
+        (folder / (name + extension)).write_bytes(b"data")
+    (config.models_dir / "override.gguf").write_bytes(b"data")
+    (config.models_dir / "override.toml").write_text('backend = "asr"\n')
+    (config.models_dir / "broken.gguf").write_bytes(b"data")
+    (config.models_dir / "broken.toml").write_text('ctx_size = "bad"\n')
+    from unittest.mock import PropertyMock
+
+    with (
+        patch(
+            "drove.server_manager.ServerManager.loaded_models",
+            new_callable=PropertyMock,
+            return_value=["chat"],
+        ),
+        TestClient(create_app(config)) as client,
+    ):
+        response = client.get("/v1/models")
+    assert response.status_code == 200
+    rows = {row["id"]: row for row in response.json()["data"]}
+    assert set(rows) == {"chat", "vision", "speech", "voice", "override", "broken"}
+    for name, row in rows.items():
+        assert {key: row[key] for key in ("id", "object", "created", "owned_by")} == {
+            "id": name,
+            "object": "model",
+            "created": 0,
+            "owned_by": "local",
+        }
+    assert rows["chat"]["drove"] == {
+        "chat": True,
+        "loaded": True,
+        "size_bytes": 4,
+        "capabilities": ["text", "tools"],
+    }
+    assert "vision" in rows["vision"]["drove"]["capabilities"]
+    assert rows["vision"]["drove"]["loaded"] is False
+    assert all(rows[name]["drove"]["chat"] is False for name in ("speech", "voice", "override"))
+    assert rows["broken"]["drove"]["chat"] is None

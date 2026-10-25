@@ -69,6 +69,35 @@ drove serve
 drove chat
 ```
 
+## Chat model selection
+
+`drove chat` opens a searchable model picker when no model argument is given.
+Type part of a model name to filter, use the arrow keys to move, and press Enter
+to choose. Esc or Ctrl+C cancels. A loaded chat model is selected initially when
+one is available; otherwise the first model by name is selected. Even a single
+model is shown so its details can be inspected before starting.
+
+For drove servers, each row shows loaded state, size on disk, and inferred text,
+vision, tools or reasoning capabilities. Speech-to-text and text-to-speech models
+are excluded, including backend overrides. Models whose sidecar configuration
+cannot be read are not offered. The server's `/v1/models` response retains its
+standard fields and every model ID, and adds a `drove` object with `chat`,
+`loaded`, `size_bytes`, and `capabilities` for this purpose.
+
+Older drove servers and third-party OpenAI-compatible endpoints may not report
+this metadata. Their model entries remain selectable with unknown labels; drove
+cannot verify chat capability from a model name alone. Explicit model arguments
+remain supported, including `drove chat MODEL --endpoint URL --api-key KEY`.
+When stdin or stdout is not a terminal, omit the picker by passing `MODEL`.
+
+Inside chat, type `/model` to choose another model without restarting the app.
+The current model is preselected. Switching saves the old conversation and starts
+a separate conversation for the selected model, preserving the system prompt.
+Cancel or select the same model to keep the current conversation. Switching is
+unavailable while replies or queued messages are pending. A failed catalog fetch
+or session save leaves the current model unchanged; saved conversations remain
+available through `/sessions` when using their model.
+
 ## Config management
 
 ```bash

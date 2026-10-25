@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Added
+
+- Added searchable keyboard model selection with loaded state, size and capabilities, plus safe in-chat model switching that saved the previous conversation.
+
 
 ## v0.9.0 (2026-10-24)
 

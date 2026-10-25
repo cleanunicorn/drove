@@ -241,7 +241,16 @@ drove chat -s "You are a terse assistant."   # set a system prompt
 drove chat -e https://api.openai.com/v1 -k $OPENAI_API_KEY
 ```
 
-Inside the chat, type `/help` for commands (`/sessions`, `/theme`, …).
+Without a model name, the picker shows loaded state, size and capabilities. Type to
+filter, use ↑/↓ and Enter to select, or Esc/Ctrl+C to cancel. Speech models are
+excluded when the server reports their capabilities. Older and third-party
+endpoints remain usable with unknown metadata. Pass a model name explicitly when
+stdin or stdout is redirected.
+
+Inside the chat, `/model` opens the same picker. Switching saves the current
+conversation and starts a new one with the selected model and the same system
+prompt; wait for pending replies to finish first. Type `/help` for all commands
+(`/sessions`, `/theme`, …).
 
 </details>
 

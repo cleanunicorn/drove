@@ -248,6 +248,8 @@ def chat(
         base_url = base_url.replace("//0.0.0.0:", "//127.0.0.1:")
 
     if model is None:
+        model = config.default_model
+    if model is None:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             typer.echo("Pass a model name when not in a terminal: drove chat MODEL", err=True)
             raise typer.Exit(1)

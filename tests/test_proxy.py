@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import httpx
 import pytest
@@ -412,3 +412,216 @@ def test_model_listing_keeps_core_fields_and_adds_trustworthy_chat_metadata(tmp_
     assert rows["vision"]["drove"]["loaded"] is False
     assert all(rows[name]["drove"]["chat"] is False for name in ("speech", "voice", "override"))
     assert rows["broken"]["drove"]["chat"] is None
+
+
+@pytest.mark.parametrize(
+    "default,explicit,loaded,expected",
+    [
+        ("preferred", None, None, "preferred"),
+        ("preferred", None, "other", "preferred"),
+        ("missing", "chosen", "other", "chosen"),
+        (None, None, "other", "other"),
+        ("org/model:Q4_K_M", None, None, "org/model:Q4_K_M"),
+        ("preferred", "", None, ""),
+    ],
+)
+def test_default_model_routing_and_claims(
+    tmp_path: Path,
+    default: str | None,
+    explicit: str | None,
+    loaded: str | None,
+    expected: str,
+) -> None:
+    config = make_config(tmp_path).model_copy(update={"default_model": default})
+    app = create_app(config)
+    manager = app.state.manager
+    payload = {"messages": []}
+    if explicit is not None:
+        payload["model"] = explicit
+    response = MagicMock(spec=httpx.Response)
+    response.status_code = 200
+    response.headers = httpx.Headers({"content-type": "application/json"})
+
+    async def response_body():
+        yield b'{"ok": true}'
+
+    response.aiter_raw = response_body
+    with (
+        patch.object(manager, "ensure_running", new_callable=AsyncMock) as ensure,
+        patch.object(
+            type(manager), "is_running", new_callable=PropertyMock, return_value=loaded is not None
+        ),
+        patch.object(
+            type(manager), "current_model", new_callable=PropertyMock, return_value=loaded
+        ),
+        patch.object(manager, "base_url_for", return_value="http://backend:9999") as url,
+        patch.object(manager, "request_started") as started,
+        patch.object(manager, "request_finished") as finished,
+        patch.object(
+            app.state.client, "send", new_callable=AsyncMock, return_value=response
+        ) as send,
+        TestClient(app) as client,
+    ):
+        result = client.post("/v1/chat/completions", json=payload)
+        assert result.status_code == 200
+        upstream = send.call_args.args[0]
+        assert upstream.content == result.request.content
+        assert str(upstream.url) == "http://backend:9999/v1/chat/completions"
+        url.assert_called_once_with(expected)
+        if default is None and explicit is None:
+            ensure.assert_not_awaited()
+            started.assert_called_once_with(expected)
+        else:
+            ensure.assert_awaited_once_with(expected, claim=True)
+            started.assert_not_called()
+        finished.assert_called_once_with(expected)
+        assert app.state.stats.active_requests == 0
+        assert app.state.stats.error_count == 0
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+def test_missing_default_returns_actionable_404(tmp_path: Path, loaded: bool) -> None:
+    config = make_config(tmp_path).model_copy(update={"default_model": "missing"})
+    app = create_app(config)
+    with (
+        patch.object(
+            type(app.state.manager), "is_running", new_callable=PropertyMock, return_value=loaded
+        ),
+        TestClient(app) as client,
+    ):
+        response = client.post("/v1/chat/completions", json={"messages": []})
+        assert response.status_code == 404
+        assert "missing" in response.json()["detail"]
+        assert "drove models list" in response.json()["detail"]
+        assert app.state.stats.active_requests == 0
+        assert app.state.stats.error_count == 1
+
+
+@pytest.mark.parametrize("error", [TimeoutError("startup timed out"), RuntimeError("failed")])
+def test_default_startup_error_returns_503(tmp_path: Path, error: Exception) -> None:
+    config = make_config(tmp_path).model_copy(update={"default_model": "preferred"})
+    app = create_app(config)
+    with (
+        patch.object(app.state.manager, "ensure_running", side_effect=error),
+        TestClient(app) as client,
+    ):
+        response = client.post("/v1/chat/completions", json={"messages": []})
+        assert response.status_code == 503
+        assert app.state.stats.active_requests == 0
+        assert app.state.stats.error_count == 1
+
+
+def test_default_model_multipart_preserves_body(tmp_path: Path) -> None:
+    config = make_config(tmp_path).model_copy(update={"default_model": "speech"})
+    app = create_app(config)
+    response = MagicMock(spec=httpx.Response)
+    response.status_code = 200
+    response.headers = httpx.Headers({"content-type": "application/json"})
+
+    async def response_body():
+        yield b'{"text": "hello"}'
+
+    response.aiter_raw = response_body
+    with (
+        patch.object(app.state.manager, "ensure_running", new_callable=AsyncMock) as ensure,
+        patch.object(
+            app.state.client, "send", new_callable=AsyncMock, return_value=response
+        ) as send,
+        TestClient(app) as client,
+    ):
+        result = client.post("/v1/audio/transcriptions", files={"file": ("audio.wav", b"RIFF")})
+        assert result.status_code == 200
+        ensure.assert_awaited_once_with("speech", claim=True)
+        assert send.call_args.args[0].content == result.request.content
+
+
+def test_default_model_reload_change_and_removal(tmp_path: Path) -> None:
+    from drove.proxy import _reload_config
+
+    config = make_config(tmp_path).model_copy(update={"default_model": "first"})
+    app = create_app(config)
+    path = tmp_path / "config.toml"
+    with (
+        patch.object(
+            app.state.manager, "ensure_running", side_effect=FileNotFoundError("not downloaded")
+        ) as ensure,
+        TestClient(app) as client,
+    ):
+        assert client.post("/v1/chat/completions", json={}).status_code == 404
+        ensure.assert_awaited_with("first", claim=True)
+        config.model_copy(update={"default_model": "second"}).save(path)
+        _reload_config(app, path)
+        assert client.post("/v1/chat/completions", json={}).status_code == 404
+        ensure.assert_awaited_with("second", claim=True)
+        config.model_copy(update={"default_model": None}).save(path)
+        _reload_config(app, path)
+        assert client.post("/v1/chat/completions", json={}).status_code == 400
+        assert ensure.await_count == 2
+        assert app.state.stats.active_requests == 0
+
+
+@pytest.mark.parametrize("selection", ["omitted", "null", "explicit", "unset"])
+async def test_default_speech_reaches_real_worker(tmp_path: Path, selection: str) -> None:
+    from drove.workers.tts_runtime.worker import create_tts_app
+
+    class FakeEngine:
+        native_speed = True
+
+        def synthesize(self, text: str, voice: str, speed: float) -> tuple[bytes, int]:
+            assert (text, voice, speed) == ("Hello", "alloy", 1.0)
+            return b"\x00\x00" * 240, 24000
+
+    default = None if selection == "unset" else "preferred"
+    model = "chosen" if selection == "explicit" else "preferred"
+    config = make_config(tmp_path).model_copy(update={"default_model": default})
+    app = create_app(config)
+    worker = create_tts_app(FakeEngine(), model)
+    app.state.client._transport = httpx.ASGITransport(app=worker)
+    requests: list[httpx.Request] = []
+
+    async def capture(request: httpx.Request) -> None:
+        requests.append(request)
+
+    app.state.client.event_hooks["request"] = [capture]
+    payload = {"input": "Hello", "voice": "alloy", "response_format": "wav"}
+    if selection == "explicit":
+        payload["model"] = model
+    elif selection == "null":
+        payload["model"] = None
+    try:
+        with (
+            patch.object(app.state.manager, "ensure_running", new_callable=AsyncMock) as ensure,
+            patch.object(
+                type(app.state.manager), "is_running", new_callable=PropertyMock, return_value=True
+            ),
+            patch.object(
+                type(app.state.manager),
+                "current_model",
+                new_callable=PropertyMock,
+                return_value="preferred",
+            ),
+            patch.object(app.state.manager, "base_url_for", return_value="http://worker"),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://proxy"
+            ) as client:
+                response = await client.post("/v1/audio/speech", json=payload)
+            if selection == "unset":
+                assert response.status_code == 400
+                ensure.assert_not_awaited()
+            else:
+                assert response.status_code == 200
+                assert response.headers["content-type"] == "audio/wav"
+                assert response.content.startswith(b"RIFF")
+                ensure.assert_awaited_once_with(model, claim=True)
+            upstream = requests[0]
+            assert int(upstream.headers["content-length"]) == len(upstream.content)
+            if selection in {"explicit", "unset"}:
+                assert upstream.content == response.request.content
+            else:
+                import json
+
+                assert json.loads(upstream.content) == {**payload, "model": model}
+            assert app.state.stats.active_requests == 0
+    finally:
+        await app.state.client.aclose()

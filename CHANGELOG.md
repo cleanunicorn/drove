@@ -9,6 +9,7 @@
 ### Added
 
 - Added searchable keyboard model selection with loaded state, size and capabilities, plus safe in-chat model switching that saved the previous conversation.
+- Added a configurable default model for model-less API requests and chat launches, with explicit model choices taking precedence and defaulted speech requests supplying the worker’s required model field.
 
 ### Changed
 

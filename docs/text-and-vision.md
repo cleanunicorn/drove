@@ -74,13 +74,13 @@ model's `mmproj` setting and its [effective configuration](./models.md#set-runti
 ## Terminal chat
 
 ```bash
-drove chat                               # pick a model from the local server
+drove chat                               # use the default model, or pick one
 drove chat qwen                          # use a specific local model
 drove chat --resume                      # resume the latest saved session
 drove chat -s "You are a terse assistant."
 ```
 
-Without a model argument, the picker shows loaded state, disk size and inferred
+Without a model argument or configured default, the picker shows loaded state, disk size and inferred
 capabilities. Type to filter names, move with ↑/↓, and press Enter to select.
 Esc or Ctrl+C cancels. A loaded chat model is preselected when available;
 known speech models and models with unreadable configuration are excluded.
@@ -93,6 +93,13 @@ Cancel or select the current model to keep the conversation unchanged. Saved
 conversations can be reopened through `/sessions` when using their model.
 Type `/help` for all commands, including `/theme`.
 
+
+
+Set `default_model` to skip the picker when no model argument is supplied.
+An explicit model always wins, including with a remote endpoint. See
+[Default model](./configuration.md#default-model) for setup and clearing.
+
+Type `/help` inside chat for commands such as `/sessions` and `/theme`.
 The TUI can also use a remote OpenAI-compatible endpoint:
 
 ```bash

@@ -41,7 +41,8 @@ For walkthroughs, see [Managing models](./models.md),
 
 ## Chat model selection
 
-`drove chat` opens a searchable model picker when no model argument is given.
+`drove chat` opens a searchable model picker when neither a model argument nor
+a configured `default_model` is available.
 Type part of a model name to filter, use the arrow keys to move, and press Enter
 to choose. Esc or Ctrl+C cancels. A loaded chat model is selected initially when
 one is available; otherwise the first model by name is selected. Even a single
@@ -67,6 +68,22 @@ Cancel or select the same model to keep the current conversation. Switching is
 unavailable while replies or queued messages are pending. A failed catalog fetch
 or session save leaves the current model unchanged; saved conversations remain
 available through `/sessions` when using their model.
+
+
+`drove chat MODEL` uses that model. Without `MODEL`, it uses `default_model`
+from configuration, or opens the existing model picker when no default is set.
+The same order applies with `--endpoint`; an explicit model overrides the
+configured identifier for remote APIs too. `--resume` looks up sessions for
+the selected model.
+
+```bash
+drove config default_model "org/model:Q4_K_M"
+drove chat
+drove config default_model ""  # restore picker / server loaded-model fallback
+```
+
+See [Default model](configuration.md#default-model) for server behavior and
+`DROVE_DEFAULT_MODEL` precedence.
 
 ## Config management
 

@@ -1,12 +1,31 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Changed
+## v0.12.0 (2026-10-25)
 
-- Redesigned terminal chat to give conversations more space, moved diagnostics into Info, and replaced persistent shortcut hints with guidance that retired after use or dismissal and remembered progress across launches.
-- Updated installation instructions to clone the repository and run `make install`.
-- Required agents to start each task in a separate Git worktree under `/tmp`.
+### Bug Fixes
+
+- **chat**: Save tip progress without persisting env overrides
+  ([`5ab02de`](https://github.com/cleanunicorn/drove/commit/5ab02de4bad2d1c7dbb33d3624277be3a2640c54))
+
+Tip progress was saved via load_config()+Config.save(), which writes the fully resolved config —
+  DROVE_* env overrides and every default — into the TOML file on the first Enter press. Persist
+  only tui_completed_hints instead.
+
+Also request stream_options.include_usage so llama-server actually reports token usage for Info,
+  drop an unused "compact" CSS class, and fix CHANGELOG bullet spacing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Documentation
+
+- Update installation and require temporary worktrees
+  ([`ecbb3ce`](https://github.com/cleanunicorn/drove/commit/ecbb3cef6f547484cff0f2a4933ef1a2bbcd8e84))
+
+### Features
+
+- **chat**: Reclaim conversation space with progressive guidance
+  ([`b7183bc`](https://github.com/cleanunicorn/drove/commit/b7183bc84e698124f4822d77d2cd6d528a2d7a34))
 
 
 ## v0.11.0 (2026-10-25)

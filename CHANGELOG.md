@@ -7,6 +7,9 @@
 - Prevented unconverted model weights from appearing as chat-ready in model selection.
 - Fixed loaded-model warnings when deleting a namespace containing running models.
 - Fixed deletion previews for relative model-storage paths, including symlinked directories.
+- Preserved literal text in chat messages and tool details, preventing model-supplied
+  styling from obscuring tool approvals; made long arguments scrollable with
+  permission controls kept visible.
 
 ### Added
 
@@ -25,7 +28,6 @@
 - Unified CLI success, warning, and error feedback with actionable typo hints,
   mutation confirmations, and readable integration summaries while preserving
   plain config values, completion scripts, and dry-run output.
-
 - Redesigned the documentation around a focused first-request tutorial, task guides,
   and linked references; clarified model names, installation, configuration reloads,
   and troubleshooting.

@@ -85,6 +85,12 @@ drove config default_model ""  # restore picker / server loaded-model fallback
 See [Default model](configuration.md#default-model) for server behavior and
 `DROVE_DEFAULT_MODEL` precedence.
 
+
+In `drove chat`, message text, thinking, and errors are shown literally: bracketed
+text such as `a[i]` is not treated as styling. Tool confirmations show the tool
+name and exact arguments as plain text. Scroll within the confirmation to review
+long arguments; the permission buttons stay available below it.
+
 ## Config management
 
 ```bash

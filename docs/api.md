@@ -37,6 +37,20 @@ for backend health, and then forwards the request. The first request may take
 longer than later requests. See [Managing models](./models.md) for naming and
 [Architecture](./architecture.md) for the lifecycle.
 
+Each model-list entry retains the standard `id`, `object`, `created` and
+`owned_by` fields and adds a `drove` object:
+
+| Field | Meaning |
+| --- | --- |
+| `chat` | Whether the effective backend supports chat; `null` if its configuration could not be read |
+| `loaded` | Whether this model is currently loaded |
+| `size_bytes` | Total size on disk |
+| `capabilities` | Inferred capability labels (`text`, `vision`, `tools`, `reasoning`), an empty list for non-chat models, or `null` when unavailable |
+
+The inventory still includes speech models; the chat picker filters them using
+this metadata. Listing does not start any backend. Older drove servers and
+third-party endpoints may omit the `drove` object.
+
 Always send `model` explicitly. When it is absent, drove can fall back to a
 loaded model; if none is loaded, the request fails with HTTP 400.
 

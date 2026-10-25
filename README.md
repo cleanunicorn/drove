@@ -66,6 +66,11 @@ Ctrl+C. The example binds to loopback; the configured default is `0.0.0.0`
 (all interfaces). See [Running drove](./docs/operations.md) for network and
 service setup.
 
+Run `drove chat` without a model name for a searchable keyboard picker showing
+loaded state, size and capabilities. Inside chat, `/model` saves the current
+conversation and starts a new one with another model. See
+[Terminal chat](./docs/text-and-vision.md#terminal-chat) for navigation and remote endpoints.
+
 For installation alternatives, SDK setup, and checks at each step, follow
 [Getting started](./docs/getting-started.md).
 

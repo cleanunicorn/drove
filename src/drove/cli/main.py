@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from importlib.metadata import version as _package_version
 from pathlib import Path
 from typing import Annotated
@@ -247,9 +248,12 @@ def chat(
         base_url = base_url.replace("//0.0.0.0:", "//127.0.0.1:")
 
     if model is None:
-        model = _select_model_from_endpoint(base_url, api_key)
-        if model is None:
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            typer.echo("Pass a model name when not in a terminal: drove chat MODEL", err=True)
             raise typer.Exit(1)
+        model = _select_model_from_endpoint(base_url, api_key, config.tui_theme)
+        if model is None:
+            raise typer.Exit()
 
     resume_session = None
     if resume:
@@ -271,59 +275,22 @@ def chat(
     tui.run()
 
 
-def _select_model_from_endpoint(base_url: str, api_key: str | None) -> str | None:
-    """Fetch models from an OpenAI-compatible /v1/models endpoint and prompt selection."""
-    import httpx
-
-    url = f"{base_url}/v1/models"
-    headers: dict[str, str] = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+def _select_model_from_endpoint(
+    base_url: str, api_key: str | None, theme: str = "textual-dark"
+) -> str | None:
+    """Fetch eligible models and show the shared keyboard picker."""
+    from drove.chat_models import CatalogError, fetch_models
+    from drove.model_picker import ModelPickerApp
 
     try:
-        resp = httpx.get(url, headers=headers, timeout=5.0)
-        resp.raise_for_status()
-    except httpx.ConnectError:
-        typer.echo(f"Could not connect to {base_url}", err=True)
-        typer.echo("Is the server running?", err=True)
-        return None
-    except httpx.HTTPStatusError as e:
-        typer.echo(f"Failed to list models: {e.response.status_code}", err=True)
-        return None
-    except httpx.HTTPError as e:
-        typer.echo(f"Failed to list models: {e}", err=True)
-        return None
-
+        models = fetch_models(base_url, api_key)
+    except CatalogError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
     try:
-        data = resp.json()
-        model_list = data.get("data", [])
-    except Exception:
-        typer.echo("Invalid response from /v1/models.", err=True)
+        return ModelPickerApp(models, theme).run()
+    except KeyboardInterrupt:
         return None
-
-    names: list[str] = [m["id"] for m in model_list if "id" in m]
-    if not names:
-        typer.echo("No models available at this endpoint.", err=True)
-        return None
-
-    if len(names) == 1:
-        typer.echo(f"Using model: {names[0]}")
-        return names[0]
-
-    typer.echo("Available models:")
-    typer.echo("")
-    for i, name in enumerate(names, 1):
-        typer.echo(f"  {i}. {name}")
-    typer.echo("")
-
-    while True:
-        try:
-            choice = int(typer.prompt("Select a model", default="1"))
-            if 1 <= choice <= len(names):
-                return names[choice - 1]
-            typer.echo(f"Please enter a number between 1 and {len(names)}")
-        except ValueError, TypeError:
-            typer.echo("Please enter a valid number")
 
 
 observe_app = typer.Typer(

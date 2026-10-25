@@ -8,6 +8,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from textual import events, work
@@ -31,6 +32,8 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
+from drove.chat_models import CatalogError, fetch_models_async
+from drove.model_picker import ModelPicker
 from drove.sessions import Session, list_sessions, new_session, save_session
 from drove.tools import TOOL_DEFINITIONS, execute_tool
 
@@ -391,6 +394,7 @@ class ChatApp(App[None]):
         self._system_prompt = system_prompt
         self._api_key = api_key
         self._queue: deque[str] = deque()
+        self._model_picker_open = False
         self._last_speed: float | None = None  # tok/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
         self.theme = theme
@@ -460,6 +464,7 @@ class ChatApp(App[None]):
     _COMMANDS = {
         "/help": "Show this help",
         "/sessions": "Browse and resume saved sessions",
+        "/model": "Choose a model and start a new conversation",
         "/new": "Start a new session",
         "/clear": "Clear current chat (starts new session)",
         "/theme": "/theme [name] — list or set theme",
@@ -474,6 +479,9 @@ class ChatApp(App[None]):
         if cmd == "/help":
             lines = "\n".join(f"  {k:<12} {v}" for k, v in self._COMMANDS.items())
             await self._show_note(f"Available commands:\n{lines}")
+
+        elif cmd == "/model":
+            await self._choose_model()
 
         elif cmd in ("/clear", "/new"):
             self.query_one("#messages").remove_children()
@@ -511,6 +519,58 @@ class ChatApp(App[None]):
         else:
             await self._show_note(f"Unknown command '{cmd}'. Try /help.")
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # App priority bindings run before modal bindings. Let the model
+        # picker own Ctrl+C so cancelling it does not quit the conversation.
+        if action == "quit" and isinstance(self.screen, ModelPicker):
+            return False
+        return super().check_action(action, parameters)
+
+    async def _choose_model(self) -> None:
+        if self._model_picker_open:
+            return
+        if self.is_generating or self._queue:
+            await self._show_note("Wait for pending replies before switching models.")
+            return
+        self._model_picker_open = True
+        try:
+            try:
+                models = await fetch_models_async(self._base_url, self._api_key)
+            except CatalogError as exc:
+                await self._show_note(str(exc))
+                return
+            if self.is_generating or self._queue:
+                await self._show_note("Wait for pending replies before switching models.")
+                return
+            selected = await self.push_screen_wait(ModelPicker(models, self._model))
+            if selected is None or selected == self._model:
+                return
+            if self.is_generating or self._queue:
+                await self._show_note("Wait for pending replies before switching models.")
+                return
+            try:
+                save_session(self._sessions_dir, self._session)
+            except OSError:
+                await self._show_note("Could not save this conversation. Model was not changed.")
+                return
+            system_prompt = self._session.system_prompt
+            session = new_session(selected, system_prompt)
+            # Switches can revisit a model in the same second. Do not reuse
+            # the timestamp-only ID and overwrite its previous conversation.
+            session.id += f"-{time.time_ns()}-{uuid4().hex}"
+            self._session = session
+            self._model = selected
+            self._system_prompt = system_prompt
+            self._history = list(session.messages)
+            self._session_allowed_tools.clear()
+            self._last_speed = self._last_ttft = None
+            self.sub_title = selected
+            await self.query_one("#messages").remove_children()
+            self._update_status()
+            self.query_one("#user-input", ChatInput).focus()
+        finally:
+            self._model_picker_open = False
+
     async def _show_note(self, text: str) -> None:
         bubble = Message("system-note", text)
         await self.query_one("#messages").mount(bubble)
@@ -542,6 +602,10 @@ class ChatApp(App[None]):
         textarea = self.query_one("#user-input", ChatInput)
         text = textarea.text.strip()
         if not text:
+            return
+
+        if self._model_picker_open:
+            self.run_worker(self._show_note("Finish choosing a model before sending a message."))
             return
 
         self._hide_autocomplete()

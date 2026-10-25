@@ -106,3 +106,8 @@ service-status:
 
 service-logs:
 	journalctl --user -u drove.service -f
+
+# Real-DOM observe browser checks; requires the betterwright CLI/browser.
+.PHONY: test-observe-web-states
+test-observe-web-states:
+	uv run python tests/browser/run_observe_web_states.py $(OBSERVE_BROWSER_ARGS)

@@ -106,6 +106,23 @@ The web browser UI listens at `http://127.0.0.1:8877` by default; use
 request and response content; enable logging when you want that content saved.
 Disable future logging with `drove config observe false`.
 
+The web browser shows the number loaded and the API's total (for example,
+`100 of 4,213 requests`), with separate loading, empty, and retry states for
+searches and request details. A failed **Load more** keeps the rows already
+loaded. New searches and selections take precedence over older responses.
+
+Use Tab to enter the request list, then Up/Down (or Home/End) to move focus and
+Enter/Space to open a request. Tab moves into the details; section headings,
+JSON disclosure controls, Markdown toggles, Retry, and Load more are keyboard
+operable. The panes stack on narrow screens. Dates accompany older requests,
+and the detail header shows the full recorded timestamp without changing its
+stored timezone semantics.
+
+Selecting a request adds `#record=<id>` to the URL. Copy that URL to revisit the
+request, including one outside the first loaded page; refresh and browser
+Back/Forward preserve the selection. Searching does not clear an open request.
+A missing or invalid link shows a recoverable message.
+
 ![Request log browser](../assets/observe-tui.svg)
 
 ## Apply configuration changes

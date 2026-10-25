@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added loading, retry and empty states, accurate counts, keyboard navigation, shareable request links, and readable mobile layouts to the observe web browser.
+
 ### Changed
 
 - Redesigned the documentation around a focused first-request tutorial, task guides,

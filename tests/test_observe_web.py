@@ -155,3 +155,13 @@ def test_api_records_search_offset(tmp_path: Path) -> None:
     assert data["total"] == 2
     assert len(data["items"]) == 1
     assert data["items"][0]["id"] == "20260408-100000-aaaa0001"
+
+
+def test_browser_assets_are_served(tmp_path: Path) -> None:
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        for asset, content_type in (("app.js", "javascript"), ("styles.css", "text/css")):
+            response = client.get(f"/static/{asset}")
+            assert response.status_code == 200
+            assert content_type in response.headers["content-type"]
+            assert response.content

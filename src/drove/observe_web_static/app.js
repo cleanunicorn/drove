@@ -28,11 +28,10 @@ const api = {
   },
 };
 
-function esc(s) {
-  if (!s) return "";
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[char]);
 }
 
 function el(tag, attrs, children) {
@@ -96,17 +95,17 @@ function recordSummaryHtml(r) {
     : "-";
   const speed = r.tokens_per_second ? r.tokens_per_second.toFixed(1) + " tok/s" : "";
   const sel = r.id === state.selectedId ? " selected" : "";
-  return `<div class="record${sel}" data-id="${r.id}">
+  return `<div class="record${sel}" data-id="${esc(r.id)}">
     <div class="top">
       <span class="method">${esc(r.method)}</span>
-      <span class="time">${time}</span>
+      <span class="time">${esc(time)}</span>
     </div>
     <div class="path">/${esc(r.endpoint)}</div>
     <div class="meta">
       <span>${esc(model)}</span>
-      <span class="${statusCls}">${r.response_status}</span>
-      <span>${tokens}</span>
-      <span>${speed}</span>
+      <span class="${statusCls}">${esc(r.response_status)}</span>
+      <span>${esc(tokens)}</span>
+      <span>${esc(speed)}</span>
     </div>
   </div>`;
 }
@@ -139,8 +138,8 @@ async function selectRecord(id) {
 }
 
 function metric(label, value) {
-  return `<div class="metric"><div class="label">${label}</div>` +
-    `<div class="value">${value}</div></div>`;
+  return `<div class="metric"><div class="label">${esc(label)}</div>` +
+    `<div class="value">${esc(value)}</div></div>`;
 }
 
 function buildMetrics(r) {
@@ -263,6 +262,19 @@ function keyPrefix(key) {
 
 const MD_KEYS = new Set(["content", "reasoning_content"]);
 
+// Treat parsed Markdown as untrusted HTML. Text-only previews must not load media,
+// carry page styling, clobber DOM names, or add executable elements/attributes.
+const MD_SANITIZE_OPTIONS = {
+  ALLOWED_TAGS: [
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr", "strong", "em",
+    "del", "blockquote", "ul", "ol", "li", "pre", "code", "a",
+    "table", "thead", "tbody", "tr", "th", "td",
+  ],
+  ALLOWED_ATTR: ["href", "title", "start"],
+  ALLOW_DATA_ATTR: false,
+  ALLOW_ARIA_ATTR: false,
+};
+
 function makeLeaf(key, html, rawVal) {
   const row = el("div", { class: "jt-row" });
   row.appendChild(el("span", { style: "width:14px;flex-shrink:0" }));
@@ -287,7 +299,13 @@ function toggleMd(btn, raw, parent) {
     return;
   }
   const render = el("div", { class: "md-render" });
-  render.innerHTML = marked.parse(raw);
+  try {
+    if (!window.marked?.parse || !window.DOMPurify?.isSupported) return;
+    render.innerHTML = DOMPurify.sanitize(marked.parse(raw), MD_SANITIZE_OPTIONS);
+  } catch {
+    // Keep the original text visible if either dependency is unavailable/fails.
+    return;
+  }
   parent.appendChild(render);
   if (str) str.style.display = "none";
   btn.textContent = "RAW";

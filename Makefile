@@ -1,4 +1,4 @@
-.PHONY: install completions test lint fmt typecheck \
+.PHONY: install completions test test-observe-web-browser lint fmt typecheck \
         service-install service-uninstall service-start service-stop service-status service-logs
 
 DROVE_BIN := $(HOME)/.local/share/uv/tools/drove/bin/drove
@@ -62,6 +62,10 @@ completions: install
 
 test:
 	uv run pytest
+
+# Real DOM/security assertions; requires the BetterWright browser CLI.
+test-observe-web-browser:
+	uv run python tests/browser/run_observe_web_security.py $(BROWSER_TEST_ARGS)
 
 lint:
 	uv run ruff check .

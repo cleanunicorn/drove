@@ -1,0 +1,40 @@
+[
+  {
+    "name": "marked",
+    "version": "18.1.1",
+    "source": "https://registry.npmjs.org/marked/-/marked-18.1.1.tgz",
+    "integrity": "sha512-zEGgrtUG8crk+TrMacJSVABU4DYDDkS8uqgU3ohrn/2fW9C2AEfUrO3m6IhpIpQpl7YcVpiXXC9cSMWDANT3dg==",
+    "license": "MIT",
+    "files": [
+      {
+        "path": "marked-18.1.1.umd.js",
+        "sha256": "b82b9334406d8bdd16b6236c08de1cb65b2a859873ca9503d9cc0b292ca3c12a"
+      },
+      {
+        "path": "marked-LICENSE",
+        "sha256": "8e3a3f82f59a60958f56ca08f445647c32a4733dc7ca6c2c46f6eb898471ab9c"
+      }
+    ]
+  },
+  {
+    "name": "DOMPurify",
+    "version": "3.4.17",
+    "source": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz",
+    "integrity": "sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==",
+    "license": "(MPL-2.0 OR Apache-2.0)",
+    "files": [
+      {
+        "path": "purify-3.4.17.min.js",
+        "sha256": "cd37898f9782adf54820c413191b5691803f0f137c799d6edcfd38523b4c2c31"
+      },
+      {
+        "path": "DOMPurify-LICENSE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      {
+        "path": "DOMPurify-LICENSE-MPL",
+        "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+      }
+    ]
+  }
+]

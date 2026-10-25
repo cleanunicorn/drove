@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Security
+
+- Prevented logged content from executing HTML in observe web Markdown previews,
+  escaped record fields, and bundled pinned dependencies for offline rendering.
+
 ### Changed
 
 - Redesigned the documentation around a focused first-request tutorial, task guides,

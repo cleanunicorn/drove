@@ -361,7 +361,7 @@ def delete_model(
     """Delete a model and its config."""
     import shutil
 
-    models_dir = _models_dir(ctx)
+    models_dir = Path(abspath(_models_dir(ctx)))
     root = _model_root(models_dir, name)
     if root is None:
         typer.echo(f"Model '{name}' not found.", err=True)

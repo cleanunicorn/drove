@@ -465,3 +465,26 @@ def test_complete_download_preserves_no_prompt_path(tmp_path, monkeypatch, tts):
     result = CliRunner().invoke(app, ["models", "download", "org/repo:Q4"])
     assert result.exit_code == 0, result.output
     assert called == ([1] if tts else [])
+
+
+@pytest.mark.parametrize(
+    "answer,flag,deleted", [("n\n", None, False), ("y\n", None, True), (None, "--yes", True)]
+)
+@pytest.mark.parametrize("linked_base", [False, True])
+def test_delete_relative_models_directory(
+    tmp_path, monkeypatch, answer, flag, deleted, linked_base
+):
+    monkeypatch.chdir(tmp_path)
+    storage = tmp_path / "storage" if linked_base else tmp_path / "models"
+    storage.mkdir()
+    if linked_base:
+        (tmp_path / "models").symlink_to(storage, target_is_directory=True)
+    primary = _make_model(storage, "local")
+    primary.with_suffix(".toml").write_text("ctx_size = 8\n")
+    monkeypatch.setenv("DROVE_MODELS_DIR", "models")
+    monkeypatch.setattr("drove.cli.models._loaded_warning", lambda *args: "loaded status unknown")
+    args = ["models", "delete", "local"] + ([flag] if flag else [])
+    result = CliRunner().invoke(app, args, input=answer)
+    assert result.exit_code == (0 if deleted else 1), result.output
+    assert "local/local.gguf" in result.output and "local/local.toml" in result.output
+    assert primary.exists() is not deleted

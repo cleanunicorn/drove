@@ -7,6 +7,10 @@
 - Added contextual model deletion and download confirmations with file and size
   previews, loaded-model warnings, and consistent safe defaults.
 
+### Fixed
+
+- Fixed deletion previews for relative model-storage paths, including symlinked directories.
+
 ### Changed
 
 - Redesigned the documentation around a focused first-request tutorial, task guides,

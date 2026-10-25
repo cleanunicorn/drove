@@ -5,7 +5,8 @@
 ### Security
 
 - Prevented logged content from executing HTML in observe web Markdown previews,
-  escaped record fields, and bundled pinned dependencies for offline rendering.
+  escaped record fields, and bundled pinned dependencies for offline rendering
+  while preserving ordinary Markdown formatting and safe links.
 
 ### Changed
 

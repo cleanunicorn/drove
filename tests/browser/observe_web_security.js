@@ -132,7 +132,7 @@ const formatted = await page.evaluate(() => ({
 }));
 check(formatted.headings === 2 && formatted.lists === 2 && formatted.tables === 2, "Normal Markdown structure must render in both body sections");
 check(formatted.code.length === 2 && formatted.code.every(x => x.includes("<img onerror=alert(1)>")), "Code must retain literal source");
-check(formatted.links.every(x => x === "https://example.com/docs"), "Safe links must survive");
+check(formatted.links.length === 2 && formatted.links.every(x => x === "https://example.com/docs"), "Safe links must survive in both body sections");
 check(formatted.zero.includes("0.000s") && formatted.zero.includes("0.0 tok/s"), "Zero metrics must remain visible");
 if (!BASELINE) {
   check(formatted.resources.every(origin => origin === BASE_URL), "Cold load requested an external resource");

@@ -137,3 +137,93 @@ def test_download_plan_gguf_is_not_asr() -> None:
         sharded=False,
     )
     assert not plan.is_asr
+
+
+def test_download_events_track_resume_skip_and_cache_hits(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from drove.downloader import DownloadEvent
+
+    plan = DownloadPlan(
+        "org/repo",
+        {"a.gguf": 10, "b.gguf": 20},
+        "model",
+        False,
+        mmproj_files={"mmproj.gguf": 5},
+        extra_files={"config.json": 2},
+    )
+    dest = plan.destination(tmp_path)
+    dest.mkdir()
+    (dest / "a.gguf").write_bytes(b"a" * 10)
+    (dest / "mmproj.gguf").write_bytes(b"x")  # Partial final file is not resume evidence.
+    events: list[DownloadEvent] = []
+    legacy = []
+
+    def download(*, repo_id, filename, local_dir, tqdm_class):
+        if filename == "b.gguf":
+            # Hidden Hub partial exists even though the final target is missing.
+            with tqdm_class(initial=8, total=20, disable=True, name="http", unit="B") as bar:
+                bar.update(4)
+            # A retry reconstructs the callback at the saved offset.
+            with tqdm_class(initial=12, total=20, disable=False, name="http") as bar:
+                bar.update(8)
+        elif filename == "mmproj.gguf":
+            with tqdm_class(initial=0, total=5, name="xet") as bar:
+                bar.update(5.0)
+        # config.json is a cache hit: Hub need not construct a progress bar.
+        path = Path(local_dir) / filename
+        path.write_bytes(b"x" * plan._all_remote_files()[filename])
+        return str(path)
+
+    monkeypatch.setattr("drove.downloader.hf_hub_download", download)
+    plan.execute(tmp_path, lambda *args: legacy.append(args), event_cb=events.append)
+    assert legacy[0] == (1, 4, "a.gguf (skipped)")
+    assert [e.completed for e in events if e.state == "resumed"] == [18, 22]
+    assert sum(e.transferred for e in events) == 17
+    assert events[-1].completed == events[-1].total == 37
+    assert max(e.completed for e in events) <= 37
+    assert [(e.filename, e.state) for e in events if e.state != "progress"] == [
+        ("a.gguf", "skipped"),
+        ("b.gguf", "new"),
+        ("b.gguf", "resumed"),
+        ("b.gguf", "resumed"),
+        ("b.gguf", "complete"),
+        ("mmproj.gguf", "retrying"),
+        ("mmproj.gguf", "complete"),
+        ("config.json", "new"),
+        ("config.json", "complete"),
+    ]
+
+
+def test_failed_transfer_never_emits_complete(tmp_path, monkeypatch):
+    import pytest
+
+    events = []
+    plan = DownloadPlan("org/repo", {"model.gguf": 10}, "model", False)
+
+    def download(**kwargs):
+        with kwargs["tqdm_class"](initial=0, total=10) as bar:
+            bar.update(100)  # Even a bad estimate must not overflow overall completion.
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr("drove.downloader.hf_hub_download", download)
+    with pytest.raises(RuntimeError, match="offline"):
+        plan.execute(tmp_path, event_cb=events.append)
+    assert max(e.completed for e in events) == 10
+    assert not any(e.state == "complete" for e in events)
+
+
+def test_interrupt_keeps_tts_unpublished(tmp_path, monkeypatch):
+    import pytest
+
+    plan = DownloadPlan("org/repo", {"weights.bin": 10}, "voice", False, tts_engine="kokoro")
+    events = []
+
+    def download(**kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("drove.downloader.hf_hub_download", download)
+    with pytest.raises(KeyboardInterrupt):
+        plan.execute(tmp_path, event_cb=events.append)
+    assert not (plan.destination(tmp_path) / "model.tts").exists()
+    assert not any(e.state in ("complete", "configuring") for e in events)

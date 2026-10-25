@@ -18,7 +18,7 @@ the command; subcommand options follow it.
 | `drove chat [MODEL]` | Open terminal chat | `-r, --resume`, `-s, --system`, `-e, --endpoint`, `-k, --api-key` |
 | `drove config [KEY] [VALUE]` | Show, get, or set global settings | Dotted keys, e.g. `llama_server.n_gpu_layers` |
 | `drove models list` | List installed models | `-V, --verbose` |
-| `drove models download REF` | Download `org/repo[:QUANT]` | `-n, --name`, `-y, --yes`, `--tts-engine`, `-V, --verbose` |
+| `drove models download REF` | Download `org/repo[:QUANT]` | `-n, --name`, `-y, --yes`, `--tts-engine`, `--repair-config`, `-V, --verbose` |
 | `drove models add-tts NAME` | Register a TTS engine | `--engine`, `--voice`, `--device` |
 | `drove models info NAME` | Inspect a model | `-V, --verbose` |
 | `drove models config [NAME] [KEY] [VALUE]` | Show or edit model parameters | `-g, --global`, `--unset KEY`, `--all` |
@@ -107,6 +107,35 @@ drove models config <name>
 
 The `CAPABILITY` column in `drove models list` shows model capabilities:
 `vision` (multimodal projection), `stt` (speech-to-text), and `tts` (text-to-speech).
+
+### Download progress and recovery
+
+Downloads show one overall byte progress display with the active file, transfer
+speed and estimated time remaining. Existing complete files are **skipped**;
+a transport-reported saved offset is **resumed**. A short final file is marked
+**retrying**, because it may need downloading again. Speed counts newly transferred
+bytes, excluding existing files and resume offsets. Rate and ETA remain unknown
+until transfer samples are available. Redirected output uses bounded plain lines
+instead of animated progress bars.
+
+Ctrl+C exits with status 130 and prints a quoted resume command that preserves the
+selected quantization, custom name and explicit TTS engine. For an ONNX all-variants
+selection, it asks you to choose all variants again (`--yes` selects only the default
+ONNX variant). Transfer errors identify
+the failed file and exit with status 1. Completed files and Hugging Face's partial
+cache are kept: repeat the printed command to skip complete files and reuse cached
+partial data where supported. A changed remote file or transport may still require
+retransmission. Configuration errors are reported separately from transfer errors.
+Their printed retry includes `--repair-config`: it reuses complete payloads, retries
+download metadata, and fills missing inferred settings without replacing customized
+values. Ordinary already-complete downloads remain read-only. You can inspect the
+result with `drove models config <name>`.
+
+The completion report shows the model name, location, actual directory size,
+automatic projector/ASR/TTS settings and a next command. Text models suggest
+`drove chat <name>`; speech models suggest inspecting their settings and starting
+`drove serve` for audio API requests. An already-complete model shows the same useful
+summary without downloading again.
 
 ### Text-to-speech models
 

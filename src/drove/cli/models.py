@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -486,6 +487,16 @@ def download_model(
         str | None,
         typer.Option(help="TTS engine for a compatible repo (auto-detected for known models)."),
     ] = None,
+    repair_config: Annotated[
+        bool,
+        typer.Option(
+            "--repair-config",
+            help=(
+                "Retry download metadata and fill missing inferred settings "
+                "without replacing custom values."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Download a model from HuggingFace Hub.
 
@@ -537,11 +548,8 @@ def download_model(
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
     all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
 
-    if all_complete and not plan.is_tts:
-        typer.echo(
-            f"Model '{plan.local_name}' is already fully downloaded "
-            f"at {plan.destination(models_dir)}."
-        )
+    if all_complete and not plan.is_tts and not repair_config:
+        _download_summary(plan, models_dir, existing=True)
         raise typer.Exit(0)
 
     _print_download_plan(plan, models_dir, statuses, verbose=verbose)
@@ -558,32 +566,98 @@ def download_model(
         else:
             typer.confirm("Proceed with download?", abort=True)
 
-    def progress(current: int, total: int, filename: str) -> None:
-        typer.echo(f"  [{current}/{total}] {filename}")
+    from drove.cli.download_progress import DownloadDisplay
 
+    display = DownloadDisplay(plan.total_bytes)
     try:
-        primary = plan.execute(models_dir, progress_cb=progress)
+        with display:
+            primary = plan.execute(models_dir, event_cb=display.update)
+        display.stage = "configuration"
+        _finish_download(plan, primary, quant, missing_only=repair_config)
+        _download_summary(plan, models_dir)
+    except KeyboardInterrupt:
+        retry = _download_retry_command(
+            plan,
+            quant,
+            name,
+            tts_engine,
+            repair_config=repair_config or display.stage == "configuration",
+        )
+        typer.echo("Download interrupted. Completed files were kept.", err=True)
+        typer.echo("Cached partial data will be reused where supported by Hugging Face.", err=True)
+        typer.echo(f"Resume: {retry}", err=True)
+        if _retry_needs_all_choice(plan):
+            typer.echo("Choose all variants again when prompted.", err=True)
+        raise typer.Exit(130) from None
     except Exception as e:
-        typer.echo(f"Download failed: {e}", err=True)
-        raise typer.Exit(1)
+        retry = _download_retry_command(
+            plan,
+            quant,
+            name,
+            tts_engine,
+            repair_config=repair_config or display.stage == "configuration",
+        )
+        if display.stage == "configuration":
+            message = "Files downloaded, but model configuration failed"
+        else:
+            message = f"Download failed for {display.filename or plan.repo_id}"
+        typer.echo(f"{message}: {e}", err=True)
+        typer.echo(
+            "Completed files were kept; cached partial data resumes where supported.", err=True
+        )
+        typer.echo(f"Retry: {retry}", err=True)
+        if _retry_needs_all_choice(plan):
+            typer.echo("Choose all variants again when prompted.", err=True)
+        if display.stage == "configuration":
+            typer.echo(
+                "Inspect configuration: "
+                + shlex.join(["drove", "models", "config", plan.local_name]),
+                err=True,
+            )
+        raise typer.Exit(1) from None
 
-    # Save download metadata to sidecar TOML
+
+def _download_retry_command(
+    plan: DownloadPlan,
+    quant: str | None,
+    name: str | None,
+    tts_engine: str | None,
+    *,
+    repair_config: bool = False,
+) -> str:
+    ref = f"{plan.repo_id}:{quant}" if quant else plan.repo_id
+    args = ["drove", "models", "download", ref]
+    if name is not None:
+        args.extend(["--name", name])
+    if tts_engine is not None:
+        args.extend(["--tts-engine", tts_engine])
+    if repair_config:
+        args.append("--repair-config")
+    # ONNX --yes resolves the default variant, not all variants. Keep the
+    # picker for that case instead of silently changing the recovery scope.
+    if not _retry_needs_all_choice(plan):
+        args.append("--yes")
+    return shlex.join(args)
+
+
+def _retry_needs_all_choice(plan: DownloadPlan) -> bool:
+    from drove.downloader import available_onnx_quants
+
+    return (
+        plan.is_asr
+        and plan.files == plan.onnx_files
+        and len(available_onnx_quants(plan.onnx_files)) > 1
+    )
+
+
+def _finish_download(
+    plan: DownloadPlan, primary: Path, quant: str | None, *, missing_only: bool = False
+) -> None:
+    """Publish metadata and inferred settings before reporting success."""
     all_files = (
         sorted(plan.file_names) + sorted(plan.mmproj_files.keys()) + sorted(plan.extra_files.keys())
     )
-    save_download_info(
-        primary,
-        DownloadInfo(
-            repo_id=plan.repo_id,
-            files=all_files,
-            quant=quant,
-        ),
-    )
-
-    if plan.is_tts:
-        typer.echo(f"  Text-to-speech auto-configured: {plan.tts_engine}")
-
-    # Auto-configure speech-to-text models for the built-in ASR worker
+    save_download_info(primary, DownloadInfo(repo_id=plan.repo_id, files=all_files, quant=quant))
     if plan.is_asr:
         from drove.backend import infer_asr_model_type
 
@@ -595,26 +669,62 @@ def download_model(
             updates["asr_quantization"] = quant.lower()
         if updates:
             model_cfg = load_model_config(primary)
-            save_model_config(primary, model_cfg.model_copy(update=updates))
-            for k, v in updates.items():
-                typer.echo(f"  {k} auto-configured: {v}")
-        if not inferred:
-            typer.echo(
-                "  Could not infer the ASR model type. Set it with: "
-                f"drove models config '{plan.local_name}' asr_model <type>"
-            )
-
-    # Auto-configure mmproj if a multimodal projection file was downloaded
-    # Store just the filename — resolved to an absolute path at server startup.
+            if missing_only:
+                updates = {
+                    key: value for key, value in updates.items() if getattr(model_cfg, key) is None
+                }
+            if updates:
+                save_model_config(primary, model_cfg.model_copy(update=updates))
     if plan.mmproj_files:
         mmproj_name = Path(sorted(plan.mmproj_files.keys())[0]).name
         model_cfg = load_model_config(primary)
-        updated_cfg = model_cfg.model_copy(update={"mmproj": mmproj_name})
-        save_model_config(primary, updated_cfg)
-        typer.echo(f"  mmproj auto-configured: {mmproj_name}")
+        if not missing_only or model_cfg.mmproj is None:
+            save_model_config(primary, model_cfg.model_copy(update={"mmproj": mmproj_name}))
 
-    size_mb = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file()) / 1_048_576
-    typer.echo(f"\nSaved as '{plan.local_name}'  ({size_mb:.1f} MB)")
+
+def _download_summary(plan: DownloadPlan, models_dir: Path, *, existing: bool = False) -> None:
+    from drove.downloader import first_shard
+
+    dest = plan.destination(models_dir)
+    primary = dest / ("model.tts" if plan.is_tts else Path(first_shard(plan.file_names)).name)
+    cfg = load_model_config(primary)
+    size = sum(f.stat().st_size for f in dest.rglob("*") if f.is_file())
+    out = console()
+    heading(out, "Already fully downloaded" if existing else "Download complete")
+    rows: list[tuple[str, object]] = [
+        ("Model", plan.local_name),
+        ("Location", dest),
+        ("Size on disk", f"{size:,} bytes ({size / 1_048_576:.1f} MiB)"),
+    ]
+    if cfg.mmproj:
+        rows.append(("mmproj", cfg.mmproj))
+    if plan.is_asr:
+        rows.extend(
+            [
+                ("asr_model", cfg.asr_model or "Not configured"),
+                ("asr_quantization", cfg.asr_quantization),
+            ]
+        )
+    if plan.is_tts:
+        rows.append(("tts_engine", cfg.tts_engine))
+    fields(out, rows)
+    if plan.is_asr and not cfg.asr_model:
+        hint(
+            out,
+            "Set the ASR model type: "
+            + shlex.join(["drove", "models", "config", plan.local_name, "asr_model"])
+            + " <type>",
+        )
+    if plan.is_tts or plan.is_asr:
+        hint(out, "Next: " + shlex.join(["drove", "models", "info", plan.local_name]))
+        hint(
+            out,
+            "Serve audio requests: drove serve (see docs/"
+            + ("text-to-speech.md" if plan.is_tts else "speech-to-text.md")
+            + ")",
+        )
+    else:
+        hint(out, "Next: " + shlex.join(["drove", "chat", plan.local_name]))
 
 
 @models_app.command("config")

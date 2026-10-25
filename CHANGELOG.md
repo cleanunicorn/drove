@@ -10,6 +10,9 @@
 
 - Added searchable keyboard model selection with loaded state, size and capabilities, plus safe in-chat model switching that saved the previous conversation.
 - Added a configurable default model for model-less API requests and chat launches, with explicit model choices taking precedence and defaulted speech requests supplying the worker’s required model field.
+- Added unified model download progress, explicit resume/skip states, actionable failure and
+  interruption guidance, and completion summaries with configuration and next steps.
+- Added configuration-repair retries for completed downloads that preserve custom settings.
 
 ### Changed
 

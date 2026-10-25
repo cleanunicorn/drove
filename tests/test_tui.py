@@ -664,3 +664,75 @@ async def test_quit_closes_stream_and_saves_partial(tmp_path, monkeypatch):
         assert not app.is_running
         assert closed.is_set()
         assert load_session(next(tmp_path.rglob("*.json"))).messages[-1]["content"] == "partial"
+
+
+@pytest.mark.parametrize("reused_id", ["c1", "c2"])
+async def test_stopped_tool_batch_pairs_reused_ids_in_saved_and_next_history(
+    tmp_path, monkeypatch, reused_id
+):
+    app = chat_app(tmp_path)
+    app._history.extend(
+        [
+            {"role": "user", "content": "earlier"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": reused_id,
+                        "type": "function",
+                        "function": {"name": "shell_execute", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": reused_id, "content": "earlier result"},
+            {"role": "assistant", "content": "earlier answer"},
+        ]
+    )
+    app._session.messages = app._history
+    requests = []
+    monkeypatch.setattr("drove.config.load_config", lambda _: SimpleNamespace(allowed_tools=[]))
+    monkeypatch.setattr("drove.tui.execute_tool", lambda *args: "current result")
+
+    async def stream(messages):
+        requests.append(list(messages))
+        if len(requests) == 1:
+            if reused_id == "c2":
+                yield {
+                    "kind": "tool_call",
+                    "index": 0,
+                    "id": "c1",
+                    "name": "read_file",
+                    "arguments": "{}",
+                }
+            yield {
+                "kind": "tool_call",
+                "index": 1,
+                "id": reused_id,
+                "name": "shell_execute",
+                "arguments": "{}",
+            }
+        else:
+            yield {"kind": "content", "chunk": "next answer"}
+
+    monkeypatch.setattr(app, "_stream_chat", stream)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await submit(app, pilot, "current")
+        async with asyncio.timeout(2):
+            while not isinstance(app.screen, ToolConfirmationModal):
+                await pilot.pause()
+        app.action_stop_generation()
+        await wait_idle(app, pilot)
+        saved = load_session(next(tmp_path.rglob("*.json"))).messages
+        current_assistant = next(i for i, msg in enumerate(saved) if msg.get("stopped"))
+        results = saved[current_assistant + 1 :]
+        assert results[-1]["tool_call_id"] == reused_id
+        assert "not executed because the reply was stopped" in results[-1]["content"]
+        assert len(results) == (2 if reused_id == "c2" else 1)
+        if reused_id == "c2":
+            assert results[0]["content"] == "current result"
+        assert saved[2]["content"] == "earlier result"
+        await submit(app, pilot, "next")
+        await wait_idle(app, pilot)
+        assert requests[1][current_assistant + 1 : -1] == results

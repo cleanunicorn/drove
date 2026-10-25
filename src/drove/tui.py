@@ -822,7 +822,16 @@ class ChatApp(App[None]):
             turn.committed = True
 
     def _finish_tool_history(self, turn: ChatTurn) -> None:
-        completed = {msg.get("tool_call_id") for msg in turn.history if msg["role"] == "tool"}
+        if not turn.committed:
+            return
+        # Call IDs are scoped to an assistant batch, not the whole conversation.
+        # An earlier batch's result must not satisfy this batch's pending call.
+        batch_start = next(i for i, msg in enumerate(turn.history) if msg is turn.record)
+        completed = {
+            msg.get("tool_call_id")
+            for msg in turn.history[batch_start + 1 :]
+            if msg["role"] == "tool"
+        }
         for call in turn.record.get("tool_calls", []):
             if call["id"] not in completed:
                 turn.history.append(

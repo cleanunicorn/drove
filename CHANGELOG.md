@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added guided keyboard quantization selection with download sizes, local status,
+  advisory memory estimates, and safe cancellation.
+
 ### Changed
 
 - Redesigned the documentation around a focused first-request tutorial, task guides,

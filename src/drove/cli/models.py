@@ -11,6 +11,7 @@ from rich.text import Text
 from drove.cli.output import console, fields, heading, hint, section, table
 
 if TYPE_CHECKING:
+    from drove.cli.quant_picker import QuantCandidate
     from drove.downloader import DownloadPlan, FileStatus
 
 from drove.model_config import (
@@ -310,90 +311,46 @@ def _fmt_size(b: int) -> str:
     return f"{b / 1_048_576:.1f} MB"
 
 
-def _prompt_quant_choice(quants: dict[str, int]) -> str | None:
-    """Show a numbered menu of quants and return the chosen tag, or None for 'all'."""
-    tags = list(quants.keys())
-    typer.echo("Multiple quantizations available:")
-    typer.echo("")
-    width = max(len(t) for t in tags)
-    for i, tag in enumerate(tags, start=1):
-        typer.echo(f"  {i:>2}) {tag:<{width}}  {_fmt_size(quants[tag]):>10}")
-    total = sum(quants.values())
-    typer.echo(f"   a) {'all':<{width}}  {_fmt_size(total):>10}")
-    typer.echo("")
+def _prompt_quant_choice(candidates: list[QuantCandidate], theme: str) -> str | None:
+    """Run only on a terminal; None is cancellation, not the all choice."""
+    import sys
 
-    valid = {str(i) for i in range(1, len(tags) + 1)} | {"a"}
-    while True:
-        raw = typer.prompt(f"Select quantization [1-{len(tags)}/a]").strip().lower()
-        if raw in valid:
-            break
-        typer.echo(f"Invalid choice '{raw}'.")
+    from drove.cli.quant_picker import QuantPicker, available_memory
 
-    if raw == "a":
-        return None
-    return tags[int(raw) - 1]
-
-
-def _apply_quant_selection(
-    plan: DownloadPlan, chosen: str, filtered: dict[str, int], name_override: str | None
-) -> str | None:
-    """Narrow *plan* to the files of the chosen quant variant, in place.
-
-    Returns *chosen* on success, or None when no files matched (the plan is
-    left untouched).
-    """
-    from drove.downloader import infer_local_name, is_sharded
-
-    if not filtered:
-        return None
-    plan.files = filtered
-    plan.sharded = is_sharded(list(filtered.keys()))
-    if name_override is None:
-        plan.local_name = infer_local_name(plan.repo_id, list(filtered.keys()), chosen)
-    return chosen
-
-
-def _select_quant_variant(plan: DownloadPlan, name_override: str | None) -> str | None:
-    """Offer the quant-variant menu for *plan* and apply the choice in place.
-
-    ONNX (ASR) repos carry variants as filename infixes (model.int8.onnx) and
-    resolve to the default variant, so choices come from the full pre-filter
-    set kept on ``plan.onnx_files``; GGUF repos carry tags in filenames and
-    resolve unfiltered. Returns the chosen quant tag, or None when the user
-    keeps the default / all files (or only one variant exists).
-    """
-    from drove.downloader import (
-        available_onnx_quants,
-        available_quants,
-        filter_by_quant,
-        filter_onnx_quant,
-    )
-
-    if plan.is_tts:
-        return None
-    if plan.is_asr:
-        variants = available_onnx_quants(plan.onnx_files)
-        if len(variants) < 2:
-            return None
-        chosen = _prompt_quant_choice(variants)
-        typer.echo(f"Selected: {chosen or 'all variants'}")
-        if chosen is None:
-            plan.files = dict(plan.onnx_files)
-            return None
-        if chosen == "default":
-            return None
-        return _apply_quant_selection(
-            plan, chosen, filter_onnx_quant(plan.onnx_files, chosen), name_override
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        typer.echo(
+            "Choose a quantization with :QUANT, or pass --yes when not using a terminal.",
+            err=True,
         )
+        raise typer.Exit(1)
+    try:
+        return QuantPicker(candidates, available_memory(), theme).run()
+    except KeyboardInterrupt, EOFError:
+        return None
 
-    quants = available_quants(plan.files)
-    if len(quants) < 2:
+
+def _select_quant_variant(
+    plan: DownloadPlan,
+    name_override: str | None,
+    models_dir: Path,
+    theme: str = "textual-dark",
+) -> str | None:
+    """Apply a selected preview only after confirmation; preserve scripted defaults."""
+    from drove.cli.quant_picker import ALL_VARIANTS, build_candidates
+
+    candidates = build_candidates(plan, name_override, models_dir)
+    if not candidates:
         return None
-    chosen = _prompt_quant_choice(quants)
-    typer.echo(f"Selected: {chosen or 'all quantizations'}")
+    chosen = _prompt_quant_choice(candidates, theme)
     if chosen is None:
-        return None
-    return _apply_quant_selection(plan, chosen, filter_by_quant(plan.files, chosen), name_override)
+        typer.echo("Download cancelled. No files were downloaded.")
+        raise typer.Exit(0)
+    selected = next(candidate for candidate in candidates if candidate.tag == chosen)
+    plan.files = selected.plan.files
+    plan.local_name = selected.plan.local_name
+    plan.sharded = selected.plan.sharded
+    typer.echo(f"Selected: {'all variants' if chosen == ALL_VARIANTS else chosen}")
+    return selected.quant
 
 
 def _print_download_plan(
@@ -531,7 +488,7 @@ def download_model(
 
     _, quant = parse_model_ref(model_ref)
     if quant is None and not yes:
-        quant = _select_quant_variant(plan, name)
+        quant = _select_quant_variant(plan, name, models_dir, ctx.obj["config"].tui_theme)
 
     statuses = plan.check_local_files(models_dir)
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())

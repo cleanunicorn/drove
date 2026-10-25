@@ -53,7 +53,9 @@ def hub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         ("fishaudio/s1-mini", "fish"),
     ],
 )
-def test_supported_repositories_detect_tts(repo: str, engine: str, hub: list[str]) -> None:
+def test_supported_repositories_detect_tts(
+    repo: str, engine: str, hub: list[str], tmp_path: Path
+) -> None:
     plan = resolve_download(repo)
     assert plan.tts_engine == engine
     assert infer_tts_engine(repo.upper()) == engine
@@ -61,7 +63,7 @@ def test_supported_repositories_detect_tts(repo: str, engine: str, hub: list[str
     assert plan.total_bytes == sum(map(len, FILES.values()))
     assert "README.md" not in plan._all_remote_files()
     assert not hub
-    assert _select_quant_variant(plan, None) is None
+    assert _select_quant_variant(plan, None, tmp_path) is None
 
 
 def test_explicit_engine_supports_compatible_repos(hub: list[str]) -> None:

@@ -73,8 +73,8 @@ For installation alternatives, SDK setup, and checks at each step, follow
 
 - **Manage resources:** load models on demand, evict least-recently-used models,
   and persist llama.cpp prompt caches across idle shutdowns.
-- **Bring your own models:** download from Hugging Face, pick quantizations,
-  resume downloads, and set llama-server arguments per model.
+- **Bring your own models:** download from Hugging Face, choose quantizations with
+  keyboard controls and memory guidance, resume downloads, and set llama-server arguments per model.
 - **Use familiar clients:** connect an OpenAI SDK, the built-in chat TUI, or
   pi, opencode, and Kilo Code via `drove integrate`.
 - **Inspect requests:** watch server status, browse optional request logs in

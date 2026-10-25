@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from drove.cli.models import _detect_capabilities, _select_quant_variant
+from drove.cli.quant_picker import ALL_VARIANTS
 from drove.downloader import DownloadPlan
 
 
@@ -74,22 +75,27 @@ def _onnx_plan() -> DownloadPlan:
 
 
 def _choose(monkeypatch: pytest.MonkeyPatch, answer: str | None) -> None:
-    monkeypatch.setattr("drove.cli.models._prompt_quant_choice", lambda quants: answer)
+    monkeypatch.setattr(
+        "drove.cli.models._prompt_quant_choice",
+        lambda candidates, theme: ALL_VARIANTS if answer is None else answer,
+    )
 
 
-def test_select_quant_variant_onnx_int8(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_select_quant_variant_onnx_int8(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _choose(monkeypatch, "int8")
     plan = _onnx_plan()
-    quant = _select_quant_variant(plan, None)
+    quant = _select_quant_variant(plan, None, tmp_path)
     assert quant == "int8"
     assert plan.files == _ONNX_INT8
     assert plan.local_name == "istupakov/parakeet-tdt-0.6b-v3-onnx:int8"
 
 
-def test_select_quant_variant_onnx_default_keeps_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_select_quant_variant_onnx_default_keeps_plan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     _choose(monkeypatch, "default")
     plan = _onnx_plan()
-    quant = _select_quant_variant(plan, None)
+    quant = _select_quant_variant(plan, None, tmp_path)
     assert quant is None
     assert plan.files == _ONNX_DEFAULT
     assert plan.local_name == "istupakov/parakeet-tdt-0.6b-v3-onnx"
@@ -97,25 +103,29 @@ def test_select_quant_variant_onnx_default_keeps_plan(monkeypatch: pytest.Monkey
 
 def test_select_quant_variant_onnx_all_takes_every_variant(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     _choose(monkeypatch, None)
     plan = _onnx_plan()
-    quant = _select_quant_variant(plan, None)
+    quant = _select_quant_variant(plan, None, tmp_path)
     assert quant is None
     assert plan.files == _ONNX_ALL
 
 
-def test_select_quant_variant_onnx_keeps_name_override(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_select_quant_variant_onnx_keeps_name_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     _choose(monkeypatch, "int8")
     plan = _onnx_plan()
     plan.local_name = "my-parakeet"
-    quant = _select_quant_variant(plan, "my-parakeet")
+    quant = _select_quant_variant(plan, "my-parakeet", tmp_path)
     assert quant == "int8"
     assert plan.local_name == "my-parakeet"
 
 
 def test_select_quant_variant_onnx_single_variant_skips_prompt(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     def boom(quants: dict[str, int]) -> str | None:
         raise AssertionError("prompt should not be shown")
@@ -128,12 +138,13 @@ def test_select_quant_variant_onnx_single_variant_skips_prompt(
         sharded=False,
         onnx_files=dict(_ONNX_DEFAULT),
     )
-    assert _select_quant_variant(plan, None) is None
+    assert _select_quant_variant(plan, None, tmp_path) is None
     assert plan.files == _ONNX_DEFAULT
 
 
 def test_select_quant_variant_gguf_choice_filters_and_renames(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     _choose(monkeypatch, "Q4_K_M")
     plan = DownloadPlan(
@@ -142,13 +153,15 @@ def test_select_quant_variant_gguf_choice_filters_and_renames(
         local_name="unsloth/Qwen3-8B-GGUF",
         sharded=False,
     )
-    quant = _select_quant_variant(plan, None)
+    quant = _select_quant_variant(plan, None, tmp_path)
     assert quant == "Q4_K_M"
     assert plan.files == {"Qwen3-8B-Q4_K_M.gguf": 100}
     assert plan.local_name == "unsloth/Qwen3-8B-GGUF:Q4_K_M"
 
 
-def test_select_quant_variant_gguf_all_keeps_files(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_select_quant_variant_gguf_all_keeps_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     _choose(monkeypatch, None)
     files = {"Qwen3-8B-Q4_K_M.gguf": 100, "Qwen3-8B-Q8_0.gguf": 200}
     plan = DownloadPlan(
@@ -157,5 +170,5 @@ def test_select_quant_variant_gguf_all_keeps_files(monkeypatch: pytest.MonkeyPat
         local_name="unsloth/Qwen3-8B-GGUF",
         sharded=False,
     )
-    assert _select_quant_variant(plan, None) is None
+    assert _select_quant_variant(plan, None, tmp_path) is None
     assert plan.files == files

@@ -62,6 +62,12 @@ drove models config <name>
 The `CAPABILITY` column in `drove models list` shows model capabilities:
 `vision` (multimodal projection), `stt` (speech-to-text), and `tts` (text-to-speech).
 
+For multi-variant downloads, use ↑/↓ and Enter to select a quantization, or
+Esc/Ctrl+C to cancel. The picker shows sizes, local status and advisory RAM
+estimates. `:QUANT` and `--yes` bypass it for scripts. See
+[Choosing a download variant](./models.md#choosing-a-download-variant) for the
+memory estimate and download-all behavior.
+
 ### Text-to-speech models
 
 ```bash

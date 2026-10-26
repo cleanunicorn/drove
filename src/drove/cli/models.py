@@ -47,7 +47,7 @@ from drove.model_config import (
     set_global_model_config_key,
     set_model_config_key,
 )
-from drove.model_store import ModelStore
+from drove.model_store import ModelStore, validate_model_name
 
 models_app = typer.Typer(help="Manage models.", no_args_is_help=True)
 
@@ -77,15 +77,24 @@ def _complete_model_config_key(ctx: typer.Context, incomplete: str) -> list[str]
     return [k for k in keys if k.startswith(incomplete)]
 
 
+def _valid_name(name: str) -> str:
+    """Return *name* if it is a safe model name, else print the rule and exit 1."""
+    try:
+        return validate_model_name(name)
+    except ValueError as exc:
+        error(str(exc), next_step="List models: drove models list")
+        raise typer.Exit(1) from None
+
+
 def _model_root(models_dir: Path, name: str) -> Path | None:
     """Return the model directory (or legacy flat file), or None if absent."""
-    return ModelStore(models_dir).find_root(name)
+    return ModelStore(models_dir).find_root(_valid_name(name))
 
 
 def _find_model(models_dir: Path, name: str) -> Path:
     """Locate the primary model file by name or HuggingFace reference."""
     try:
-        return ModelStore(models_dir).resolve(name)
+        return ModelStore(models_dir).resolve(_valid_name(name))
     except FileNotFoundError:
         error(
             unknown("model", name, (entry.name for entry in ModelStore(models_dir).list())),
@@ -160,9 +169,11 @@ def add_tts_model(
     ] = None,
 ) -> None:
     """Register a Cathy text-to-speech engine (weights are cached on first use)."""
-    import re
-
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or name in {".", ".."}:
+    try:
+        validate_model_name(name)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    if "/" in name or ":" in name:
         raise typer.BadParameter(
             "Use a simple local name containing letters, digits, dots or dashes."
         )
@@ -637,6 +648,8 @@ def download_model(
         resolve_download,
     )
 
+    if name is not None:
+        _valid_name(name)
     models_dir = _models_dir(ctx)
     models_dir.mkdir(parents=True, exist_ok=True)
 

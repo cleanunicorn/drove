@@ -227,13 +227,13 @@ def test_download_summary_and_existing_path_preserve_config(tmp_path, download_c
     from drove.model_config import load_model_config, set_model_config_key
 
     plan = DownloadPlan(
-        "org/repo", {"m.gguf": 10}, "my model", False, mmproj_files={"mmproj.gguf": 4}
+        "org/repo", {"m.gguf": 10}, "my-model", False, mmproj_files={"mmproj.gguf": 4}
     )
     result = download_cli(plan)
     assert result.exit_code == 0, result.output
     assert "Download complete" in result.output
     assert "Size on disk" in result.output and "mmproj.gguf" in result.output
-    assert "Next: drove chat 'my model'" in result.output
+    assert "Next: drove chat my-model" in result.output
     primary = plan.destination(tmp_path) / "m.gguf"
     assert load_model_config(primary).mmproj == "mmproj.gguf"
     size = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file())
@@ -253,8 +253,8 @@ def test_download_failures_keep_data_and_print_exact_retry(
 ):
     import shlex
 
-    plan = DownloadPlan("org/repo", {"a.gguf": 10, "z.gguf": 10}, "my model", False)
-    result = download_cli(plan, failure=failure, extra_args=("--name", "my model"))
+    plan = DownloadPlan("org/repo", {"a.gguf": 10, "z.gguf": 10}, "my-model", False)
+    result = download_cli(plan, failure=failure, extra_args=("--name", "my-model"))
     assert result.exit_code == exit_code, result.output
     assert "Download complete" not in result.output
     assert "Traceback" not in result.output
@@ -270,7 +270,7 @@ def test_download_failures_keep_data_and_print_exact_retry(
         "download",
         "org/repo",
         "--name",
-        "my model",
+        "my-model",
         "--yes",
     ]
     if exit_code == 1:
@@ -857,3 +857,87 @@ def test_recovery_commands_preserve_custom_config(tmp_path, monkeypatch, stage, 
     assert retried.exit_code == 0, retried.output
     assert destinations == [models_dir, models_dir]
     assert (plan.destination(models_dir) / "model.gguf").is_file()
+
+
+# ── model name validation (#110) ─────────────────────────────────────────────
+
+_UNSAFE_CLI_NAMES = ["", ".", "..", "/", "/tmp/x", "../x", "sub/..", "./m", "m/", "a//b", "a\\b"]
+
+
+def _sentinel_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    models = tmp_path / "models"
+    primary = _make_model(models, "keep")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep")
+    sibling = tmp_path / "sessions" / "s.json"
+    sibling.parent.mkdir()
+    sibling.write_text("{}")
+    return models, primary, outside
+
+
+@pytest.mark.parametrize("name", _UNSAFE_CLI_NAMES)
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["models", "delete", "{name}", "--yes"],
+        ["models", "info", "{name}"],
+        ["models", "config", "{name}"],
+        ["models", "config", "{name}", "ctx_size", "1024"],
+        ["models", "config", "{name}", "--unset", "ctx_size"],
+    ],
+)
+def test_model_commands_reject_unsafe_names(tmp_path, monkeypatch, name, command):
+    models, primary, outside = _sentinel_tree(tmp_path)
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(models))
+    args = [part.replace("{name}", name) for part in command]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output
+    assert "model name" in result.output.lower()
+    assert primary.exists() and outside.read_text() == "keep"
+    assert (tmp_path / "sessions" / "s.json").exists()
+    assert not primary.with_suffix(".toml").exists()
+
+
+@pytest.mark.parametrize("name", [*_UNSAFE_CLI_NAMES, "my model"])
+def test_download_rejects_unsafe_name_before_any_work(tmp_path, monkeypatch, name):
+    from drove.cli.models import models_app
+
+    models = tmp_path / "models"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("download work started for an invalid --name")
+
+    monkeypatch.setattr("drove.downloader.resolve_download", forbidden)
+    monkeypatch.setattr("drove.downloader.hf_hub_download", forbidden)
+    result = CliRunner().invoke(
+        models_app,
+        ["download", "org/repo", "--name", name, "--yes"],
+        obj={"config": Config(models_dir=models)},
+    )
+    assert result.exit_code == 1, result.output
+    assert "model name" in result.output.lower()
+    assert not models.exists()
+    assert not (tmp_path / "x").exists()
+
+
+def test_download_plan_destination_rejects_mutated_or_escaping_name(tmp_path):
+    plan = DownloadPlan("org/repo", {"m.gguf": 10}, "ok", False)
+    assert plan.destination(tmp_path) == tmp_path / "ok"
+    plan.local_name = "../x"
+    with pytest.raises(ValueError, match="relative"):
+        plan.destination(tmp_path)
+    outside = tmp_path.parent / (tmp_path.name + "-dest")
+    outside.mkdir()
+    (tmp_path / "org").symlink_to(outside, target_is_directory=True)
+    plan.local_name = "org/repo"
+    with pytest.raises(ValueError, match="outside"):
+        plan.destination(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["org/kokoro", "kokoro:v1", "../x", ""])
+def test_add_tts_rejects_names_outside_the_flat_rule(tmp_path, monkeypatch, name):
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
+    result = CliRunner().invoke(app, ["models", "add-tts", name])
+    assert result.exit_code != 0
+    assert list(tmp_path.iterdir()) == []

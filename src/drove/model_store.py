@@ -35,7 +35,7 @@ def validate_model_name(name: object) -> str:
     return name
 
 
-def _is_within(base: Path, candidate: Path) -> bool:
+def is_within(base: Path, candidate: Path) -> bool:
     """True when *candidate* resolves (following symlinks) strictly inside *base*."""
     try:
         root = base.resolve()
@@ -141,7 +141,7 @@ class ModelStore:
     # ── private helpers ──────────────────────────────────────────────────────
 
     def _contains(self, path: Path) -> bool:
-        return _is_within(self._dir, path)
+        return is_within(self._dir, path)
 
     def _alias(self, ref: str) -> str | None:
         """Resolve a HuggingFace alias, dropping any result that is not a safe name."""

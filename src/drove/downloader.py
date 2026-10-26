@@ -13,6 +13,7 @@ from typing import Literal
 from huggingface_hub import HfApi, hf_hub_download
 
 from drove.backend import infer_tts_engine
+from drove.model_store import is_within, validate_model_name
 
 type ProgressCallback = Callable[[int, int, str], None]
 
@@ -316,10 +317,19 @@ class DownloadPlan:
         )
 
     def destination(self, models_dir: Path) -> Path:
-        """Return the model directory (always a directory)."""
-        if self.is_tts:
-            _validate_relative_path(self.local_name)
-        return models_dir / self.local_name
+        """Return the model directory (always a directory).
+
+        Validated on every call, not once at construction: ``local_name`` is
+        mutable (the quant picker rewrites it), and the directory must stay
+        inside *models_dir* even through an existing namespace symlink.
+        """
+        destination = models_dir / validate_model_name(self.local_name)
+        if not is_within(models_dir, destination):
+            raise ValueError(
+                f"Model '{self.local_name}' would be written outside {models_dir}; "
+                "remove the symlink or choose another --name."
+            )
+        return destination
 
     def _local_path(self, repo_file: str, models_dir: Path) -> Path:
         """Return the local path, preserving TTS repository directories."""
@@ -517,7 +527,11 @@ def resolve_download(
 
     mmproj_files = pick_mmproj(mmproj_files)
     sharded = is_sharded(list(files.keys()))
-    local_name = name_override or infer_local_name(repo_id, list(files.keys()), quant)
+    if name_override is not None:
+        local_name = name_override
+    else:
+        local_name = infer_local_name(repo_id, list(files.keys()), quant)
+    validate_model_name(local_name)
 
     return DownloadPlan(
         repo_id=repo_id,
@@ -557,8 +571,7 @@ def _validate_relative_path(value: str) -> None:
 def _resolve_tts_download(repo_id: str, engine: str, name: str | None) -> DownloadPlan:
     if engine not in {"kokoro", "qwen", "chatterbox", "fish", "kitten"}:
         raise ValueError("Unknown TTS engine. Use kokoro, qwen, chatterbox, fish, or kitten.")
-    local_name = name or repo_id
-    _validate_relative_path(local_name)
+    local_name = validate_model_name(name if name is not None else repo_id)
     info = HfApi().model_info(repo_id, files_metadata=True)
     weights: dict[str, int] = {}
     support: dict[str, int] = {}

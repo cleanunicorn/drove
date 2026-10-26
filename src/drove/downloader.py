@@ -335,27 +335,22 @@ class DownloadPlan:
         """Refuse to start if any path the download touches resolves outside *models_dir*.
 
         Covers every local file, the Hub's raw target for nested repository
-        files, the Hub's ``.cache`` folder and everything already inside it
-        (metadata, locks and partial files live there), and the sidecar config
-        (and TTS marker) written afterwards, so a pre-existing symlink can't
-        redirect a read or write.
+        files, the Hub's ``.cache`` folder (metadata, locks and partial files
+        live there), and the sidecar config (and TTS marker) written
+        afterwards. Each target is checked with everything already beneath
+        it, following links, so a pre-existing symlink can't redirect a read
+        or write, not even from behind a link that itself stays inside.
         """
         dest = self.destination(models_dir)
-        cache = dest / ".cache"
-        targets = [cache]
-        if cache.is_dir() and not cache.is_symlink():
-            for root, dirs, files in cache.walk():
-                targets += [root / name for name in (*dirs, *files)]
+        targets = [dest / ".cache"]
         for repo_file in self._all_remote_files():
             targets += [self._local_path(repo_file, models_dir), dest / repo_file]
         if self.is_tts or self.file_names:
             entry = "model.tts" if self.is_tts else Path(first_shard(self.file_names)).name
             targets += [dest / entry, (dest / entry).with_suffix(".toml")]
+        seen: set[Path] = set()
         for target in targets:
-            if not is_within(models_dir, target):
-                raise ValueError(
-                    f"'{target}' resolves outside {models_dir}; remove the symlink and retry."
-                )
+            _check_tree(models_dir, target, seen)
 
     def _local_path(self, repo_file: str, models_dir: Path) -> Path:
         """Return the local path, preserving TTS repository directories."""
@@ -594,6 +589,29 @@ def _validate_relative_path(value: str) -> None:
     path = PurePosixPath(value)
     if not value or not path.parts or path.is_absolute() or ".." in path.parts or "\\" in value:
         raise ValueError(f"Expected a relative model path, got '{value}'.")
+
+
+def _check_tree(models_dir: Path, root: Path, seen: set[Path]) -> None:
+    """Raise ValueError unless *root* and everything under it resolve inside *models_dir*.
+
+    Directory links are followed and their real targets scanned as well;
+    *seen* holds the real directories already scanned, which also ends loops.
+    """
+    stack = [root]
+    while stack:
+        path = stack.pop()
+        if not is_within(models_dir, path):
+            raise ValueError(
+                f"'{path}' resolves outside {models_dir}; remove the symlink and retry."
+            )
+        real = path.resolve()
+        if real in seen or not real.is_dir():
+            continue
+        seen.add(real)
+        try:
+            stack += real.iterdir()
+        except OSError as exc:
+            raise ValueError(f"Cannot check '{path}' before downloading: {exc}") from exc
 
 
 def _resolve_tts_download(repo_id: str, engine: str, name: str | None) -> DownloadPlan:

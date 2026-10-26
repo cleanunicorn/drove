@@ -975,6 +975,9 @@ def _outward(tmp_path: Path, label: str) -> Path:
         "hub-cache",
         "hub-cache-child",
         "hub-cache-file",
+        "cache-inward-root",
+        "cache-inward-child",
+        "cache-loop",
     ],
 )
 def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeypatch, layout):
@@ -1001,10 +1004,30 @@ def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeyp
     elif layout == "hub-cache-child":
         (dest / ".cache").mkdir()
         (dest / ".cache" / "huggingface").symlink_to(outside, target_is_directory=True)
-    else:
+    elif layout == "hub-cache-file":
         download = dest / ".cache" / "huggingface" / "download"
         download.mkdir(parents=True)
         (download / "m.gguf.metadata").symlink_to(outside / "metadata")
+    elif layout == "cache-inward-root":
+        # Reviewer A/B layout 1: an inward link hides an outward one below it.
+        (models / "shared-cache").mkdir()
+        (models / "shared-cache" / "huggingface").symlink_to(outside, target_is_directory=True)
+        (dest / ".cache").symlink_to(models / "shared-cache", target_is_directory=True)
+    elif layout == "cache-inward-child":
+        # Reviewer A/B layout 2: the inward link sits at .cache/huggingface.
+        (dest / ".cache").mkdir()
+        (models / "shared-cache").mkdir()
+        (models / "shared-cache" / "download").symlink_to(outside, target_is_directory=True)
+        (dest / ".cache" / "huggingface").symlink_to(
+            models / "shared-cache", target_is_directory=True
+        )
+    else:
+        # A link loop must neither hang the check nor hide the outward link.
+        hf = dest / ".cache" / "huggingface"
+        hf.mkdir(parents=True)
+        (hf / "loop").symlink_to(dest / ".cache", target_is_directory=True)
+        (hf / "z").mkdir()
+        (hf / "z" / "download").symlink_to(outside, target_is_directory=True)
 
     def fetch(**kwargs):
         raise AssertionError("download started despite an escaping target")
@@ -1016,6 +1039,20 @@ def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeyp
         plan.execute(models)
     assert sorted(p.name for p in outside.iterdir()) == ["keep"]
     assert sentinel.read_text() == "keep"
+
+
+def test_download_accepts_inward_cache_links_and_loops(tmp_path):
+    """Contained links, loops included, are followed and accepted."""
+    models = tmp_path / "models"
+    dest = models / "real"
+    (models / "shared-cache" / "huggingface" / "download").mkdir(parents=True)
+    dest.mkdir()
+    (dest / ".cache").symlink_to(models / "shared-cache", target_is_directory=True)
+    hf = models / "shared-cache" / "huggingface"
+    (hf / "loop").symlink_to(models / "shared-cache", target_is_directory=True)
+    (hf / "download" / "up").symlink_to(hf, target_is_directory=True)
+    plan = DownloadPlan("org/repo", {"m.gguf": 4}, "real", False)
+    assert plan.check_local_files(models) == {"m.gguf": (FileStatus.MISSING, 0)}
 
 
 def test_download_cli_reports_escaping_target_without_traceback(tmp_path, download_cli):

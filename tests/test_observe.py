@@ -405,3 +405,32 @@ def test_filtered_reads_never_leave_observe_dir(tmp_path: Path, model: str) -> N
     (observe_dir / "org").symlink_to(outside / "victim", target_is_directory=True)
     assert list_records(observe_dir, model=model) == []
     assert find_record_path(observe_dir, "20260408-120000-abcd1234", model=model) is None
+
+
+def test_save_record_refuses_outward_symlink_at_record_file(tmp_path: Path) -> None:
+    observe_dir = tmp_path / "observe"
+    record = _make_record(model="real")
+    (observe_dir / "real").mkdir(parents=True)
+    sentinel = tmp_path / "sentinel.json"
+    sentinel.write_text("keep")
+    (observe_dir / "real" / f"{record.id}.json").symlink_to(sentinel)
+    with pytest.raises(ValueError, match="outside"):
+        save_record(observe_dir, record)
+    assert sentinel.read_text() == "keep"
+
+
+def test_unfiltered_scans_skip_outward_directories_and_files(tmp_path: Path) -> None:
+    observe_dir = tmp_path / "observe"
+    observe_dir.mkdir()
+    outside = tmp_path / "outside"
+    save_record(outside, _make_record(model="victim", record_id="20260408-120000-out00001"))
+    (observe_dir / "linked").symlink_to(outside / "victim", target_is_directory=True)
+    (observe_dir / "org").mkdir()
+    (observe_dir / "org" / "ns").symlink_to(outside / "victim", target_is_directory=True)
+    kept = save_record(observe_dir, _make_record(model="local"))
+    (kept.parent / "20260408-120000-out00002.json").symlink_to(
+        outside / "victim" / "20260408-120000-out00001.json"
+    )
+    assert [p for p, _ in list_records(observe_dir)] == [kept]
+    assert find_record_path(observe_dir, "20260408-120000-out00001") is None
+    assert find_record_path(observe_dir, "20260408-120000-out00002") is None

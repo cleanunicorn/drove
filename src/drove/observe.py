@@ -280,8 +280,10 @@ def save_record(observe_dir: Path, record: ObserveRecord) -> Path:
         model_dir = observe_dir / validate_model_name(record.model)
     if not is_within(observe_dir, model_dir):
         raise ValueError(f"Observe directory for '{record.model}' is outside {observe_dir}.")
-    model_dir.mkdir(parents=True, exist_ok=True)
     path = model_dir / f"{record.id}.json"
+    if not is_within(observe_dir, path):
+        raise ValueError(f"Observe record {record.id} would be written outside {observe_dir}.")
+    model_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_record_to_dict(record), indent=2, ensure_ascii=False))
     return path
 
@@ -316,7 +318,7 @@ def _record_dirs(observe_dir: Path, model: str | None, stop: Event | None = None
     dirs: list[Path] = []
     for d in observe_dir.iterdir():
         _check_cancelled(stop)
-        if not d.is_dir():
+        if not d.is_dir() or not is_within(observe_dir, d):
             continue
         has_records = False
         for entry in d.iterdir():
@@ -330,7 +332,7 @@ def _record_dirs(observe_dir: Path, model: str | None, stop: Event | None = None
             # Treat as namespace — scan one level deeper
             for sub in d.iterdir():
                 _check_cancelled(stop)
-                if sub.is_dir():
+                if sub.is_dir() and is_within(observe_dir, sub):
                     dirs.append(sub)
     return dirs
 
@@ -353,7 +355,10 @@ def _record_paths(observe_dir: Path, model: str | None, stop: Event | None = Non
             continue
         for entry in d.iterdir():
             _check_cancelled(stop)
-            if entry.match("*.json"):
+            # The directory is already contained; only a symlinked file can escape.
+            if entry.match("*.json") and not (
+                entry.is_symlink() and not is_within(observe_dir, entry)
+            ):
                 paths.append(entry)
     _check_cancelled(stop)
     paths.sort(key=lambda p: p.name, reverse=True)
@@ -447,6 +452,6 @@ def find_record_path(observe_dir: Path, record_id: str, model: str | None = None
     name = f"{record_id}.json"
     for d in _record_dirs(observe_dir, model):
         candidate = d / name
-        if candidate.is_file():
+        if candidate.is_file() and is_within(observe_dir, candidate):
             return candidate
     return None

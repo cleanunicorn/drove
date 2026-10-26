@@ -395,8 +395,8 @@ async def _extract_model(request: Request) -> object:
 
     Supports JSON bodies (chat/completions) and multipart form bodies
     (OpenAI-style audio endpoints, where 'model' is a form field).  Returns
-    the raw value, unvalidated, or ``_ABSENT`` when there is no such field, it
-    is JSON null, or the body cannot be parsed.
+    the raw value, unvalidated (JSON null included), or ``_ABSENT`` when there
+    is no such field or the body cannot be parsed.
     """
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
@@ -404,9 +404,7 @@ async def _extract_model(request: Request) -> object:
             body = await request.json()
         except Exception:
             return _ABSENT
-        # JSON null means "no model", like an omitted field (default routing).
-        value = body.get("model") if isinstance(body, dict) else None
-        return _ABSENT if value is None else value
+        return body["model"] if isinstance(body, dict) and "model" in body else _ABSENT
     if "multipart/form-data" in content_type:
         try:
             # Cache the raw body first so the multipart parser consumes the

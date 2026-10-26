@@ -611,6 +611,13 @@ async def test_default_speech_reaches_real_worker(tmp_path: Path, selection: str
                 transport=httpx.ASGITransport(app=app), base_url="http://proxy"
             ) as client:
                 response = await client.post("/v1/audio/speech", json=payload)
+            if selection == "null":
+                # An explicit null is a non-string model, not an omitted one (#110).
+                assert response.status_code == 400
+                ensure.assert_not_awaited()
+                assert requests == []
+                assert app.state.stats.active_requests == 0
+                return
             if selection == "unset":
                 assert response.status_code == 400
                 ensure.assert_not_awaited()
@@ -645,7 +652,7 @@ def _forbid_disk_walk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "glob", forbidden)
 
 
-@pytest.mark.parametrize("model", [*_INVALID_JSON_MODELS, 1, 1.5, True, ["m"], {"name": "m"}])
+@pytest.mark.parametrize("model", [*_INVALID_JSON_MODELS, None, 1, 1.5, True, ["m"], {"name": "m"}])
 @pytest.mark.parametrize("default", [None, "preferred"])
 def test_proxy_rejects_invalid_json_model_with_400(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: object, default: str | None

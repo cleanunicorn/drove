@@ -55,7 +55,7 @@ third-party endpoints may omit the `drove` object.
 An explicit `model` takes precedence. It must be a string that follows the
 [model naming rule](./models.md#download-and-name-a-model); any other value,
 including an empty string, is rejected with HTTP 400 before drove looks for the
-model. A JSON `null` counts as absent. When it is absent, drove lazily starts the
+model; that includes JSON `null`. When the field is omitted, drove lazily starts the
 configured `default_model`, if set; a missing configured model returns HTTP 404.
 Without a default, drove falls back to a loaded model, or returns HTTP 400 if
 none is loaded. See [Default model](./configuration.md#default-model), including

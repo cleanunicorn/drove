@@ -504,11 +504,13 @@ def test_deletion_inventory_alias_legacy_and_symlinks(tmp_path, monkeypatch):
     result = CliRunner().invoke(app, ["models", "delete", "legacy", "--yes"])
     assert result.exit_code == 0
     assert not legacy.exists() and not legacy.with_suffix(".toml").exists()
+    # A model root that resolves outside the store is not a model (#110):
+    # deletion refuses it and leaves both the link and its target alone.
     link = tmp_path / "linked"
     link.symlink_to(outside, target_is_directory=True)
     result = CliRunner().invoke(app, ["models", "delete", "linked", "--yes"])
-    assert result.exit_code == 0, result.output
-    assert not link.exists() and protected.exists()
+    assert result.exit_code == 1, result.output
+    assert link.is_symlink() and protected.exists()
 
 
 @pytest.mark.parametrize("name", [".", "sub/..", "../outside"])
@@ -772,24 +774,15 @@ def test_namespace_delete_warns_for_loaded_descendant(tmp_path, monkeypatch, ali
     assert primary.exists()
 
 
-def test_symlink_namespace_preview_does_not_claim_target_contents_removed(tmp_path, monkeypatch):
+def test_symlink_namespace_outside_store_is_not_previewed_or_deleted(tmp_path, monkeypatch):
     monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
     outside = tmp_path.parent / (tmp_path.name + "-contents")
     primary = _make_model(outside, "child")
     (tmp_path / "org").symlink_to(outside, target_is_directory=True)
-
-    def get(url, **kwargs):
-        return httpx.Response(
-            200,
-            json={"models": [{"name": "org/child", "active_requests": 2}]},
-            request=httpx.Request("GET", url),
-        )
-
-    monkeypatch.setattr(httpx, "get", get)
-    result = CliRunner().invoke(app, ["models", "delete", "org"], input="n\n")
+    result = CliRunner().invoke(app, ["models", "delete", "org"], input="y\n")
     assert result.exit_code == 1
-    assert "Not currently loaded" in result.output
-    assert "symlink only" in result.output
+    assert "Delete model" not in result.output
+    assert (tmp_path / "org").is_symlink()
     assert primary.exists()
 
 

@@ -360,7 +360,16 @@ class ServerManager:
             incoming_bytes = _estimate_model_memory(
                 model_path, self._effective_model_config(model_path)
             )
-            await self._evict_if_needed(incoming_bytes)
+            await self._evict_if_needed(incoming_bytes, model_name=model_name)
+            # Eviction may have released the lock to drain a busy model, and a
+            # concurrent request for this model may have started it meanwhile.
+            inst = self._instances.get(model_name)
+            if inst is not None and inst.is_running:
+                if claim:
+                    self._claim_slot(model_name)
+                return
+            if inst is not None:
+                await self._stop_instance(model_name)
             await self._start(model_name)
             if claim:
                 self._claim_slot(model_name)
@@ -372,7 +381,9 @@ class ServerManager:
             inst.active_requests += 1
             inst.last_request_time = time.monotonic()
 
-    async def _evict_if_needed(self, incoming_bytes: int = 0) -> None:
+    async def _evict_if_needed(
+        self, incoming_bytes: int = 0, *, model_name: str | None = None
+    ) -> None:
         """Evict loaded models until count and memory budgets allow one more.
 
         Two independent limits apply: ``max_loaded_models`` caps the number of
@@ -385,6 +396,10 @@ class ServerManager:
         models the least-recently-used is chosen. Only when every loaded model
         is busy do we fall back to draining the least-recently-used one (wait
         for its active requests to finish before stopping it).
+
+        *model_name* is the model about to start: if a concurrent request has
+        started it while the lock was released, return without evicting
+        anything, so the caller can reuse that instance.
 
         Must be called while holding ``self._lock``.
         """
@@ -406,6 +421,8 @@ class ServerManager:
         # or eviction — memory pressure can require evicting more than one model.
         while True:
             running = {n: i for n, i in self._instances.items() if i.is_running}
+            if model_name is not None and model_name in running:
+                return
             over_count = max_models > 0 and len(running) >= max_models
             used_bytes = sum(i.est_memory_bytes for i in running.values())
             over_memory = (
@@ -460,6 +477,13 @@ class ServerManager:
             await self._stop_instance(model_name)
 
     async def _start(self, model_name: str) -> None:
+        """Spawn a backend for a model that has no tracked instance or watcher.
+
+        Must be called while holding ``self._lock``. Refuses rather than
+        overwrite an existing entry, which would leave its process untracked.
+        """
+        if model_name in self._instances or model_name in self._idle_tasks:
+            raise RuntimeError(f"Model {model_name!r} is already registered; not starting it again")
         model_path = self._resolve_model(model_name)
         model_cfg = self._effective_model_config(model_path)
         backend = detect_backend(model_path, model_cfg)

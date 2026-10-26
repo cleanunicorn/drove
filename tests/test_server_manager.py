@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -129,7 +133,7 @@ async def test_ensure_running_restarts_when_idle_and_config_changed(tmp_path: Pa
         manager._instances[model_name] = make_fake_instance(model_name, model_path, new_mtimes)
 
     with (
-        patch.object(manager, "_stop_instance", new_callable=AsyncMock),
+        patch_stop_instance(manager),
         patch.object(manager, "_evict_if_needed", new_callable=AsyncMock),
         patch.object(manager, "_start", new_callable=AsyncMock, side_effect=fake_start),
     ):
@@ -637,3 +641,292 @@ def test_infer_asr_model_type_unknown_raises(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="asr_model"):
         manager._infer_asr_model_type("mystery-model", primary)
+
+
+# ── Concurrent cold starts during an eviction drain (#113) ───────────────────
+
+
+def make_fake_process() -> MagicMock:
+    """A fake backend process that exits when it is sent a signal."""
+    process = MagicMock()
+    process.returncode = None
+    process.pid = 4242
+    process.wait = AsyncMock(return_value=0)
+    process.stderr.read = AsyncMock(return_value=b"")
+
+    def exit_on_signal(_sig: int) -> None:
+        process.returncode = 0
+
+    process.send_signal.side_effect = exit_on_signal
+    return process
+
+
+class ColdStartRace:
+    """Two cold-start requests for model-c that both wait on one drain of model-a.
+
+    max_loaded_models=2 and models a and b are busy, so each request releases
+    the manager lock to drain the LRU model-a. Each drain wait is gated: R1 is
+    released first (with model-a drained) and runs to completion, then R2 is
+    released. Any further drain is unexpected and fails the request. Only the
+    process boundary is faked — ensure_running, eviction, _start and
+    _stop_instance run for real.
+    """
+
+    def __init__(self, tmp_path: Path) -> None:
+        config = Config(
+            models_dir=tmp_path / "models",
+            listen_port=8080,
+            max_loaded_models=2,
+            prompt_cache=False,
+        )
+        config.models_dir.mkdir()
+        self.manager = ServerManager(config)
+        now = time.monotonic()
+        mtimes = (0.0, 0.0)
+        self.inst_a = make_fake_instance(
+            "model-a", make_model(config, "model-a"), mtimes, active_requests=1
+        )
+        self.inst_b = make_fake_instance(
+            "model-b", make_model(config, "model-b"), mtimes, active_requests=1
+        )
+        self.inst_a.last_request_time = now - 20  # LRU: the drain victim
+        self.inst_b.last_request_time = now - 10
+        self.manager._instances["model-a"] = self.inst_a
+        self.manager._instances["model-b"] = self.inst_b
+        make_model(config, "model-c")
+        self.spawned: list[MagicMock] = []
+        self.requests: list[asyncio.Task[None]] = []
+        self.draining = [asyncio.Event(), asyncio.Event()]
+        self.drain_gates = [asyncio.Event(), asyncio.Event()]
+        self.drain_calls = 0
+
+    async def _spawn(self, *_args: Any, **_kwargs: Any) -> MagicMock:
+        process = make_fake_process()
+        self.spawned.append(process)
+        return process
+
+    async def _sleep(self, _seconds: float) -> None:
+        if asyncio.current_task() not in self.requests:
+            await asyncio.Event().wait()  # the idle watcher: park until cancelled
+        call = self.drain_calls
+        self.drain_calls += 1
+        if call >= len(self.drain_gates):
+            busy = {n: i.active_requests for n, i in self.manager._instances.items()}
+            raise AssertionError(f"unexpected drain #{call + 1} with loaded models {busy}")
+        self.draining[call].set()
+        await self.drain_gates[call].wait()
+
+    @contextlib.contextmanager
+    def patched(self) -> Iterator[None]:
+        with (
+            patch("drove.server_manager.asyncio.sleep", new=self._sleep),
+            patch("drove.server_manager.asyncio.create_subprocess_exec", new=self._spawn),
+            patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+            patch.object(self.manager, "_wait_for_health", new=AsyncMock()),
+        ):
+            yield
+
+    async def run(self, *, r2_claim: bool = True, before_r2: Any = None) -> None:
+        """Drive the interleaving from #113: R1 and R2 for model-c both drain model-a."""
+        manager = self.manager
+        self.requests.append(asyncio.create_task(manager.ensure_running("model-c", claim=True)))
+        await asyncio.wait_for(self.draining[0].wait(), 5)
+        self.requests.append(asyncio.create_task(manager.ensure_running("model-c", claim=r2_claim)))
+        await asyncio.wait_for(self.draining[1].wait(), 5)
+
+        self.inst_a.active_requests = 0  # model-a's request finishes
+        self.drain_gates[0].set()
+        await asyncio.wait_for(self.requests[0], 5)  # R1 evicts A, starts and claims C
+        if before_r2 is not None:
+            before_r2()
+        self.drain_gates[1].set()
+        await asyncio.wait_for(self.requests[1], 5)
+
+    def assert_no_orphans(self) -> None:
+        tracked = {id(i.process) for i in self.manager._instances.values()}
+        for process in self.spawned:
+            assert id(process) in tracked or process.returncode is not None
+
+    async def close(self) -> None:
+        for task in self.requests:
+            task.cancel()
+        watchers = list(self.manager._idle_tasks.values())
+        await self.manager.stop()
+        await asyncio.gather(*self.requests, *watchers, return_exceptions=True)
+
+
+async def test_concurrent_cold_start_reuses_peer_after_drain(tmp_path: Path) -> None:
+    """A request whose model a peer started during the drain reuses that instance.
+
+    Regression for #113: R2 must neither start a second model-c (orphaning
+    R1's process) nor evict the busy model-b to make room for it.
+    """
+    race = ColdStartRace(tmp_path)
+    manager = race.manager
+    with race.patched():
+        try:
+            await race.run()
+
+            assert len(race.spawned) == 1
+            inst_c = manager._instances["model-c"]
+            assert inst_c.process is race.spawned[0]
+            assert inst_c.active_requests == 2  # both requests claimed the same C
+            assert "model-a" not in manager._instances
+            race.inst_a.process.send_signal.assert_called_once()
+            assert manager._instances["model-b"] is race.inst_b
+            race.inst_b.process.send_signal.assert_not_called()
+            race.assert_no_orphans()
+
+            manager.request_finished("model-c")
+            assert inst_c.active_requests == 1
+            manager.request_finished("model-c")
+            assert inst_c.active_requests == 0
+            assert manager._instances["model-c"] is inst_c
+            assert race.inst_b.active_requests == 1
+        finally:
+            await race.close()
+
+    # Shutdown reaches the one model-c process: nothing is left untracked.
+    race.spawned[0].send_signal.assert_called_once()
+
+
+async def test_concurrent_cold_start_spares_busy_lru_peer(tmp_path: Path) -> None:
+    """R2 does not drain R1's model-c even when it is the LRU busy model."""
+    race = ColdStartRace(tmp_path)
+    manager = race.manager
+
+    def age_model_c() -> None:
+        # model-c becomes older than model-b, so it is the LRU of the busy set.
+        manager._instances["model-c"].last_request_time = race.inst_b.last_request_time - 5
+
+    with race.patched():
+        try:
+            await race.run(before_r2=age_model_c)
+
+            assert len(race.spawned) == 1
+            inst_c = manager._instances["model-c"]
+            assert inst_c.process is race.spawned[0]
+            inst_c.process.send_signal.assert_not_called()
+            assert inst_c.active_requests == 2
+            assert manager._instances["model-b"] is race.inst_b
+            race.assert_no_orphans()
+
+            manager.request_finished("model-c")
+            manager.request_finished("model-c")
+            assert manager._instances["model-c"] is inst_c
+            assert inst_c.active_requests == 0
+            assert race.inst_b.active_requests == 1
+        finally:
+            await race.close()
+
+
+async def test_concurrent_cold_start_reuse_without_claim(tmp_path: Path) -> None:
+    """A peer-reusing request with claim=False leaves the request count alone."""
+    race = ColdStartRace(tmp_path)
+    with race.patched():
+        try:
+            await race.run(r2_claim=False)
+
+            assert len(race.spawned) == 1
+            assert race.manager._instances["model-c"].active_requests == 1
+        finally:
+            await race.close()
+
+
+async def test_concurrent_cold_start_replaces_peer_that_died(tmp_path: Path) -> None:
+    """If the peer's model-c exited during the drain, it is cleaned up and restarted."""
+    race = ColdStartRace(tmp_path)
+    manager = race.manager
+
+    def crash_model_c() -> None:
+        manager._instances["model-c"].process.returncode = 1
+
+    with race.patched():
+        try:
+            await race.run(before_r2=crash_model_c)
+
+            assert len(race.spawned) == 2
+            inst_c = manager._instances["model-c"]
+            assert inst_c.process is race.spawned[1]
+            assert inst_c.active_requests == 1  # only R2's claim is on the new process
+            assert manager._instances["model-b"] is race.inst_b
+            race.assert_no_orphans()
+        finally:
+            await race.close()
+
+
+@pytest.mark.parametrize("state", ["live", "dead", "watcher"])
+async def test_start_refuses_already_registered_model(tmp_path: Path, state: str) -> None:
+    """_start never overwrites a tracked instance or idle watcher, live or not."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    inst = make_fake_instance("model-c", make_model(config, "model-c"), (0.0, 0.0))
+    watcher: asyncio.Task[Any] | None = None
+    if state == "watcher":
+        watcher = asyncio.create_task(asyncio.Event().wait())
+        manager._idle_tasks["model-c"] = watcher
+    else:
+        if state == "dead":
+            inst.process.returncode = 1
+        manager._instances["model-c"] = inst
+    spawn = AsyncMock(return_value=make_fake_process())
+
+    try:
+        with (
+            patch("drove.server_manager.asyncio.create_subprocess_exec", spawn),
+            patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+            patch.object(manager, "_wait_for_health", new=AsyncMock()),
+        ):
+            async with manager._lock:
+                with pytest.raises(RuntimeError, match="already registered"):
+                    await manager._start("model-c")
+
+        spawn.assert_not_called()
+        if watcher is not None:
+            assert manager._idle_tasks["model-c"] is watcher
+            assert not watcher.cancelled()
+            assert "model-c" not in manager._instances
+        else:
+            assert manager._instances["model-c"] is inst
+            assert "model-c" not in manager._idle_tasks
+            inst.process.send_signal.assert_not_called()
+    finally:
+        for task in [watcher, *manager._idle_tasks.values()]:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_evict_returns_when_target_already_running(tmp_path: Path) -> None:
+    """At capacity, nothing is drained or evicted once the target model is running."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, max_loaded_models=2)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+    mtimes = (0.0, 0.0)
+    manager._instances["model-a"] = make_fake_instance(
+        "model-a", make_model(config, "model-a"), mtimes, active_requests=1
+    )
+    manager._instances["model-c"] = make_fake_instance(
+        "model-c", make_model(config, "model-c"), mtimes, active_requests=1
+    )
+
+    with (
+        patch("drove.server_manager.asyncio.sleep", side_effect=AssertionError("drained")),
+        patch_stop_instance(manager) as mock_stop,
+    ):
+        async with manager._lock:
+            await manager._evict_if_needed(model_name="model-c")
+
+    mock_stop.assert_not_awaited()
+
+
+async def test_memory_evict_returns_when_target_already_running(tmp_path: Path) -> None:
+    """A running target's memory is not counted twice against max_memory."""
+    manager = make_memory_manager(tmp_path, max_memory="100")
+    add_instance(manager, "model-a", est_memory_bytes=60, last_request_time=100.0)
+    add_instance(manager, "model-c", est_memory_bytes=30, last_request_time=200.0)
+
+    with patch_stop_instance(manager) as mock_stop:
+        await manager._evict_if_needed(incoming_bytes=30, model_name="model-c")
+
+    mock_stop.assert_not_awaited()

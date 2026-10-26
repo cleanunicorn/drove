@@ -174,6 +174,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         if model_name is None:
             model_name = current_config.default_model
 
+        slot: object | None = None
         if model_name is None:
             if not manager.is_running:
                 stats.request_finished()
@@ -195,7 +196,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 # claim=True atomically reserves a request slot before releasing
                 # the manager lock, so a concurrent ensure_running for another
                 # model cannot evict this one while we're mid-request.
-                await manager.ensure_running(model_name, claim=True)
+                slot = await manager.ensure_running(model_name, claim=True)
             except FileNotFoundError as e:
                 stats.request_finished()
                 stats.request_error()
@@ -210,7 +211,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         # This path is less racy because nothing competes to evict a model
         # that was picked as the current fallback.
         if model_name is None:
-            manager.request_started(resolved_model)
+            slot = manager.request_started(resolved_model)
         try:
             manager.record_request(resolved_model)
 
@@ -292,6 +293,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     response_status=resp.status_code,
                     audio_duration=resp.headers.get("x-drove-audio-seconds"),
                     upstream_started=upstream_started,
+                    slot=slot,
                 ),
                 status_code=resp.status_code,
                 headers=response_headers,
@@ -299,7 +301,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 background=None,
             )
         except Exception:
-            manager.request_finished(resolved_model)
+            manager.request_finished(resolved_model, slot)
             stats.request_finished()
             stats.request_error()
             raise
@@ -415,6 +417,7 @@ async def _counting_stream(
     response_status: int = 200,
     audio_duration: str | None = None,
     upstream_started: float | None = None,
+    slot: object | None = None,
 ) -> AsyncIterator[bytes]:
     """Wrap a response stream, collecting bytes to extract token usage afterwards."""
     try:
@@ -467,7 +470,7 @@ async def _counting_stream(
         stats.request_error()
         raise
     finally:
-        manager.request_finished(model_name)
+        manager.request_finished(model_name, slot)
         stats.request_finished()
 
 

@@ -695,7 +695,7 @@ class ColdStartRace:
         self.manager._instances["model-b"] = self.inst_b
         make_model(config, "model-c")
         self.spawned: list[MagicMock] = []
-        self.requests: list[asyncio.Task[None]] = []
+        self.requests: list[asyncio.Task[object | None]] = []
         self.draining = [asyncio.Event(), asyncio.Event()]
         self.drain_gates = [asyncio.Event(), asyncio.Event()]
         self.drain_calls = 0
@@ -771,15 +771,17 @@ async def test_concurrent_cold_start_reuses_peer_after_drain(tmp_path: Path) -> 
             inst_c = manager._instances["model-c"]
             assert inst_c.process is race.spawned[0]
             assert inst_c.active_requests == 2  # both requests claimed the same C
+            slot_1, slot_2 = (task.result() for task in race.requests)
+            assert slot_1 is inst_c and slot_2 is inst_c
             assert "model-a" not in manager._instances
             race.inst_a.process.send_signal.assert_called_once()
             assert manager._instances["model-b"] is race.inst_b
             race.inst_b.process.send_signal.assert_not_called()
             race.assert_no_orphans()
 
-            manager.request_finished("model-c")
+            manager.request_finished("model-c", slot_1)
             assert inst_c.active_requests == 1
-            manager.request_finished("model-c")
+            manager.request_finished("model-c", slot_2)
             assert inst_c.active_requests == 0
             assert manager._instances["model-c"] is inst_c
             assert race.inst_b.active_requests == 1
@@ -811,8 +813,8 @@ async def test_concurrent_cold_start_spares_busy_lru_peer(tmp_path: Path) -> Non
             assert manager._instances["model-b"] is race.inst_b
             race.assert_no_orphans()
 
-            manager.request_finished("model-c")
-            manager.request_finished("model-c")
+            for task in race.requests:
+                manager.request_finished("model-c", task.result())
             assert manager._instances["model-c"] is inst_c
             assert inst_c.active_requests == 0
             assert race.inst_b.active_requests == 1
@@ -829,6 +831,7 @@ async def test_concurrent_cold_start_reuse_without_claim(tmp_path: Path) -> None
 
             assert len(race.spawned) == 1
             assert race.manager._instances["model-c"].active_requests == 1
+            assert race.requests[1].result() is None
         finally:
             await race.close()
 
@@ -851,6 +854,15 @@ async def test_concurrent_cold_start_replaces_peer_that_died(tmp_path: Path) -> 
             assert inst_c.active_requests == 1  # only R2's claim is on the new process
             assert manager._instances["model-b"] is race.inst_b
             race.assert_no_orphans()
+
+            # R1's request ran on the dead process: finishing it must not
+            # release R2's slot on the replacement.
+            slot_1, slot_2 = (task.result() for task in race.requests)
+            assert slot_1 is not inst_c and slot_2 is inst_c
+            manager.request_finished("model-c", slot_1)
+            assert inst_c.active_requests == 1
+            manager.request_finished("model-c", slot_2)
+            assert inst_c.active_requests == 0
         finally:
             await race.close()
 
@@ -930,3 +942,30 @@ async def test_memory_evict_returns_when_target_already_running(tmp_path: Path) 
         await manager._evict_if_needed(incoming_bytes=30, model_name="model-c")
 
     mock_stop.assert_not_awaited()
+
+
+def test_request_finished_ignores_slot_of_replaced_instance(tmp_path: Path) -> None:
+    """A slot from a stopped instance never releases its replacement's requests."""
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config)
+    old = make_fake_instance("testmodel", model_path, (0.0, 0.0), active_requests=1)
+    new = make_fake_instance("testmodel", model_path, (0.0, 0.0), active_requests=1)
+    manager._instances["testmodel"] = new
+
+    manager.request_finished("testmodel", old)
+    assert new.active_requests == 1
+
+    manager.request_finished("testmodel", new)
+    assert new.active_requests == 0
+
+
+def test_request_started_returns_the_claimed_slot(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    inst = make_fake_instance("testmodel", make_model(config), (0.0, 0.0))
+    manager._instances["testmodel"] = inst
+
+    assert manager.request_started("testmodel") is inst
+    assert inst.active_requests == 1
+    assert manager.request_started("missing") is None

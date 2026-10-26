@@ -294,21 +294,33 @@ class ServerManager:
         if inst:
             inst.last_request_time = time.monotonic()
 
-    def request_started(self, model_name: str) -> None:
-        """Mark a request as in-flight for a model."""
+    def request_started(self, model_name: str) -> object | None:
+        """Mark a request as in-flight for a model.
+
+        Returns the claimed slot to pass to ``request_finished``, or None when
+        the model is not loaded.
+        """
         inst = self._instances.get(model_name)
         if inst:
             inst.active_requests += 1
             inst.last_request_time = time.monotonic()
+        return inst
 
-    def request_finished(self, model_name: str) -> None:
-        """Mark a request as complete and reset the idle timer for a model."""
+    def request_finished(self, model_name: str, slot: object | None = None) -> None:
+        """Mark a request as complete and reset the idle timer for a model.
+
+        *slot* is what ``ensure_running(claim=True)`` or ``request_started``
+        returned. When given, only that instance is released: if the model has
+        since been restarted, the new instance's count is left alone.
+        """
         inst = self._instances.get(model_name)
+        if slot is not None and inst is not slot:
+            return
         if inst:
             inst.active_requests = max(0, inst.active_requests - 1)
             inst.last_request_time = time.monotonic()
 
-    async def ensure_running(self, model_name: str, *, claim: bool = False) -> None:
+    async def ensure_running(self, model_name: str, *, claim: bool = False) -> object | None:
         """Ensure llama-server is running for the requested model.
 
         If the model is already loaded with an up-to-date config, this is a no-op.
@@ -324,7 +336,8 @@ class ServerManager:
         ``ensure_running`` call for a different model could evict and kill
         this server between the time ``ensure_running`` returns and the
         caller records the request as in-flight.  Callers passing
-        ``claim=True`` must pair it with a later ``request_finished`` call.
+        ``claim=True`` must pair it with a later ``request_finished`` call,
+        passing the slot this returns (None when *claim* is False).
         """
         async with self._lock:
             inst = self._instances.get(model_name)
@@ -345,13 +358,10 @@ class ServerManager:
                             model_name,
                         )
                         inst.needs_restart = True
-                        if claim:
-                            self._claim_slot(model_name)
-                        return
+                        return self._claim_slot(model_name) if claim else None
                 else:
-                    if claim:
-                        self._claim_slot(model_name)
-                    return  # running with current config, nothing to do
+                    # Running with current config, nothing to do.
+                    return self._claim_slot(model_name) if claim else None
             elif inst is not None:
                 # Clean up stale instance if process died
                 await self._stop_instance(model_name)
@@ -365,21 +375,22 @@ class ServerManager:
             # concurrent request for this model may have started it meanwhile.
             inst = self._instances.get(model_name)
             if inst is not None and inst.is_running:
-                if claim:
-                    self._claim_slot(model_name)
-                return
+                return self._claim_slot(model_name) if claim else None
             if inst is not None:
                 await self._stop_instance(model_name)
             await self._start(model_name)
-            if claim:
-                self._claim_slot(model_name)
+            return self._claim_slot(model_name) if claim else None
 
-    def _claim_slot(self, model_name: str) -> None:
-        """Increment active_requests for a model (caller must hold the lock)."""
+    def _claim_slot(self, model_name: str) -> _ModelInstance | None:
+        """Increment active_requests for a model (caller must hold the lock).
+
+        Returns the claimed instance, which identifies the slot to release.
+        """
         inst = self._instances.get(model_name)
         if inst is not None:
             inst.active_requests += 1
             inst.last_request_time = time.monotonic()
+        return inst
 
     async def _evict_if_needed(
         self, incoming_bytes: int = 0, *, model_name: str | None = None

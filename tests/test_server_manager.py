@@ -637,3 +637,18 @@ def test_infer_asr_model_type_unknown_raises(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="asr_model"):
         manager._infer_asr_model_type("mystery-model", primary)
+
+
+@pytest.mark.parametrize("name", ["./testmodel", "testmodel/", "org//testmodel", "../x", "", "/"])
+async def test_ensure_running_rejects_noncanonical_names_before_lookup(
+    tmp_path: Path, name: str
+) -> None:
+    """Alternate spellings must not become separate instance keys (#110)."""
+    config = make_config(tmp_path)
+    make_model(config)
+    manager = ServerManager(config)
+    with patch.object(manager, "_start", new_callable=AsyncMock) as start:
+        with pytest.raises(ValueError, match="model name"):
+            await manager.ensure_running(name)
+    start.assert_not_awaited()
+    assert manager._instances == {}

@@ -1,12 +1,80 @@
 # CHANGELOG
 
 
-## [Unreleased]
+## v0.13.0 (2026-10-26)
 
-### Added
+### Bug Fixes
 
-- `drove chat` now shows each tool call while it runs: the entry names the tool and its arguments, the activity line shows elapsed time, `shell_execute` output streams in live, and the entry ends as done, failed, denied, or not run.
-- `drove chat` shows a context-window meter in the header after each reply, with exact token counts in its tooltip and on the Info screen; `/v1/models` reports each model's known `context_length`.
+- **chat**: Show a tool that crashes while running as failed
+  ([`ab087ba`](https://github.com/cleanunicorn/drove/commit/ab087ba202396906ee2fb908411103d094b244be))
+
+A tool that raised after it started (for example read_file with a null path) was relabelled "not
+  run", which is reserved for calls a stop prevented. Finish the entry as failed with the error
+  text, then let the existing error handling end the turn.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Documentation
+
+- **chat**: Document live tool feedback and the context meter
+  ([`3446ea5`](https://github.com/cleanunicorn/drove/commit/3446ea5ff484a77639c3ab0f55ba124fe9c19acd))
+
+Describe the running tool entry and its outcomes, streamed shell output, the header context meter
+  with its fallbacks and resets, and the new drove.context_length catalog field; add the Unreleased
+  changelog entries.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Features
+
+- **chat**: Add a context-window meter to the header
+  ([`21bd876`](https://github.com/cleanunicorn/drove/commit/21bd8761c2711d5d48fe97572d3305569453d520))
+
+The chat now shows how full the model's context is after each reply: a bar-only meter at the top
+  right with used / total tokens in its tooltip and on the Info screen, turning to the warning
+  colour from 80%. The size comes from drove.context_length on /v1/models; when it is unknown the
+  header shows the raw token count instead of a guessed fill, and with no usage the meter is hidden.
+  Usage now belongs to the latest response, stays visible while the next reply streams, and resets
+  on /new, model switch, resume, stop or error.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Advertise known context length on /v1/models
+  ([`f013c29`](https://github.com/cleanunicorn/drove/commit/f013c29ed370534bf1aad9aa23843b2c0a30a32e))
+
+The chat needs the active model's context size to draw a fill meter, but ModelSpec.context_window
+  falls back to a guessed 4096. Report the size only when a sidecar, extra_args or GGUF metadata
+  establishes it, as drove.context_length (null otherwise), and parse it strictly on the client.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Show running tools live with streamed shell output
+  ([`6714556`](https://github.com/cleanunicorn/drove/commit/6714556947d49037345ae0e286a25d1f1084bfbb))
+
+A tool call now appears as soon as it starts, names the tool and its arguments, and updates in place
+  to done, failed, denied or not run. The activity line names the running tool with elapsed seconds,
+  and shell output streams into the entry through a bounded tail that a 10 Hz timer drains, so the
+  worker thread never touches widgets. Stop keeps waiting for the tool and records its real result,
+  as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **tools**: Stream shell output and mark failed tool results
+  ([`385764e`](https://github.com/cleanunicorn/drove/commit/385764eb1d24c940ee584afbfbea8656ca68afb6))
+
+The chat needs live shell output and a reliable failed/done distinction. Foreground shell_execute
+  now drains stdout and stderr in raw chunks with one deadline and reports them to an optional
+  callback; the result text sent to the model is unchanged. Errors, timeouts and nonzero exits come
+  back as ToolFailure, a str subclass, so the UI never parses output to guess.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Refactoring
+
+- **chat**: Drop the unused tool-entry state tuple
+  ([`7875cfb`](https://github.com/cleanunicorn/drove/commit/7875cfb6cec42d8fc45962048d9f317a41d061f6))
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 
 ## v0.12.0 (2026-10-25)

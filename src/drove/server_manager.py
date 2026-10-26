@@ -134,10 +134,6 @@ class _ModelInstance:
         if self.process.stderr is not None:
             self._stderr_task = asyncio.create_task(self._drain_stderr())
 
-    def stop_stderr_reader(self) -> None:
-        if self._stderr_task is not None:
-            self._stderr_task.cancel()
-
     async def _drain_stderr(self) -> None:
         assert self.process.stderr is not None
         try:
@@ -535,11 +531,9 @@ class ServerManager:
         inst = self._instances.pop(model_name, None)
         if inst is None:
             return
-        try:
-            await self._terminate(inst)
-        finally:
-            # A descendant can hold stderr open after the backend dies.
-            inst.stop_stderr_reader()
+        # The stderr reader is left running: it ends on EOF, and until then it
+        # drains any descendant still holding the pipe so it cannot block.
+        await self._terminate(inst)
 
     async def _terminate(self, inst: _ModelInstance) -> None:
         if inst.backend == BACKEND_TTS:

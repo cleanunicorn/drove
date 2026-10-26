@@ -744,10 +744,17 @@ async def test_stop_finishes_when_wait_never_resolves(
 
     assert "stuck" not in manager._instances
     assert "did not exit" in caplog.text
-    assert inst._stderr_task is not None
-    await asyncio.wait_for(asyncio.wait({inst._stderr_task}), 1)
     await asyncio.wait_for(manager._lock.acquire(), 1)
     manager._lock.release()
+    # Whatever still holds stderr keeps being drained until it closes.
+    stderr = inst.process.stderr
+    assert stderr is not None and inst._stderr_task is not None
+    stderr.feed_data(b"late output")
+    await asyncio.sleep(0.05)
+    assert inst.stderr_text == "late output"
+    stderr.feed_eof()
+    await asyncio.wait_for(asyncio.wait({inst._stderr_task}), 1)
+    assert not inst._stderr_task.cancelled()
 
 
 async def test_stop_finishes_for_child_holding_pipes(
@@ -759,6 +766,8 @@ async def test_stop_finishes_for_child_holding_pipes(
 import os, signal, time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 if os.fork() == 0:
+    flood = b"e" * (1024 * 1024) + b"\\nSENTINEL\\n"
+    signal.signal(signal.SIGUSR1, lambda *_: os.write(2, flood))
     os.write(2, b"%d\\n" % os.getpid())
 time.sleep(60)
 """
@@ -782,8 +791,19 @@ time.sleep(60)
         await asyncio.wait_for(manager.stop(), 5)
         assert not manager._instances
         assert process.returncode == -signal.SIGKILL
+        # The surviving holder's output is still drained, so it cannot block...
+        os.kill(holder_pid, signal.SIGUSR1)
+        for _ in range(150):
+            if inst.stderr_text.endswith("SENTINEL"):
+                break
+            await asyncio.sleep(0.02)
+        assert inst.stderr_text.endswith("SENTINEL")
+        # ...and once it exits the reader reaches EOF and the pipe is released.
+        os.kill(holder_pid, signal.SIGKILL)
+        await asyncio.wait_for(process.wait(), 5)
         assert inst._stderr_task is not None
         await asyncio.wait_for(asyncio.wait({inst._stderr_task}), 1)
+        assert not inst._stderr_task.cancelled()
     finally:
         for pid in (holder_pid, process.pid):
             try:

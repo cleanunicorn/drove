@@ -967,7 +967,15 @@ def _outward(tmp_path: Path, label: str) -> Path:
 
 @pytest.mark.parametrize(
     "layout",
-    ["child-dir", "flat-file", "sidecar", "tts-marker", "hub-cache"],
+    [
+        "child-dir",
+        "flat-file",
+        "sidecar",
+        "tts-marker",
+        "hub-cache",
+        "hub-cache-child",
+        "hub-cache-file",
+    ],
 )
 def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeypatch, layout):
     models = tmp_path / "models"
@@ -988,8 +996,15 @@ def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeyp
     elif layout == "tts-marker":
         (dest / "weights").mkdir()
         (dest / "model.toml").symlink_to(outside / "cfg.toml")
-    else:
+    elif layout == "hub-cache":
         (dest / ".cache").symlink_to(outside, target_is_directory=True)
+    elif layout == "hub-cache-child":
+        (dest / ".cache").mkdir()
+        (dest / ".cache" / "huggingface").symlink_to(outside, target_is_directory=True)
+    else:
+        download = dest / ".cache" / "huggingface" / "download"
+        download.mkdir(parents=True)
+        (download / "m.gguf.metadata").symlink_to(outside / "metadata")
 
     def fetch(**kwargs):
         raise AssertionError("download started despite an escaping target")

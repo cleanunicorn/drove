@@ -335,12 +335,17 @@ class DownloadPlan:
         """Refuse to start if any path the download touches resolves outside *models_dir*.
 
         Covers every local file, the Hub's raw target for nested repository
-        files, the Hub's ``.cache`` folder, and the sidecar config (and TTS
-        marker) written afterwards, so a pre-existing symlink can't redirect
-        a read or write.
+        files, the Hub's ``.cache`` folder and everything already inside it
+        (metadata, locks and partial files live there), and the sidecar config
+        (and TTS marker) written afterwards, so a pre-existing symlink can't
+        redirect a read or write.
         """
         dest = self.destination(models_dir)
-        targets = [dest / ".cache"]
+        cache = dest / ".cache"
+        targets = [cache]
+        if cache.is_dir() and not cache.is_symlink():
+            for root, dirs, files in cache.walk():
+                targets += [root / name for name in (*dirs, *files)]
         for repo_file in self._all_remote_files():
             targets += [self._local_path(repo_file, models_dir), dest / repo_file]
         if self.is_tts or self.file_names:

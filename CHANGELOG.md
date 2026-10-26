@@ -20,6 +20,10 @@
   endpoint advertises a model id such as `../../x`; such ids, and any id that is
   not a valid local model name, are stored under a separate `_<name>-<digest>`
   folder, so their earlier sessions are no longer offered for resume.
+- `drove models download` refuses to start when a file it would write, the
+  model's sidecar config, or anything already inside the download's `.cache`
+  folder is a symlink pointing outside `models_dir`, so Hub metadata, lock and
+  partial files can no longer be written elsewhere on disk.
 
 
 ## v0.13.0 (2026-10-26)

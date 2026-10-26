@@ -175,7 +175,7 @@ async def test_tool_loop_flushes_each_assistant_body(app, monkeypatch):
             yield {"kind": "content", "chunk": "# After tool"}
 
     monkeypatch.setattr(ChatApp, "_stream_chat", stream)
-    monkeypatch.setattr("drove.tui.execute_tool", lambda *args: "safe result")
+    monkeypatch.setattr("drove.tui.execute_tool", lambda *args, **kwargs: "safe result")
     async with app.run_test():
         await start_turn(app, "go").wait()
         bubbles = list(app.query("Message.assistant"))
@@ -390,7 +390,7 @@ async def test_tool_only_events_do_not_claim_content_throughput(app, monkeypatch
             }
 
     monkeypatch.setattr(ChatApp, "_stream_chat", stream)
-    monkeypatch.setattr("drove.tui.execute_tool", lambda *args: "safe result")
+    monkeypatch.setattr("drove.tui.execute_tool", lambda *args, **kwargs: "safe result")
     async with app.run_test():
         await start_turn(app, "go").wait()
         assert app._last_speed is None

@@ -100,7 +100,7 @@ async def test_stop_retains_draft_and_discards_incomplete_tools(tmp_path, monkey
             closed.set()
 
     monkeypatch.setattr(app, "_stream_chat", stream)
-    monkeypatch.setattr("drove.tui.execute_tool", lambda *args: executed.append(args))
+    monkeypatch.setattr("drove.tui.execute_tool", lambda *args, **kwargs: executed.append(args))
     async with app.run_test() as pilot:
         await submit(app, pilot, "hello")
         await asyncio.wait_for(ready.wait(), 2)
@@ -250,7 +250,7 @@ async def test_dialog_escape_denies_without_stopping_turn(tmp_path, monkeypatch)
     app = chat_app(tmp_path)
     requests, executed = [], []
     monkeypatch.setattr("drove.config.load_config", lambda _: SimpleNamespace(allowed_tools=[]))
-    monkeypatch.setattr("drove.tui.execute_tool", lambda *args: executed.append(args))
+    monkeypatch.setattr("drove.tui.execute_tool", lambda *args, **kwargs: executed.append(args))
 
     async def stream(messages):
         requests.append(list(messages))
@@ -299,7 +299,7 @@ async def test_stop_waits_for_running_tool_and_pairs_remaining_calls(tmp_path, m
     loop = asyncio.get_running_loop()
     executed, requests = [], []
 
-    def execute(name, args):
+    def execute(name, args, on_output=None):
         executed.append(name)
         loop.call_soon_threadsafe(started.set)
         assert release.wait(3)
@@ -559,7 +559,7 @@ async def test_stopping_owned_modal_pairs_tool_history(tmp_path, monkeypatch):
     app = chat_app(tmp_path)
     executed = []
     monkeypatch.setattr("drove.config.load_config", lambda _: SimpleNamespace(allowed_tools=[]))
-    monkeypatch.setattr("drove.tui.execute_tool", lambda *args: executed.append(args))
+    monkeypatch.setattr("drove.tui.execute_tool", lambda *args, **kwargs: executed.append(args))
 
     async def stream(messages):
         yield {
@@ -616,7 +616,7 @@ async def test_quit_settles_running_tool_before_exiting(tmp_path, monkeypatch):
     release = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def execute(*args):
+    def execute(*args, **kwargs):
         loop.call_soon_threadsafe(started.set)
         assert release.wait(3)
         return "completed before quit"
@@ -692,7 +692,7 @@ async def test_stopped_tool_batch_pairs_reused_ids_in_saved_and_next_history(
     app._session.messages = app._history
     requests = []
     monkeypatch.setattr("drove.config.load_config", lambda _: SimpleNamespace(allowed_tools=[]))
-    monkeypatch.setattr("drove.tui.execute_tool", lambda *args: "current result")
+    monkeypatch.setattr("drove.tui.execute_tool", lambda *args, **kwargs: "current result")
 
     async def stream(messages):
         requests.append(list(messages))

@@ -56,6 +56,8 @@ class ModelSpec:
     vision: bool
     tool_call: bool
     reasoning: bool
+    #: context_window when it comes from config or GGUF metadata, None when guessed.
+    known_context_window: int | None = None
 
 
 # ── model description ────────────────────────────────────────────────────────
@@ -104,15 +106,31 @@ def _int_flag(args: list[str], flags: tuple[str, ...]) -> int | None:
         return None
 
 
-def _context_window(cfg: ModelConfig, training_ctx: int | None) -> int:
-    """The context one request can use, following llama-server's slot layout."""
-    args = cfg.extra_args or []
-    ctx = _int_flag(args, ("-c", "--ctx-size"))
+def _configured_context(cfg: ModelConfig, training_ctx: int | None) -> int | None:
+    """The total context llama-server allocates, or None when nothing says."""
+    ctx = _int_flag(cfg.extra_args or [], ("-c", "--ctx-size"))
     if ctx is None:
         ctx = cfg.ctx_size
     # 0 (llama-server's default) means "use the model's training context".
-    per_slot = ctx or training_ctx or FALLBACK_CONTEXT
+    return ctx or training_ctx
 
+
+def _context_window(cfg: ModelConfig, training_ctx: int | None) -> int:
+    """The context one request can use, following llama-server's slot layout."""
+    total = _configured_context(cfg, training_ctx) or FALLBACK_CONTEXT
+    return _slot_context(cfg, total, training_ctx)
+
+
+def _known_context_window(cfg: ModelConfig, training_ctx: int | None) -> int | None:
+    """Like _context_window, but None instead of a guess when no size is known."""
+    total = _configured_context(cfg, training_ctx)
+    if total is None or total <= 0:
+        return None
+    return _slot_context(cfg, total, training_ctx)
+
+
+def _slot_context(cfg: ModelConfig, per_slot: int, training_ctx: int | None) -> int:
+    args = cfg.extra_args or []
     n_parallel = _int_flag(args, ("-np", "--parallel"))
     if n_parallel is None:
         n_parallel = cfg.n_parallel
@@ -185,7 +203,8 @@ def describe_model(config: Config, name: str, primary: Path) -> ModelSpec | None
         return None
 
     meta = read_model_metadata(primary)
-    ctx = _context_window(cfg, meta.context_length if meta else None)
+    training_ctx = meta.context_length if meta else None
+    ctx = _context_window(cfg, training_ctx)
 
     args = cfg.extra_args or []
     template = _chat_template(cfg, meta.chat_template if meta else None) or ""
@@ -212,6 +231,7 @@ def describe_model(config: Config, name: str, primary: Path) -> ModelSpec | None
         vision=_has_vision(primary, cfg),
         tool_call=tool_call,
         reasoning=reasoning,
+        known_context_window=_known_context_window(cfg, training_ctx),
     )
 
 

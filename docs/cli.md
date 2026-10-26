@@ -53,7 +53,7 @@ vision, tools or reasoning capabilities. Speech-to-text and text-to-speech model
 are excluded, including backend overrides. Models whose sidecar configuration
 cannot be read are not offered. The server's `/v1/models` response retains its
 standard fields and every model ID, and adds a `drove` object with `chat`,
-`loaded`, `size_bytes`, and `capabilities` for this purpose.
+`loaded`, `size_bytes`, `capabilities`, and `context_length` for this purpose.
 
 Older drove servers and third-party OpenAI-compatible endpoints may not report
 this metadata. Their model entries remain selectable with unknown labels; drove
@@ -98,7 +98,16 @@ input from the conversation. Messages use a narrow role marker and minimal paddi
 The **Info** button (or `/info`) opens model, endpoint, session, timing and context
 details on demand. Token counts appear only when the endpoint reports usage; unknown
 counts are labeled **Not reported**. Reply speed is received chunks/s, not tokens/s.
-The activity row appears only while replying, stopping, or managing queued messages.
+The activity row appears only while replying, running a tool, stopping, or managing
+queued messages; while a tool runs it names the tool and its elapsed seconds.
+
+After each reply, a thin bar at the top right of the header shows how full the
+model's context is. Hover it for `used / total` tokens; Info shows the same with a
+percentage. The bar turns to the warning colour from 80%. When the endpoint does not
+report the model's context size (`context_length` on `/v1/models`), the header shows
+the raw count instead, such as `ctx 3.2k`; when the reply reported no token usage,
+the meter is hidden. It resets on `/new`, `/clear`, a model switch, a session
+resume, and a stopped or failed reply, and returns with the next reply.
 
 One compact tip teaches a single action at a time. Sending, inserting a newline,
 using commands, opening Info, or stopping a reply retires the corresponding tip.
@@ -120,6 +129,15 @@ message's **Cancel queued message** button to remove it before it is sent. Norma
 replies send the queue in order. Stopping a reply or encountering an error pauses
 queued messages; **Resume queued** sends them in order. New input joins a paused
 queue without restarting it. Pending messages are not saved until sent.
+
+Each tool call appears in the reply as soon as the model requests it, with its
+name and shortened arguments, marked **pending** until it is approved and
+**running** with elapsed seconds while it executes. `shell_execute` streams the last
+few lines of its output into the entry as it runs; the model still receives the
+full output. When the tool ends, the same entry shows its result and outcome:
+**✓** done, **✗ failed** (an error, timeout, or nonzero exit code), **⊘ denied**,
+or **⊘ not run** after a stop. Resumed sessions show earlier calls without an
+outcome mark, except denials.
 
 Tool confirmation shortcuts are **y** (allow once), **n** or **Esc** (deny once),
 **s** (allow for this session), and **a** (allow always). Esc in this dialog denies

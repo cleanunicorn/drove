@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from collections import deque
 from collections.abc import AsyncGenerator
@@ -38,11 +39,11 @@ from textual.widgets.markdown import MarkdownStream
 from textual.widgets.option_list import Option
 from textual.worker import Worker
 
-from drove.chat_models import CatalogError, fetch_models_async
+from drove.chat_models import CatalogError, fetch_context_length, fetch_models_async
 from drove.config import ChatHint, load_config, save_tui_completed_hints
 from drove.model_picker import ModelPicker
 from drove.sessions import Session, list_sessions, new_session, save_session
-from drove.tools import TOOL_DEFINITIONS, execute_tool
+from drove.tools import TOOL_DEFINITIONS, ToolFailure, execute_tool
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,9 @@ CSS = """
 ChatApp { background: $background; }
 #chat-header { height: 1; padding: 0 1; background: $surface; }
 #brand { width: 1fr; color: $accent; text-style: bold; }
+#ctx-meter { display: none; width: auto; margin-left: 1; color: $text-muted; }
+#ctx-meter.visible { display: block; }
+#ctx-meter.warn { color: $warning; }
 #chat-header Button {
     width: auto; min-width: 0; height: 1; border: none;
     background: transparent; margin-left: 1;
@@ -97,6 +101,16 @@ ChatApp { background: $background; }
 .thinking-section, .tool-call-section { margin: 0; padding: 0; }
 .thinking-section Label { color: $text-muted; text-style: italic; width: 1fr; }
 .tool-call-section Label { color: $text-muted; width: 1fr; }
+.tool-call { height: auto; }
+.tool-call.-running CollapsibleTitle { color: $accent; }
+.tool-call.-done CollapsibleTitle { color: $success; }
+.tool-call.-failed CollapsibleTitle { color: $error; }
+.tool-call.-denied CollapsibleTitle, .tool-call.-stopped CollapsibleTitle { color: $warning; }
+.tool-output {
+    display: none; color: $text-muted; width: 1fr; padding: 0 0 0 2;
+    border-left: dashed $panel;
+}
+.tool-call.-streaming .tool-output { display: block; }
 #autocomplete {
     display: none; height: auto; max-height: 6; margin: 0 1;
     background: $surface; border-left: solid $accent;
@@ -258,6 +272,158 @@ def _markdown_parser() -> MarkdownIt:
     return MarkdownIt("gfm-like", {"html": False})
 
 
+TOOL_DENIED = "Error: Tool execution denied by user."
+CONTEXT_METER_CELLS = 10
+#: Fill fraction from which the context meter is shown as nearly full.
+CONTEXT_WARN_FRACTION = 0.8
+#: Most recent tool output kept for the live preview; the model always gets all of it.
+TOOL_OUTPUT_TAIL_CHARS = 4096
+#: Lines of that tail shown under a running tool.
+TOOL_OUTPUT_LINES = 6
+TOOL_ARGUMENTS_PREVIEW = 60
+
+
+def _compact_tokens(count: int) -> str:
+    if count < 1000:
+        return str(count)
+    if count < 1_000_000:
+        return f"{count / 1000:.1f}k"
+    return f"{count / 1_000_000:.1f}M"
+
+
+def _context_used(usage: dict[str, Any]) -> int | None:
+    """Tokens in context after the last reply, or None unless both counts were reported."""
+    counts = [usage.get("prompt_tokens"), usage.get("completion_tokens")]
+    if not all(type(count) is int and count >= 0 for count in counts):
+        return None
+    return sum(counts)  # type: ignore[arg-type]
+
+
+def _preview_arguments(arguments: str) -> str:
+    flat = " ".join(arguments.split())
+    if len(flat) > TOOL_ARGUMENTS_PREVIEW:
+        return flat[: TOOL_ARGUMENTS_PREVIEW - 1] + "…"
+    return flat
+
+
+class ToolOutputTail:
+    """Thread-safe, bounded tail of a running tool's output, read by the UI timer."""
+
+    def __init__(self, limit: int = TOOL_OUTPUT_TAIL_CHARS) -> None:
+        self._limit = limit
+        self._lock = threading.Lock()
+        self._text = ""
+        self._trimmed = False
+        self._dirty = False
+        self._closed = False
+
+    def append(self, text: str) -> None:
+        """Called from the tool's worker thread; never touches widgets."""
+        with self._lock:
+            if self._closed:
+                return
+            self._text += text
+            if len(self._text) > self._limit:
+                self._text = self._text[-self._limit :]
+                self._trimmed = True
+            self._dirty = True
+
+    def take(self) -> str | None:
+        """The text to show if it changed since the last call, else None."""
+        with self._lock:
+            if not self._dirty:
+                return None
+            self._dirty = False
+            lines = self._text.rstrip("\n").split("\n")
+            shown = "\n".join(lines[-TOOL_OUTPUT_LINES:])
+            if self._trimmed or len(lines) > TOOL_OUTPUT_LINES:
+                shown = "… earlier output omitted\n" + shown
+            return shown
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+
+
+class ToolCallEntry(Vertical):
+    """One tool call, shown from the moment it starts and updated in place when it ends."""
+
+    def __init__(self, name: str, arguments: str, result: str | None = None) -> None:
+        super().__init__(classes="tool-call")
+        self.tool_name = name
+        self.arguments = arguments
+        self.result = result
+        self.started: float | None = None
+        if result is None:
+            self.state = "pending"
+        else:
+            # Saved sessions do not record the outcome, so only a denial is known.
+            self.state = "denied" if result == TOOL_DENIED else "finished"
+        self.add_class(f"-{self.state}")
+
+    def compose(self) -> ComposeResult:
+        yield Collapsible(
+            Label(self._body_text(), markup=False),
+            # Collapsible forwards Content to its title renderer despite its str annotation.
+            title=Content(self._title_text()),  # type: ignore[arg-type]
+            collapsed=True,
+            classes="tool-call-section",
+        )
+        yield Label("", markup=False, classes="tool-output")
+
+    def elapsed(self) -> int:
+        return int(time.monotonic() - self.started) if self.started is not None else 0
+
+    def _title_text(self) -> str:
+        name, args = self.tool_name, _preview_arguments(self.arguments)
+        if self.state == "pending":
+            return f"⚙ {name}  {args} · pending"
+        if self.state == "running":
+            return f"⚙ {name}  {args} · running {self.elapsed()}s"
+        if self.state == "denied":
+            return f"⊘ {name} denied  {args}"
+        if self.state == "stopped":
+            return f"⊘ {name} not run  {args}"
+        result = self.result or ""
+        preview = result[:200] + ("…" if len(result) > 200 else "")
+        mark = {"done": "✓ ", "failed": "✗ "}.get(self.state, "⚙ ")
+        failed = " failed" if self.state == "failed" else ""
+        return f"{mark}{name}{failed} → {preview}"
+
+    def _body_text(self) -> str:
+        if self.result is None:
+            return f"Arguments: {self.arguments}"
+        return f"Arguments: {self.arguments}\n\nResult:\n{self.result}"
+
+    def _set_state(self, state: str) -> None:
+        self.remove_class(f"-{self.state}")
+        self.state = state
+        self.add_class(f"-{state}")
+        self.refresh_title()
+
+    def refresh_title(self) -> None:
+        if not self.is_mounted:
+            return
+        self.query_one(Collapsible).title = Content(self._title_text())  # type: ignore[assignment]
+
+    def start(self) -> None:
+        self.started = time.monotonic()
+        self._set_state("running")
+
+    def show_output(self, text: str) -> None:
+        if not self.is_mounted:
+            return
+        self.query_one(".tool-output", Label).update(text)
+        self.add_class("-streaming")
+
+    def finish(self, result: str | None, state: str) -> None:
+        self.result = result
+        self.remove_class("-streaming")
+        if self.is_mounted:
+            self.query_one(".tool-call-section Label", Label).update(self._body_text())
+        self._set_state(state)
+
+
 class Message(Static, can_focus=True):
     BINDINGS = [
         Binding("ctrl+y", "copy_message", "Copy message"),
@@ -372,17 +538,13 @@ class Message(Static, can_focus=True):
             except NoMatches:
                 pass
 
-    async def append_tool_call(self, name: str, arguments: str, result: str) -> None:
-        """Add a collapsible tool call section after the body."""
-        result_preview = result[:200] + ("…" if len(result) > 200 else "")
-        collapsible = Collapsible(
-            Label(f"Arguments: {arguments}\n\nResult:\n{result}", markup=False),
-            # Collapsible forwards Content to its title renderer despite its str annotation.
-            title=Content(f"⚙ {name} → {result_preview}"),  # type: ignore[arg-type]
-            collapsed=True,
-            classes="tool-call-section",
-        )
-        await self.mount(collapsible)
+    async def append_tool_call(
+        self, name: str, arguments: str, result: str | None = None
+    ) -> ToolCallEntry:
+        """Add a tool call section after the body: pending without a result, else finished."""
+        entry = ToolCallEntry(name, arguments, result)
+        await self.mount(entry)
+        return entry
 
 
 class CodePicker(ModalScreen[str | None]):
@@ -527,6 +689,8 @@ class ChatTurn:
     committed: bool = False
     bubble: Message | None = None
     tool_task: asyncio.Task[str] | None = None
+    tool_entry: ToolCallEntry | None = None
+    tool_output: ToolOutputTail | None = None
 
 
 def _http_error(status: int, body: bytes) -> str:
@@ -647,6 +811,9 @@ class ChatApp(App[None]):
         self._last_speed: float | None = None  # received chunks/s from last response
         self._last_ttft: float | None = None  # time-to-first-token (seconds)
         self._last_usage: dict[str, int] = {}
+        self._context_length: int | None = None  # tokens the active model can hold, if known
+        self._context_request = 0  # invalidates context lookups for a former model
+        self._tool_seconds = 0
         self._completed_hints: set[ChatHint] = set()
         self._hint_save_failed = False
         if config_path is not None:
@@ -677,6 +844,7 @@ class ChatApp(App[None]):
             yield Button(
                 "Info", id="chat-details", compact=True, tooltip="Connection and reply details"
             )
+            yield Label("", id="ctx-meter", markup=False)
         with Vertical(id="conversation", classes="empty"):
             with Vertical(id="welcome"):
                 with Vertical(id="welcome-content"):
@@ -718,12 +886,22 @@ class ChatApp(App[None]):
 
     def on_mount(self) -> None:
         self.title = "drove chat"
+        self._tool_timer = self.set_interval(0.1, self._tick_tool, pause=True)
+        self.run_worker(self._refresh_context_length(), exit_on_error=False)
         self._update_status()
         self.query_one("#user-input", ChatInput).focus()
 
         # Replay existing messages when resuming
         if self._session.message_count > 0:
             self.call_after_refresh(self._replay_history)
+
+    async def _refresh_context_length(self) -> None:
+        self._context_request += 1
+        request, model = self._context_request, self._model
+        length = await fetch_context_length(self._base_url, self._api_key, model)
+        if request == self._context_request and model == self._model:
+            self._context_length = length
+            self._update_status()
 
     async def _replay_history(self) -> None:
         # Index tool results by tool_call_id for pairing
@@ -887,6 +1065,10 @@ class ChatApp(App[None]):
             session.id += f"-{time.time_ns()}-{uuid4().hex}"
             self._session = session
             self._model = selected
+            self._context_request += 1
+            self._context_length = next(
+                (model.context_length for model in models if model.id == selected), None
+            )
             self._system_prompt = system_prompt
             self._history = list(session.messages)
             self._session_allowed_tools.clear()
@@ -1147,7 +1329,6 @@ class ChatApp(App[None]):
             return
         if not self._queue:
             self._queue_paused = False
-        self._last_usage = {}
         turn = ChatTurn(self._session, self._history, text)
         turn.history.append({"role": "user", "content": text})
         turn.session.messages = turn.history
@@ -1189,8 +1370,61 @@ class ChatApp(App[None]):
                     }
                 )
 
+    def _tick_tool(self) -> None:
+        """Refresh the running tool's preview and elapsed time (at most 10 times a second)."""
+        turn = self._turn
+        entry = turn.tool_entry if turn is not None else None
+        if turn is None or entry is None or entry.state != "running":
+            return
+        if turn.tool_output is not None and (text := turn.tool_output.take()) is not None:
+            entry.show_output(text)
+            self._scroll_to_bottom()
+        seconds = entry.elapsed()
+        if seconds != self._tool_seconds:
+            self._tool_seconds = seconds
+            entry.refresh_title()
+            self._update_status()
+
+    async def _run_tool_call(self, turn: ChatTurn, call: dict[str, str]) -> str | None:
+        """Show, approve and run one call; return its result, or None when stopped first."""
+        assert turn.bubble is not None
+        entry = await turn.bubble.append_tool_call(call["name"], call["arguments"])
+        turn.tool_entry = entry
+        self._scroll_to_bottom()
+        try:
+            allowed = await self._tool_allowed(call["name"], call["arguments"])
+            if turn.stop_requested:
+                return None
+            if not allowed:
+                entry.finish(TOOL_DENIED, "denied")
+                return TOOL_DENIED
+            turn.tool_output = ToolOutputTail()
+            entry.start()
+            self._tool_seconds = 0
+            self._tool_timer.resume()
+            self._update_status()
+            try:
+                result = await self._run_tool(turn, call["name"], call["arguments"])
+            except Exception as error:
+                # The tool ran and crashed: show it as failed, then let the turn report the error.
+                entry.finish(f"Error executing tool: {error}", "failed")
+                raise
+            entry.finish(str(result), "failed" if isinstance(result, ToolFailure) else "done")
+            return str(result)
+        finally:
+            if entry.state in {"pending", "running"}:
+                entry.finish(None, "stopped")
+            if turn.tool_output is not None:
+                turn.tool_output.close()
+            turn.tool_entry = turn.tool_output = None
+            self._tool_timer.pause()
+            self._update_status()
+
     async def _run_tool(self, turn: ChatTurn, name: str, arguments: str) -> str:
-        task = asyncio.create_task(asyncio.to_thread(execute_tool, name, arguments))
+        on_output = turn.tool_output.append if turn.tool_output is not None else None
+        task = asyncio.create_task(
+            asyncio.to_thread(execute_tool, name, arguments, on_output=on_output)
+        )
         turn.tool_task = task
         try:
             while True:
@@ -1249,13 +1483,14 @@ class ChatApp(App[None]):
                 if turn.stop_requested:
                     raise asyncio.CancelledError
                 tool_calls: dict[int, dict[str, str]] = {}
+                usage: dict[str, int] = {}
                 try:
                     async with aclosing(self._stream_chat(turn.history)) as stream:
                         async for event in stream:
                             if t_first is None and event["kind"] in {"thinking", "content"}:
                                 t_first = time.monotonic()
                             if event["kind"] == "usage":
-                                self._last_usage = event["usage"]
+                                usage = event["usage"]
                             elif event["kind"] == "thinking":
                                 chunk_count += 1
                                 turn.record["thinking"] = (
@@ -1283,6 +1518,9 @@ class ChatApp(App[None]):
                             self._scroll_to_bottom()
                 finally:
                     await turn.bubble.finish_text()
+                # Each response reports the whole context; keep only the latest one.
+                self._last_usage = usage
+                self._update_status()
                 turn.bubble.finish_thinking()
                 if not tool_calls:
                     self._commit_draft(turn)
@@ -1301,14 +1539,9 @@ class ChatApp(App[None]):
                 for tc in calls:
                     if turn.stop_requested:
                         break
-                    allowed = await self._tool_allowed(tc["name"], tc["arguments"])
-                    if turn.stop_requested:
+                    result = await self._run_tool_call(turn, tc)
+                    if result is None:
                         break
-                    result = (
-                        await self._run_tool(turn, tc["name"], tc["arguments"])
-                        if allowed
-                        else "Error: Tool execution denied by user."
-                    )
                     turn.history.append(
                         {
                             "role": "tool",
@@ -1316,7 +1549,6 @@ class ChatApp(App[None]):
                             "content": result,
                         }
                     )
-                    await turn.bubble.append_tool_call(tc["name"], tc["arguments"], result)
                     self._scroll_to_bottom()
                 if turn.stop_requested:
                     break
@@ -1330,6 +1562,9 @@ class ChatApp(App[None]):
                 Message("error", _chat_error(error, self._base_url))
             )
         finally:
+            if not successful:
+                # A stopped or failed reply changed the history after the last usage report.
+                self._last_usage = {}
             try:
                 if turn.stop_requested:
                     turn.record["stopped"] = True
@@ -1493,15 +1728,44 @@ class ChatApp(App[None]):
         ttft = f"{self._last_ttft:.2f}s" if self._last_ttft is not None else "Not available"
         prompt = self._last_usage.get("prompt_tokens")
         completion = self._last_usage.get("completion_tokens")
+        used = _context_used(self._last_usage)
+        total = self._context_length
+        if used is None:
+            context = "Not reported"
+        elif total is None:
+            context = f"{used:,} tokens (context size unknown)"
+        else:
+            context = f"{used:,} / {total:,} tokens ({used / total:.0%})"
         return (
             f"Model: {self._model}\nEndpoint: {self._base_url}\n"
             f"Session: {self._session.id}\n"
+            f"Context: {context}\n"
             f"Context messages: {len(self._history)}\n"
             f"Last prompt tokens: {prompt if prompt is not None else 'Not reported'}\n"
             "Last completion tokens: "
             f"{completion if completion is not None else 'Not reported'}\n"
             f"Last reply speed: {speed}\nTime to first token: {ttft}"
         )
+
+    def _update_context_meter(self) -> None:
+        meter = self.query_one("#ctx-meter", Label)
+        used = _context_used(self._last_usage)
+        total = self._context_length
+        meter.set_class(used is not None, "visible")
+        if used is None:
+            meter.set_class(False, "warn")
+            return
+        if total is None:
+            # Without a known size a fill level would be a guess; show the count instead.
+            meter.update(f"ctx {_compact_tokens(used)}")
+            meter.tooltip = f"{used:,} tokens in context · context size unknown"
+            meter.set_class(False, "warn")
+            return
+        fraction = used / total
+        filled = min(CONTEXT_METER_CELLS, round(fraction * CONTEXT_METER_CELLS))
+        meter.update("▰" * filled + "▱" * (CONTEXT_METER_CELLS - filled))
+        meter.tooltip = f"{used:,} / {total:,} tokens"
+        meter.set_class(fraction >= CONTEXT_WARN_FRACTION, "warn")
 
     def _update_status(self) -> None:
         self.query_one("#conversation").set_class(
@@ -1510,6 +1774,9 @@ class ChatApp(App[None]):
             "empty",
         )
         activity = "Replying…" if self.is_generating else ""
+        entry = self._turn.tool_entry if self._turn is not None else None
+        if entry is not None and entry.state == "running":
+            activity = f"Running {entry.tool_name}… {entry.elapsed()}s"
         if self._turn is not None and self._turn.stop_requested:
             activity = "Stopping…"
         elif self._queue_paused and self._queue:
@@ -1530,6 +1797,7 @@ class ChatApp(App[None]):
         )
         self.query_one("#status-label", Label).update("  ·  ".join(parts))
         self.query_one("#status-bar").set_class(bool(activity or parts), "visible")
+        self._update_context_meter()
         if isinstance(self.screen, ChatDetails):
             self.screen.query_one("#details-content", Label).update(self._details_text())
         self._update_guidance()

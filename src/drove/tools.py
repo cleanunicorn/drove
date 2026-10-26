@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import codecs
 import fnmatch
+import io
 import json
 import os
+import selectors
 import subprocess
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 import httpx
 
@@ -174,16 +179,29 @@ TOOL_DEFINITIONS = [
 ]
 
 
+#: Receives decoded output while a foreground shell command runs (on its worker thread).
+OutputCallback = Callable[[str], None]
+
+_READ_CHUNK = 4096
+
+
+class ToolFailure(str):
+    """A tool result that reports a failure; its text is sent to the model unchanged."""
+
+
 # Global storage for background tasks
 _background_tasks: dict[str, dict[str, Any]] = {}
 
 
-def execute_tool(name: str, arguments: str) -> str:
-    """Execute a tool call and return the result as a string."""
+def execute_tool(name: str, arguments: str, on_output: OutputCallback | None = None) -> str:
+    """Execute a tool call and return the result as a string.
+
+    Failures come back as ToolFailure. *on_output* receives shell output as it arrives.
+    """
     try:
         args = json.loads(arguments)
     except json.JSONDecodeError:
-        return f"Error: invalid JSON arguments: {arguments}"
+        return ToolFailure(f"Error: invalid JSON arguments: {arguments}")
 
     if name == "read_file":
         return _read_file(args)
@@ -192,7 +210,7 @@ def execute_tool(name: str, arguments: str) -> str:
     elif name == "list_files":
         return _list_files(args)
     elif name == "shell_execute":
-        return _shell_execute(args)
+        return _shell_execute(args, on_output)
     elif name == "fetch_url":
         return _fetch_url(args)
     elif name == "search_files":
@@ -200,19 +218,19 @@ def execute_tool(name: str, arguments: str) -> str:
     elif name == "check_background_task":
         return _check_background_task(args)
     else:
-        return f"Error: unknown tool '{name}'"
+        return ToolFailure(f"Error: unknown tool '{name}'")
 
 
 def _read_file(args: dict[str, Any]) -> str:
     path = Path(args.get("path", "")).expanduser()
     if not path.exists():
-        return f"Error: file not found: {path}"
+        return ToolFailure(f"Error: file not found: {path}")
     if not path.is_file():
-        return f"Error: not a file: {path}"
+        return ToolFailure(f"Error: not a file: {path}")
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
-        return f"Error reading file: {e}"
+        return ToolFailure(f"Error reading file: {e}")
 
     lines = text.splitlines(keepends=True)
     offset = args.get("offset", 0)
@@ -232,7 +250,7 @@ def _write_file(args: dict[str, Any]) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     except OSError as e:
-        return f"Error writing file: {e}"
+        return ToolFailure(f"Error writing file: {e}")
     return f"Successfully wrote {len(content)} bytes to {path}"
 
 
@@ -242,9 +260,9 @@ def _list_files(args: dict[str, Any]) -> str:
     path = Path(path_str).expanduser()
 
     if not path.exists():
-        return f"Error: path not found: {path}"
+        return ToolFailure(f"Error: path not found: {path}")
     if not path.is_dir():
-        return f"Error: not a directory: {path}"
+        return ToolFailure(f"Error: not a directory: {path}")
 
     try:
         if recursive:
@@ -263,16 +281,16 @@ def _list_files(args: dict[str, Any]) -> str:
 
         return "\n".join(sorted(entries))
     except Exception as e:
-        return f"Error listing files: {e}"
+        return ToolFailure(f"Error listing files: {e}")
 
 
-def _shell_execute(args: dict[str, Any]) -> str:
+def _shell_execute(args: dict[str, Any], on_output: OutputCallback | None = None) -> str:
     command = args.get("command", "")
     background = args.get("background", False)
     timeout = args.get("timeout", 30)
 
     if not command:
-        return "Error: no command provided"
+        return ToolFailure("Error: no command provided")
 
     if background:
         import uuid
@@ -308,28 +326,69 @@ def _shell_execute(args: dict[str, Any]) -> str:
         return f"Started background task with ID: {task_id}"
 
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        output = f"STDOUT:\n{proc.stdout}"
-        if proc.stderr:
-            output += f"\nSTDERR:\n{proc.stderr}"
-        output += f"\nReturn code: {proc.returncode}"
-        return output
+        stdout, stderr, returncode = _run_streaming(command, timeout, on_output)
     except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {timeout} seconds"
+        return ToolFailure(f"Error: command timed out after {timeout} seconds")
     except Exception as e:
-        return f"Error executing command: {e}"
+        return ToolFailure(f"Error executing command: {e}")
+    output = f"STDOUT:\n{stdout}"
+    if stderr:
+        output += f"\nSTDERR:\n{stderr}"
+    output += f"\nReturn code: {returncode}"
+    return output if returncode == 0 else ToolFailure(output)
+
+
+def _run_streaming(
+    command: str, timeout: float, on_output: OutputCallback | None
+) -> tuple[str, str, int]:
+    """Run *command*, draining stdout and stderr together until it exits or *timeout* passes.
+
+    Reads raw chunks rather than lines, so output without a newline still streams.
+    """
+    deadline = time.monotonic() + timeout
+    proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.stdout is not None and proc.stderr is not None
+    streams: dict[IO[bytes], list[str]] = {proc.stdout: [], proc.stderr: []}
+    decoders = {
+        stream: io.IncrementalNewlineDecoder(
+            codecs.getincrementaldecoder("utf-8")(errors="replace"), translate=True
+        )
+        for stream in streams
+    }
+    try:
+        with selectors.DefaultSelector() as selector:
+            for stream in streams:
+                selector.register(stream, selectors.EVENT_READ, stream)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                for key, _ in selector.select(remaining):
+                    source: IO[bytes] = key.data
+                    chunk = os.read(key.fd, _READ_CHUNK)
+                    if not chunk:
+                        selector.unregister(source)
+                    text = decoders[source].decode(chunk, final=not chunk)
+                    if text:
+                        streams[source].append(text)
+                        if on_output is not None:
+                            on_output(text)
+        returncode = proc.wait(timeout=max(deadline - time.monotonic(), 0))
+    except BaseException:
+        # Kill only the shell: descendants may keep the pipes open, so never wait on them.
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        proc.stdout.close()
+        proc.stderr.close()
+    return "".join(streams[proc.stdout]), "".join(streams[proc.stderr]), returncode
 
 
 def _fetch_url(args: dict[str, Any]) -> str:
     url = args.get("url", "")
     if not url:
-        return "Error: no URL provided"
+        return ToolFailure("Error: no URL provided")
 
     try:
         with httpx.Client(timeout=30.0) as client:
@@ -337,7 +396,7 @@ def _fetch_url(args: dict[str, Any]) -> str:
             resp.raise_for_status()
             return resp.text
     except Exception as e:
-        return f"Error fetching URL: {e}"
+        return ToolFailure(f"Error fetching URL: {e}")
 
 
 def _search_files(args: dict[str, Any]) -> str:
@@ -348,7 +407,7 @@ def _search_files(args: dict[str, Any]) -> str:
     path = Path(path_str).expanduser()
 
     if not path.exists():
-        return f"Error: path not found: {path}"
+        return ToolFailure(f"Error: path not found: {path}")
 
     results = []
     try:
@@ -376,13 +435,13 @@ def _search_files(args: dict[str, Any]) -> str:
             return "No matches found."
         return "\n".join(results)
     except Exception as e:
-        return f"Error searching files: {e}"
+        return ToolFailure(f"Error searching files: {e}")
 
 
 def _check_background_task(args: dict[str, Any]) -> str:
     task_id = args.get("task_id", "")
     if task_id not in _background_tasks:
-        return f"Error: task ID '{task_id}' not found"
+        return ToolFailure(f"Error: task ID '{task_id}' not found")
 
     task = _background_tasks[task_id]
     status = task["status"]

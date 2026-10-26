@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## [Unreleased]
+
+### Added
+
+- `drove chat` now shows each tool call while it runs: the entry names the tool and its arguments, the activity line shows elapsed time, `shell_execute` output streams in live, and the entry ends as done, failed, denied, or not run.
+- `drove chat` shows a context-window meter in the header after each reply, with exact token counts in its tooltip and on the Info screen; `/v1/models` reports each model's known `context_length`.
+
+
 ## v0.12.0 (2026-10-25)
 
 ### Bug Fixes

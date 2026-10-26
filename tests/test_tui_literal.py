@@ -215,7 +215,7 @@ async def test_approved_arguments_match_executed_string(
         else:
             yield {"kind": "content", "chunk": "Done"}
 
-    def execute(name: str, args: str) -> str:
+    def execute(name: str, args: str, on_output: object = None) -> str:
         executed.append((name, args))
         return "test result"
 

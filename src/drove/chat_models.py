@@ -17,6 +17,8 @@ class ChatModel:
     size_bytes: int | None = None
     loaded: bool | None = None
     capabilities: tuple[str, ...] | None = None
+    #: Tokens one request can use; None when the endpoint does not know.
+    context_length: int | None = None
 
 
 class CatalogError(ValueError):
@@ -33,6 +35,7 @@ def model_catalog(config: Config, loaded: set[str]) -> list[dict[str, object]]:
             "loaded": entry.name in loaded,
             "size_bytes": entry.total_bytes,
             "capabilities": None,
+            "context_length": None,
         }
         try:
             primary = store.resolve(entry.name)
@@ -52,6 +55,7 @@ def model_catalog(config: Config, loaded: set[str]) -> list[dict[str, object]]:
                 if spec.reasoning:
                     capabilities.append("reasoning")
                 metadata["capabilities"] = capabilities
+                metadata["context_length"] = spec.known_context_window
             else:
                 metadata["capabilities"] = []
         models.append(
@@ -86,6 +90,7 @@ def parse_models(payload: object) -> list[ChatModel]:
         size = metadata.get("size_bytes")
         loaded = metadata.get("loaded")
         capabilities = metadata.get("capabilities")
+        context = metadata.get("context_length")
         models[name] = ChatModel(
             name,
             size if type(size) is int and size >= 0 else None,
@@ -94,6 +99,7 @@ def parse_models(payload: object) -> list[ChatModel]:
             if isinstance(capabilities, list)
             and all(isinstance(value, str) for value in capabilities)
             else None,
+            context if type(context) is int and context > 0 else None,
         )
     if not models:
         raise CatalogError("No chat models available at this endpoint.")
@@ -133,3 +139,12 @@ async def fetch_models_async(base_url: str, api_key: str | None) -> list[ChatMod
         raise CatalogError(
             "Could not list models. Check the endpoint, server and API key."
         ) from exc
+
+
+async def fetch_context_length(base_url: str, api_key: str | None, model: str) -> int | None:
+    """The context length the endpoint advertises for *model*; None when unknown or offline."""
+    try:
+        models = await fetch_models_async(base_url, api_key)
+    except CatalogError:
+        return None
+    return next((entry.context_length for entry in models if entry.id == model), None)

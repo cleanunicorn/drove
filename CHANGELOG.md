@@ -15,6 +15,10 @@
   symlink to another disk) are no longer listed, served or deleted; point
   `models_dir` at that location instead. Names containing spaces are no longer
   accepted.
+- Chat sessions are always saved inside `sessions_dir`, even when a remote
+  endpoint advertises a model id such as `../../x`; such ids, and any id that is
+  not a valid local model name, are stored under a separate `_<name>-<digest>`
+  folder, so their earlier sessions are no longer offered for resume.
 
 
 ## v0.13.0 (2026-10-26)

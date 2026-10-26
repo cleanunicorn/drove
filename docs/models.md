@@ -30,7 +30,9 @@ A local name is `name` or `org/name`. Each part starts with a letter or digit
 and may contain letters, digits, `.`, `_`, `:` and `-`, so
 `unsloth/Qwen3-8B-GGUF:Q4_K_M` is valid. Names with spaces, `.` or `..`
 parts, backslashes, a leading `/`, or more than one `/` are rejected by every
-command and by the API. Model files must also stay inside `models_dir`: a model
+command and by the API. Existing models whose file or directory name breaks this
+rule are hidden from `drove models list`, completion and `GET /v1/models` until
+you rename them on disk. Model files must also stay inside `models_dir`: a model
 directory or file that is a symlink to somewhere outside it is not listed or
 served. To keep models on another disk, point `models_dir` at that disk (a
 symlinked `models_dir` itself is fine) rather than linking single models in.

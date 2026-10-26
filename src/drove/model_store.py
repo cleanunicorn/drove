@@ -35,6 +35,14 @@ def validate_model_name(name: object) -> str:
     return name
 
 
+def _is_valid_name(name: str) -> bool:
+    try:
+        validate_model_name(name)
+    except ValueError:
+        return False
+    return True
+
+
 def is_within(base: Path, candidate: Path) -> bool:
     """True when *candidate* resolves (following symlinks) strictly inside *base*."""
     try:
@@ -100,7 +108,11 @@ class ModelStore:
         return root
 
     def list(self) -> list[ModelEntry]:
-        """Return all models with their primary path and total on-disk size."""
+        """Return all models with their primary path and total on-disk size.
+
+        Only names that resolve() accepts are listed; files or directories
+        whose names break the naming rule stay hidden until renamed.
+        """
         results: list[ModelEntry] = []
         if not self._dir.exists():
             return results
@@ -117,7 +129,7 @@ class ModelStore:
                             self._add_entry(sub, f"{p.name}/{sub.name}", results)
             elif p.suffix.lower() == ".gguf" and p.is_file() and self._servable(p):
                 results.append(ModelEntry(p.stem, p, p.stat().st_size))
-        return results
+        return [entry for entry in results if _is_valid_name(entry.name)]
 
     def complete(self, prefix: str) -> builtins.list[str]:
         """Return model names that start with *prefix* (for shell completion)."""
@@ -134,9 +146,9 @@ class ModelStore:
                     for sub in sorted(p.iterdir()):
                         if sub.is_dir() and not sub.name.startswith(".") and self._contains(sub):
                             names.append(f"{p.name}/{sub.name}")
-            elif p.suffix.lower() == ".gguf" and p.is_file():
+            elif p.suffix.lower() == ".gguf" and p.is_file() and self._servable(p):
                 names.append(p.stem)
-        return [n for n in names if n.lower().startswith(prefix.lower())]
+        return [n for n in names if _is_valid_name(n) and n.lower().startswith(prefix.lower())]
 
     # ── private helpers ──────────────────────────────────────────────────────
 

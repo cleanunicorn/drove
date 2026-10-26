@@ -740,3 +740,13 @@ def test_proxy_treats_traversal_to_a_real_gguf_as_invalid(tmp_path: Path) -> Non
         resp = client.post("/v1/chat/completions", json={"model": "../elsewhere", "messages": []})
     assert resp.status_code == 400
     start.assert_not_awaited()
+
+
+def test_models_endpoint_hides_names_the_api_would_reject(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    for name in ("good", "bad name"):
+        (config.models_dir / name).mkdir()
+        (config.models_dir / name / "model.gguf").write_bytes(b"")
+    with TestClient(create_app(config)) as client:
+        ids = [m["id"] for m in client.get("/v1/models").json()["data"]]
+    assert ids == ["good"]

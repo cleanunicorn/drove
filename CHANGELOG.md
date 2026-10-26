@@ -14,7 +14,8 @@
 - Models whose directory or files resolve outside `models_dir` (for example a
   symlink to another disk) are no longer listed, served or deleted; point
   `models_dir` at that location instead. Names containing spaces are no longer
-  accepted.
+  accepted, and existing models with such names are hidden from listings until
+  renamed on disk.
 - Chat sessions are always saved inside `sessions_dir`, even when a remote
   endpoint advertises a model id such as `../../x`; such ids, and any id that is
   not a valid local model name, are stored under a separate `_<name>-<digest>`

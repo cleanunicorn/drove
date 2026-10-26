@@ -393,3 +393,20 @@ def test_alias_scan_skips_sidecars_outside_models_dir(tmp_path: Path) -> None:
     assert resolve_model_alias(models, "org/repo") is None
     with pytest.raises(FileNotFoundError):
         ModelStore(models).resolve("org/repo")
+
+
+def test_inventory_only_offers_names_the_validator_accepts(tmp_path: Path) -> None:
+    """Every listed or completed name must be usable with resolve() and the CLI."""
+    _make_gguf(tmp_path, "good", "model.gguf")
+    _make_gguf(tmp_path, "org", "good", "model.gguf")
+    _make_gguf(tmp_path, "my model.gguf")
+    _make_gguf(tmp_path, "bad name", "model.gguf")
+    _make_gguf(tmp_path, "org", "bad name", "model.gguf")
+    _make_gguf(tmp_path, "bad ns", "inner", "model.gguf")
+    _make_gguf(tmp_path, "_scratch", "model.gguf")
+    store = ModelStore(tmp_path)
+    listed = [e.name for e in store.list()]
+    assert listed == ["good", "org/good"]
+    assert store.complete("") == ["good", "org/good"]
+    for name in listed:
+        assert store.resolve(name)

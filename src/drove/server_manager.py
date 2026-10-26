@@ -533,7 +533,13 @@ class ServerManager:
             return
         # The stderr reader is left running: it ends on EOF, and until then it
         # drains any descendant still holding the pipe so it cannot block.
-        await self._terminate(inst)
+        try:
+            await self._terminate(inst)
+        except BaseException:
+            # Interrupted (e.g. cancelled mid-grace-wait): the instance is no
+            # longer tracked, so never leave its process running.
+            _kill_now(inst)
+            raise
 
     async def _terminate(self, inst: _ModelInstance) -> None:
         if inst.backend == BACKEND_TTS:
@@ -984,6 +990,16 @@ def _find_free_port() -> int:
         s.bind(("", 0))
         port: int = s.getsockname()[1]
         return port
+
+
+def _kill_now(inst: _ModelInstance) -> None:
+    try:
+        if inst.backend == BACKEND_TTS:
+            os.killpg(inst.process.pid, signal.SIGKILL)
+        else:
+            inst.process.kill()
+    except ProcessLookupError:
+        pass
 
 
 async def _wait_reaped(inst: _ModelInstance) -> None:

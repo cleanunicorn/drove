@@ -811,3 +811,46 @@ time.sleep(60)
             except ProcessLookupError:
                 pass
         await asyncio.wait_for(process.wait(), 5)
+
+
+async def test_cancelled_stop_kills_backend_and_keeps_draining(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = """
+import signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+sys.stderr.write("READY\\n")
+sys.stderr.flush()
+time.sleep(60)
+"""
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        script,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stderr is not None
+    assert await asyncio.wait_for(process.stderr.readline(), 5) == b"READY\n"
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    inst = _ModelInstance("stubborn", process, 9999, make_model(config), (0.0, 0.0))
+    inst.start_stderr_reader()
+    manager._instances["stubborn"] = inst
+    monkeypatch.setattr(manager, "_save_prompt_cache", AsyncMock())
+    try:
+        stop = asyncio.create_task(manager.stop_model("stubborn"))
+        await asyncio.sleep(0.2)  # inside the SIGTERM grace wait
+        stop.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stop
+        assert not manager._instances
+        # The untracked backend must not survive with an unread pipe.
+        assert await asyncio.wait_for(process.wait(), 5) == -signal.SIGKILL
+        assert inst._stderr_task is not None
+        await asyncio.wait_for(asyncio.wait({inst._stderr_task}), 1)
+        assert not inst._stderr_task.cancelled()
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await asyncio.wait_for(process.wait(), 5)

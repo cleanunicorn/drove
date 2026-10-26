@@ -325,7 +325,7 @@ def main(argv: list[str] | None = None) -> None:
     app = create_tts_app(engine, args.model_name)
     import uvicorn
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, access_log=False)
 
 
 if __name__ == "__main__":

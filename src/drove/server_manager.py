@@ -134,6 +134,10 @@ class _ModelInstance:
         if self.process.stderr is not None:
             self._stderr_task = asyncio.create_task(self._drain_stderr())
 
+    def stop_stderr_reader(self) -> None:
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+
     async def _drain_stderr(self) -> None:
         assert self.process.stderr is not None
         try:
@@ -489,7 +493,9 @@ class ServerManager:
         logger.info("Starting %s backend: %s", backend, " ".join(cmd))
         process = await asyncio.create_subprocess_exec(
             *cmd,
-            stdout=asyncio.subprocess.PIPE,
+            # Nothing reads backend stdout; an unread pipe would block the
+            # backend once it fills. stderr is drained for diagnostics.
+            stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=backend == BACKEND_TTS,
         )
@@ -529,7 +535,13 @@ class ServerManager:
         inst = self._instances.pop(model_name, None)
         if inst is None:
             return
+        try:
+            await self._terminate(inst)
+        finally:
+            # A descendant can hold stderr open after the backend dies.
+            inst.stop_stderr_reader()
 
+    async def _terminate(self, inst: _ModelInstance) -> None:
         if inst.backend == BACKEND_TTS:
             # uv supervises the Python worker. Signal its isolated process group,
             # including when the supervisor has already exited but a child remains.
@@ -548,7 +560,7 @@ class ServerManager:
                     os.killpg(inst.process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            await inst.process.wait()
+            await _wait_reaped(inst)
             return
 
         if not inst.is_running:
@@ -556,15 +568,15 @@ class ServerManager:
 
         await self._save_prompt_cache(inst)
 
-        logger.info("Stopping llama-server (model=%s, pid=%d)", model_name, inst.process.pid)
+        logger.info("Stopping llama-server (model=%s, pid=%d)", inst.model_name, inst.process.pid)
         try:
             inst.process.send_signal(signal.SIGTERM)
             try:
-                await asyncio.wait_for(inst.process.wait(), timeout=10.0)
+                await asyncio.wait_for(inst.process.wait(), timeout=STOP_TIMEOUT_SECONDS)
             except TimeoutError:
                 logger.warning("llama-server did not stop in time, sending SIGKILL")
                 inst.process.kill()
-                await inst.process.wait()
+                await _wait_reaped(inst)
         except ProcessLookupError:
             pass  # already gone
 
@@ -978,6 +990,22 @@ def _find_free_port() -> int:
         s.bind(("", 0))
         port: int = s.getsockname()[1]
         return port
+
+
+async def _wait_reaped(inst: _ModelInstance) -> None:
+    """Wait for a killed backend, giving up after STOP_TIMEOUT_SECONDS.
+
+    asyncio only reports the exit once every pipe closes, which a surviving
+    descendant can prevent forever; the caller holds the manager lock.
+    """
+    try:
+        await asyncio.wait_for(inst.process.wait(), timeout=STOP_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning(
+            "Backend did not exit after SIGKILL (model=%s, pid=%d); giving up waiting",
+            inst.model_name,
+            inst.process.pid,
+        )
 
 
 def _tail(text: str, n: int) -> str:

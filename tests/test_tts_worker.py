@@ -229,6 +229,20 @@ class CathyVoiceTests(unittest.TestCase):
             self.assertEqual("".join("".join(chunks).split()), "".join(text.split()))
 
 
+class MainTests(unittest.TestCase):
+    def test_main_disables_access_log(self) -> None:
+        from drove.workers.tts_runtime import worker
+
+        runs: dict[str, object] = {}
+        with (
+            patch.object(worker, "CathyEngine", MagicMock()),
+            patch("uvicorn.run", lambda app, **kw: runs.update(kw)),
+        ):
+            worker.main(["--engine", "kokoro", "--model-name", "kokoro", "--port", "9124"])
+        self.assertEqual(runs["port"], 9124)
+        self.assertIs(runs["access_log"], False)
+
+
 class AudioEncodingTests(unittest.TestCase):
     def test_wav_and_pcm_need_no_ffmpeg(self) -> None:
         with patch("shutil.which", return_value=None):

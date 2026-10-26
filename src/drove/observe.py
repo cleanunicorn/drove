@@ -10,6 +10,8 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from drove.model_store import is_within, validate_model_name
+
 
 @dataclass
 class ObserveRecord:
@@ -267,8 +269,17 @@ def record_matches(record: ObserveRecord, query: str) -> bool:
 
 
 def save_record(observe_dir: Path, record: ObserveRecord) -> Path:
-    """Write an observe record to disk. Returns the file path."""
-    model_dir = observe_dir / (record.model or "_unknown")
+    """Write an observe record to disk. Returns the file path.
+
+    Raises ValueError, writing nothing, when the record's model is not a
+    valid model name or its directory would resolve outside *observe_dir*.
+    """
+    if record.model is None:
+        model_dir = observe_dir / "_unknown"
+    else:
+        model_dir = observe_dir / validate_model_name(record.model)
+    if not is_within(observe_dir, model_dir):
+        raise ValueError(f"Observe directory for '{record.model}' is outside {observe_dir}.")
     model_dir.mkdir(parents=True, exist_ok=True)
     path = model_dir / f"{record.id}.json"
     path.write_text(json.dumps(_record_to_dict(record), indent=2, ensure_ascii=False))
@@ -294,7 +305,13 @@ def _record_dirs(observe_dir: Path, model: str | None, stop: Event | None = None
     """
     _check_cancelled(stop)
     if model:
-        return [observe_dir / model]
+        # A filter is a lookup key, never a path: an unsafe or escaping one
+        # matches nothing rather than reading outside observe_dir.
+        try:
+            model_dir = observe_dir / validate_model_name(model)
+        except ValueError:
+            return []
+        return [model_dir] if is_within(observe_dir, model_dir) else []
 
     dirs: list[Path] = []
     for d in observe_dir.iterdir():

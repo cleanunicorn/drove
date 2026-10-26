@@ -331,6 +331,27 @@ class DownloadPlan:
             )
         return destination
 
+    def _check_targets(self, models_dir: Path) -> None:
+        """Refuse to start if any path the download touches resolves outside *models_dir*.
+
+        Covers every local file, the Hub's raw target for nested repository
+        files, the Hub's ``.cache`` folder, and the sidecar config (and TTS
+        marker) written afterwards, so a pre-existing symlink can't redirect
+        a read or write.
+        """
+        dest = self.destination(models_dir)
+        targets = [dest / ".cache"]
+        for repo_file in self._all_remote_files():
+            targets += [self._local_path(repo_file, models_dir), dest / repo_file]
+        if self.is_tts or self.file_names:
+            entry = "model.tts" if self.is_tts else Path(first_shard(self.file_names)).name
+            targets += [dest / entry, (dest / entry).with_suffix(".toml")]
+        for target in targets:
+            if not is_within(models_dir, target):
+                raise ValueError(
+                    f"'{target}' resolves outside {models_dir}; remove the symlink and retry."
+                )
+
     def _local_path(self, repo_file: str, models_dir: Path) -> Path:
         """Return the local path, preserving TTS repository directories."""
         if self.is_tts:
@@ -351,6 +372,7 @@ class DownloadPlan:
 
         Returns {repo_filename: (status, local_size_bytes)}.
         """
+        self._check_targets(models_dir)
         result: dict[str, tuple[FileStatus, int]] = {}
         for repo_file, remote_size in self._all_remote_files().items():
             local = self._local_path(repo_file, models_dir)
@@ -373,6 +395,7 @@ class DownloadPlan:
         event_cb: EventCallback | None = None,
     ) -> Path:
         """Download all files and return the path to the model entry point."""
+        self._check_targets(models_dir)
         dest = self.destination(models_dir)
         dest.mkdir(parents=True, exist_ok=True)
         all_files = (

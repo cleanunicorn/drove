@@ -673,7 +673,11 @@ def download_model(
     if quant is None and not yes:
         quant = _select_quant_variant(plan, name, models_dir, ctx.obj["config"].tui_theme)
 
-    statuses = plan.check_local_files(models_dir)
+    try:
+        statuses = plan.check_local_files(models_dir)
+    except ValueError as e:
+        error(str(e))
+        raise typer.Exit(1) from None
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
     all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
 

@@ -957,3 +957,59 @@ def test_config_set_refuses_sidecar_symlinked_outside(tmp_path, monkeypatch):
     result = CliRunner().invoke(app, ["models", "info", "real"])
     assert result.exit_code == 1, result.output
     assert external.read_text() == "ctx_size = 2048\n"
+
+
+def _outward(tmp_path: Path, label: str) -> Path:
+    outside = tmp_path / f"outside-{label}"
+    outside.mkdir()
+    return outside
+
+
+@pytest.mark.parametrize(
+    "layout",
+    ["child-dir", "flat-file", "sidecar", "tts-marker", "hub-cache"],
+)
+def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeypatch, layout):
+    models = tmp_path / "models"
+    dest = models / "real"
+    dest.mkdir(parents=True)
+    outside = _outward(tmp_path, layout)
+    sentinel = outside / "keep"
+    sentinel.write_text("keep")
+    tts = layout == "tts-marker"
+    files = {"weights/checkpoint.pt": 4} if layout == "child-dir" or tts else {"m.gguf": 4}
+    plan = DownloadPlan("org/repo", files, "real", False, tts_engine="kokoro" if tts else None)
+    if layout == "child-dir":
+        (dest / "weights").symlink_to(outside, target_is_directory=True)
+    elif layout == "flat-file":
+        (dest / "m.gguf").symlink_to(sentinel)
+    elif layout == "sidecar":
+        (dest / "m.toml").symlink_to(outside / "cfg.toml")
+    elif layout == "tts-marker":
+        (dest / "weights").mkdir()
+        (dest / "model.toml").symlink_to(outside / "cfg.toml")
+    else:
+        (dest / ".cache").symlink_to(outside, target_is_directory=True)
+
+    def fetch(**kwargs):
+        raise AssertionError("download started despite an escaping target")
+
+    monkeypatch.setattr("drove.downloader.hf_hub_download", fetch)
+    with pytest.raises(ValueError, match="outside"):
+        plan.check_local_files(models)
+    with pytest.raises(ValueError, match="outside"):
+        plan.execute(models)
+    assert sorted(p.name for p in outside.iterdir()) == ["keep"]
+    assert sentinel.read_text() == "keep"
+
+
+def test_download_cli_reports_escaping_target_without_traceback(tmp_path, download_cli):
+    dest = tmp_path / "real"
+    dest.mkdir()
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-cli"
+    outside.mkdir()
+    (dest / "m.gguf").symlink_to(outside / "m.gguf")
+    result = download_cli(DownloadPlan("org/repo", {"m.gguf": 4}, "real", False))
+    assert result.exit_code == 1, result.output
+    assert "outside" in result.output and "Traceback" not in result.output
+    assert list(outside.iterdir()) == []

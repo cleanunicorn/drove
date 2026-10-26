@@ -13,9 +13,11 @@
   `models_dir` and `drove models delete . -y` / `.. -y` delete nothing.
 - Models whose directory or files resolve outside `models_dir` (for example a
   symlink to another disk) are no longer listed, served or deleted; point
-  `models_dir` at that location instead. Names containing spaces are no longer
-  accepted, and existing models with such names are hidden from listings until
-  renamed on disk.
+  `models_dir` at that location instead. A model folder holding several weight
+  files is listed, completed and served with the same file: the first one whose
+  path and sidecar config stay inside `models_dir`. Names containing spaces are
+  no longer accepted, and existing models with such names are hidden from
+  listings until renamed on disk.
 - Chat sessions are always saved inside `sessions_dir`, even when a remote
   endpoint advertises a model id such as `../../x`; such ids, and any id that is
   not a valid local model name, are stored under a separate `_<name>-<digest>`

@@ -410,3 +410,26 @@ def test_inventory_only_offers_names_the_validator_accepts(tmp_path: Path) -> No
     assert store.complete("") == ["good", "org/good"]
     for name in listed:
         assert store.resolve(name)
+
+
+def test_inventory_and_resolve_pick_the_same_servable_candidate(tmp_path: Path) -> None:
+    """list(), complete() and resolve() agree when the first candidate is unservable."""
+    models = tmp_path / "models"
+    external = tmp_path / "external.toml"
+    external.write_text("ctx_size = 2048\n")
+    _make_gguf(models, "multi", "a.gguf")
+    safe = _make_gguf(models, "multi", "b.gguf")
+    (models / "multi" / "a.toml").symlink_to(external)
+    _make_gguf(models, "org", "multi", "a.gguf")
+    nested_safe = _make_gguf(models, "org", "multi", "b.gguf")
+    (models / "org" / "multi" / "a.toml").symlink_to(external)
+    _make_gguf(models, "blocked", "a.gguf")
+    (models / "blocked" / "a.toml").symlink_to(external)
+    store = ModelStore(models)
+    entries = {e.name: e.primary for e in store.list()}
+    assert entries == {"multi": safe, "org/multi": nested_safe}
+    assert store.complete("") == ["multi", "org/multi"]
+    for name, path in entries.items():
+        assert store.resolve(name) == path
+    with pytest.raises(FileNotFoundError):
+        store.resolve("blocked")

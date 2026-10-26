@@ -132,23 +132,12 @@ class ModelStore:
         return [entry for entry in results if _is_valid_name(entry.name)]
 
     def complete(self, prefix: str) -> builtins.list[str]:
-        """Return model names that start with *prefix* (for shell completion)."""
-        names: list[str] = []
-        if not self._dir.exists():
-            return names
-        for p in sorted(self._dir.iterdir()):
-            if not self._contains(p):
-                continue
-            if p.is_dir() and not p.name.startswith("."):
-                if self._has_model_files(p):
-                    names.append(p.name)
-                else:
-                    for sub in sorted(p.iterdir()):
-                        if sub.is_dir() and not sub.name.startswith(".") and self._contains(sub):
-                            names.append(f"{p.name}/{sub.name}")
-            elif p.suffix.lower() == ".gguf" and p.is_file() and self._servable(p):
-                names.append(p.stem)
-        return [n for n in names if _is_valid_name(n) and n.lower().startswith(prefix.lower())]
+        """Return model names that start with *prefix* (for shell completion).
+
+        Derived from list() so completion never offers a name that list() or
+        resolve() would reject.
+        """
+        return [e.name for e in self.list() if e.name.lower().startswith(prefix.lower())]
 
     # ── private helpers ──────────────────────────────────────────────────────
 
@@ -213,6 +202,12 @@ class ModelStore:
         ggufs = sorted(f for f in files if f.suffix.lower() == ".gguf")
         onnx = sorted(f for f in files if f.suffix.lower() == ".onnx")
         tts = sorted(f for f in files if f.suffix.lower() == ".tts")
-        candidates = tts or ggufs or onnx or sorted(files)
-        if candidates and self._servable(candidates[0]):
-            results.append(ModelEntry(name, candidates[0], total))
+        if tts or ggufs or onnx:
+            # Same choice as _find_primary: the first servable file, by format priority.
+            primary = next((f for f in (*tts, *ggufs, *onnx) if self._servable(f)), None)
+        else:
+            primary = min(files, default=None)
+            if primary is not None and not self._servable(primary):
+                primary = None
+        if primary is not None:
+            results.append(ModelEntry(name, primary, total))

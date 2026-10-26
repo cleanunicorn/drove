@@ -26,6 +26,15 @@ drove models list
 drove models info qwen
 ```
 
+A local name is `name` or `org/name`. Each part starts with a letter or digit
+and may contain letters, digits, `.`, `_`, `:` and `-`, so
+`unsloth/Qwen3-8B-GGUF:Q4_K_M` is valid. Names with spaces, `.` or `..`
+parts, backslashes, a leading `/`, or more than one `/` are rejected by every
+command and by the API. Model files must also stay inside `models_dir`: a model
+directory or file that is a symlink to somewhere outside it is not listed or
+served. To keep models on another disk, point `models_dir` at that disk (a
+symlinked `models_dir` itself is fine) rather than linking single models in.
+
 Use the exact `NAME` from the list as the API `model` value or chat argument.
 The server's `GET /v1/models` returns the same local names as `id` values.
 Repository aliases can resolve to downloaded variants, but explicit local names

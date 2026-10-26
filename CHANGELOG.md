@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## [Unreleased]
+
+### Security
+
+- Model names are now validated everywhere they enter drove (the API `model`
+  field, `models delete`/`info`/`config`, `models download --name` and observe
+  records). Empty, absolute, `.`/`..`, backslash and other unsafe names are
+  rejected with HTTP 400 or a CLI error before anything is read, started,
+  written or deleted, so a LAN client can no longer load or walk files outside
+  `models_dir` and `drove models delete . -y` / `.. -y` delete nothing.
+- Models whose directory or files resolve outside `models_dir` (for example a
+  symlink to another disk) are no longer listed, served or deleted; point
+  `models_dir` at that location instead. Names containing spaces are no longer
+  accepted.
+
+
 ## v0.13.0 (2026-10-26)
 
 ### Bug Fixes

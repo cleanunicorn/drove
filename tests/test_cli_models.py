@@ -941,3 +941,19 @@ def test_add_tts_rejects_names_outside_the_flat_rule(tmp_path, monkeypatch, name
     result = CliRunner().invoke(app, ["models", "add-tts", name])
     assert result.exit_code != 0
     assert list(tmp_path.iterdir()) == []
+
+
+def test_config_set_refuses_sidecar_symlinked_outside(tmp_path, monkeypatch):
+    models = tmp_path / "models"
+    _make_model(models, "real")
+    sidecar = next((models / "real").glob("*.gguf")).with_suffix(".toml")
+    external = tmp_path / "external.toml"
+    external.write_text("ctx_size = 2048\n")
+    sidecar.symlink_to(external)
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(models))
+    for args in (["real", "ctx_size", "4096"], ["real"], ["real", "--unset", "ctx_size"]):
+        result = CliRunner().invoke(app, ["models", "config", *args])
+        assert result.exit_code == 1, result.output
+    result = CliRunner().invoke(app, ["models", "info", "real"])
+    assert result.exit_code == 1, result.output
+    assert external.read_text() == "ctx_size = 2048\n"

@@ -115,7 +115,7 @@ class ModelStore:
                     for sub in sorted(p.iterdir()):
                         if sub.is_dir() and not sub.name.startswith(".") and self._contains(sub):
                             self._add_entry(sub, f"{p.name}/{sub.name}", results)
-            elif p.suffix.lower() == ".gguf" and p.is_file():
+            elif p.suffix.lower() == ".gguf" and p.is_file() and self._servable(p):
                 results.append(ModelEntry(p.stem, p, p.stat().st_size))
         return results
 
@@ -143,6 +143,17 @@ class ModelStore:
     def _contains(self, path: Path) -> bool:
         return is_within(self._dir, path)
 
+    def _servable(self, primary: Path) -> bool:
+        """True when *primary* and its sidecar TOML (if any) stay inside the store.
+
+        Config reads and writes follow the sidecar, so an outward (or dangling)
+        sidecar symlink would let them escape even though the weights are inside.
+        """
+        if not self._contains(primary):
+            return False
+        sidecar = primary.with_suffix(".toml")
+        return not (sidecar.exists() or sidecar.is_symlink()) or self._contains(sidecar)
+
     def _alias(self, ref: str) -> str | None:
         """Resolve a HuggingFace alias, dropping any result that is not a safe name."""
         alias = resolve_model_alias(self._dir, ref)
@@ -162,11 +173,11 @@ class ModelStore:
         subdir = self._dir / name
         if subdir.is_dir() and self._contains(subdir):
             for found in (subdir.glob("*.tts"), subdir.rglob("*.gguf"), subdir.rglob("*.onnx")):
-                contained = sorted(p for p in found if self._contains(p))
+                contained = sorted(p for p in found if self._servable(p))
                 if contained:
                     return contained[0]
         candidate = self._dir / f"{name}.gguf"
-        if candidate.exists() and self._contains(candidate):
+        if candidate.exists() and self._servable(candidate):
             return candidate
         return None
 
@@ -191,5 +202,5 @@ class ModelStore:
         onnx = sorted(f for f in files if f.suffix.lower() == ".onnx")
         tts = sorted(f for f in files if f.suffix.lower() == ".tts")
         candidates = tts or ggufs or onnx or sorted(files)
-        if candidates:
+        if candidates and self._servable(candidates[0]):
             results.append(ModelEntry(name, candidates[0], total))

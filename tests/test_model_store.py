@@ -352,3 +352,44 @@ def test_store_ignores_alias_that_is_not_a_valid_name(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         store.resolve("org/repo")
     assert store.find_root("org/repo") is None
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_store_ignores_model_whose_sidecar_escapes(tmp_path: Path, dangling: bool) -> None:
+    """A sidecar symlinked outside models_dir would let config reads/writes escape."""
+    models = tmp_path / "models"
+    _make_gguf(models, "real", "model.gguf")
+    _make_gguf(models, "flat.gguf")
+    external = tmp_path / "external.toml"
+    if not dangling:
+        external.write_text("ctx_size = 2048\n")
+    (models / "real" / "model.toml").symlink_to(external)
+    (models / "flat.toml").symlink_to(external)
+    store = ModelStore(models)
+    for name in ("real", "flat"):
+        with pytest.raises(FileNotFoundError):
+            store.resolve(name)
+    assert store.list() == []
+    if not dangling:
+        assert external.read_text() == "ctx_size = 2048\n"
+
+
+def test_store_keeps_model_with_inside_sidecar_symlink(tmp_path: Path) -> None:
+    primary = _make_gguf(tmp_path, "real", "model.gguf")
+    shared = tmp_path / "shared.toml"
+    shared.write_text("ctx_size = 2048\n")
+    (tmp_path / "real" / "model.toml").symlink_to(shared)
+    assert ModelStore(tmp_path).resolve("real") == primary
+
+
+def test_alias_scan_skips_sidecars_outside_models_dir(tmp_path: Path) -> None:
+    from drove.model_config import resolve_model_alias
+
+    models = tmp_path / "models"
+    _make_gguf(models, "real", "model.gguf")
+    external = tmp_path / "external.toml"
+    external.write_text('[download]\nrepo_id = "org/repo"\nfiles = ["model.gguf"]\n')
+    (models / "real" / "meta.toml").symlink_to(external)
+    assert resolve_model_alias(models, "org/repo") is None
+    with pytest.raises(FileNotFoundError):
+        ModelStore(models).resolve("org/repo")

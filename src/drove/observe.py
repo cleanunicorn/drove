@@ -434,23 +434,42 @@ def _open_subdir(parent_fd: int, name: str) -> int:
 def _encode_record(record: ObserveRecord) -> bytes:
     """Encode a record as JSON of at most MAX_RECORD_BYTES, credentials redacted.
 
-    Bodies are shortened (with a truncation marker) until the encoded document
+    Client-supplied metadata (endpoint, method, headers) is bounded first, then
+    bodies are shortened (with a truncation marker) until the encoded document
     fits, so escaping and pretty-printing cannot push a record past the cap.
+    If even that is not enough, headers and bodies are dropped with a marker;
+    a record that still cannot fit raises ValueError and nothing is written.
     """
     data = _record_to_dict(record)
+    for name in ("endpoint", "method"):
+        text = str(data[name])
+        if len(text) > _MAX_HEADER_CHARS:
+            data[name] = text[:_MAX_HEADER_CHARS] + _truncation_marker(len(text.encode()))
     data["request_headers"] = sanitize_headers(record.request_headers)
     data["response_headers"] = sanitize_headers(record.response_headers)
     body_fields = ("request_body", "response_body", "response_body_raw")
     budget = MAX_BODY_BYTES
     while True:
         encoded = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
-        if len(encoded) <= MAX_RECORD_BYTES or budget < 64:
+        if len(encoded) <= MAX_RECORD_BYTES:
             return encoded
+        if budget < 64:
+            break
         budget //= 2
         for name in body_fields:
             value = data[name]
             if isinstance(value, str) and len(value.encode("utf-8")) > budget:
                 data[name] = _truncate_text(value, budget, len(value.encode("utf-8")))
+
+    omitted = f"[omitted: record exceeded {MAX_RECORD_BYTES} bytes]"
+    data["request_headers"] = {}
+    data["response_headers"] = {}
+    for name in body_fields:
+        data[name] = omitted
+    encoded = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    if len(encoded) > MAX_RECORD_BYTES:
+        raise ValueError(f"Observe record {record.id} cannot fit in {MAX_RECORD_BYTES} bytes.")
+    return encoded
 
 
 def load_record(path: Path) -> ObserveRecord:

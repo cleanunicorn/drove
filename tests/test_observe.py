@@ -757,3 +757,43 @@ def test_save_record_never_writes_through_a_swapped_directory(
 def test_save_record_rejects_ids_that_are_not_plain_names(tmp_path: Path, record_id: str) -> None:
     with pytest.raises(ValueError):
         save_record(tmp_path, _make_record(record_id=record_id))
+
+
+def test_saved_record_stays_under_cap_with_oversized_metadata(tmp_path: Path) -> None:
+    ctx = ObserveContext(
+        timestamp="2026-04-08T12:00:00",
+        model="testmodel",
+        endpoint="v1/" + "e" * (2 * MAX_RECORD_BYTES),
+        method="M" * 100_000,
+        request_headers={f"x-h{i}": "\x01" * 5000 for i in range(200)},
+        request_body=b"\x01" * MAX_BODY_BYTES,
+        response_headers={"content-type": "text/plain"},
+        response_body=b"\x01" * MAX_BODY_BYTES,
+    )
+    path = save_record(tmp_path, ctx.to_record())
+    assert path.stat().st_size <= MAX_RECORD_BYTES
+    loaded = load_record(path)
+    assert loaded.endpoint.startswith("v1/eee")
+    assert "[TRUNCATED" in loaded.endpoint
+    assert "[TRUNCATED" in loaded.method
+
+
+def test_record_falls_back_to_metadata_only_and_never_exceeds_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import drove.observe as observe_module
+
+    monkeypatch.setattr(observe_module, "MAX_RECORD_BYTES", 4096)
+    record = _make_record()
+    record.request_headers = {f"x-h{i}": "v" * 1000 for i in range(20)}
+    path = save_record(tmp_path, record)
+    assert path.stat().st_size <= 4096
+    loaded = load_record(path)
+    assert loaded.request_headers == {}
+    assert loaded.request_body is not None
+    assert loaded.request_body.startswith("[omitted: record exceeded 4096 bytes]")
+
+    monkeypatch.setattr(observe_module, "MAX_RECORD_BYTES", 10)
+    with pytest.raises(ValueError, match="cannot fit"):
+        save_record(tmp_path, _make_record(record_id="20260408-120000-other000"))
+    assert not (tmp_path / "testmodel" / "20260408-120000-other000.json").exists()

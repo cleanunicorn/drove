@@ -13,6 +13,7 @@ from typing import Literal
 from huggingface_hub import HfApi, hf_hub_download
 
 from drove.backend import infer_tts_engine
+from drove.download_state import MANIFEST_NAME, write_state
 from drove.model_store import is_within, validate_model_name
 
 type ProgressCallback = Callable[[int, int, str], None]
@@ -89,8 +90,9 @@ class FileStatus(enum.Enum):
 # Matches shard suffixes like -00001-of-00012
 _SHARD_RE = re.compile(r"-\d{5}-of-\d{5}", re.IGNORECASE)
 
-# Model file extensions we care about
-_MODEL_EXTS = {".gguf", ".safetensors", ".bin", ".pt"}
+# Model file extensions we download for text and vision: GGUF only.  drove
+# serves GGUF with llama-server and never converts other weight formats.
+_MODEL_EXTS = {".gguf"}
 
 # Speech synthesis weights and tokenizer/config support files.
 _TTS_WEIGHT_EXTS = {".safetensors", ".bin", ".pt", ".pth"}
@@ -342,7 +344,8 @@ class DownloadPlan:
         or write, not even from behind a link that itself stays inside.
         """
         dest = self.destination(models_dir)
-        targets = [dest / ".cache"]
+        self._expected_files(models_dir)
+        targets = [dest / ".cache", dest / MANIFEST_NAME, dest / f"{MANIFEST_NAME}.tmp"]
         for repo_file in self._all_remote_files():
             targets += [self._local_path(repo_file, models_dir), dest / repo_file]
         if self.is_tts or self.file_names:
@@ -358,6 +361,24 @@ class DownloadPlan:
             _validate_relative_path(repo_file)
             return self.destination(models_dir) / repo_file
         return self.destination(models_dir) / Path(repo_file).name
+
+    def _expected_files(self, models_dir: Path) -> dict[str, int]:
+        """Return {local path relative to the destination: remote bytes} for the record.
+
+        Raises ValueError when two repository files would land on one local
+        path (flattening), which would otherwise overwrite one with the other.
+        """
+        dest = self.destination(models_dir)
+        expected: dict[str, int] = {}
+        for repo_file, size in self._all_remote_files().items():
+            rel = self._local_path(repo_file, models_dir).relative_to(dest).as_posix()
+            if rel in expected:
+                raise ValueError(
+                    f"Repository files would overwrite each other as '{rel}'; "
+                    "download a single quantization with :QUANT."
+                )
+            expected[rel] = size
+        return expected
 
     def _all_remote_files(self) -> dict[str, int]:
         """Return all files (model + mmproj + extras) with their remote sizes."""
@@ -394,10 +415,17 @@ class DownloadPlan:
         *,
         event_cb: EventCallback | None = None,
     ) -> Path:
-        """Download all files and return the path to the model entry point."""
+        """Download all files and return the path to the model entry point.
+
+        A download record marks the destination incomplete before the first
+        transfer and complete after the last, so an interrupted download is
+        never listed or served (see drove.download_state).
+        """
         self._check_targets(models_dir)
         dest = self.destination(models_dir)
+        expected = self._expected_files(models_dir)
         dest.mkdir(parents=True, exist_ok=True)
+        write_state(dest, "incomplete", expected)
         all_files = (
             sorted(self.file_names)
             + sorted(self.mmproj_files.keys())
@@ -503,7 +531,9 @@ class DownloadPlan:
                 ),
             )
             primary.touch()
+            write_state(dest, "complete", expected)
             return primary
+        write_state(dest, "complete", expected)
         return dest / Path(first_shard(self.file_names)).name
 
 
@@ -526,7 +556,12 @@ def resolve_download(
     files, mmproj_files, extra_files = _fetch_files_with_sizes(repo_id)
 
     if not files:
-        raise ValueError(f"No model files found in repo '{repo_id}'.")
+        raise ValueError(
+            f"No GGUF or ONNX model files found in repo '{repo_id}'. drove serves GGUF "
+            "(text and vision) and ONNX (speech-to-text) weights and does not convert "
+            "other formats such as safetensors; download a GGUF build of this model "
+            "instead (often published as a separate '-GGUF' repository)."
+        )
 
     onnx_files: dict[str, int] = {}
     if is_onnx_files(files):

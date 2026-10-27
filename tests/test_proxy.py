@@ -752,3 +752,313 @@ def test_models_endpoint_hides_names_the_api_would_reject(tmp_path: Path) -> Non
     with TestClient(create_app(config)) as client:
         ids = [m["id"] for m in client.get("/v1/models").json()["data"]]
     assert ids == ["good"]
+
+
+# --- Client disconnects before the response starts (#112) -------------------
+
+
+class _Connection:
+    """A raw ASGI client: sends the whole body, then disconnects when told to."""
+
+    def __init__(self, body: bytes) -> None:
+        self._pending: list[dict[str, object]] = [
+            {"type": "http.request", "body": body, "more_body": False}
+        ]
+        self.gone = asyncio.Event()
+        self.body_sent = asyncio.Event()
+        self.status: int | None = None
+
+    async def receive(self) -> dict[str, object]:
+        if self._pending:
+            return self._pending.pop(0)
+        await self.gone.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(self, message: dict[str, object]) -> None:
+        if message["type"] == "http.response.start":
+            self.status = message["status"]  # type: ignore[assignment]
+        elif message["type"] == "http.response.body" and message.get("body"):
+            self.body_sent.set()
+
+
+def _scope(path: str, content_type: str, body: bytes) -> dict[str, object]:
+    return {
+        "type": "http",
+        # 2.3: StreamingResponse watches receive() for http.disconnect, as under uvicorn.
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": f"/{path}",
+        "raw_path": f"/{path}".encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", content_type.encode()),
+            (b"content-length", str(len(body)).encode()),
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", 8080),
+    }
+
+
+def _multipart_body() -> tuple[bytes, str]:
+    request = httpx.Request(
+        "POST",
+        "http://drove/v1/audio/transcriptions",
+        data={"model": "m"},
+        files={"file": ("a.wav", b"RIFF....WAVE", "audio/wav")},
+    )
+    request.read()
+    return request.content, request.headers["content-type"]
+
+
+_ENDPOINTS = {
+    "chat-stream": (
+        "v1/chat/completions",
+        "application/json",
+        b'{"model": "m", "stream": true, "messages": []}',
+    ),
+    "chat-buffered": (
+        "v1/chat/completions",
+        "application/json",
+        b'{"model": "m", "stream": false, "messages": []}',
+    ),
+    "asr": ("v1/audio/transcriptions", *reversed(_multipart_body())),
+    "tts": ("v1/audio/speech", "application/json", b'{"model": "m", "input": "hi"}'),
+}
+
+
+class _Abort(BaseException):
+    """A BaseException that is neither an Exception nor a cancellation."""
+
+
+class _Harness:
+    """A loaded model 'm' that already serves one other request, plus fakes.
+
+    The other request (instance count 1, global active count 1) is a sentinel:
+    a double release would drop it to 0 instead of hiding behind the floor at 0.
+    """
+
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from drove.server_manager import _ModelInstance
+
+        self.app = create_app(make_config(tmp_path))
+        self.manager = self.app.state.manager
+        self.stats = self.app.state.stats
+        self.instance = _ModelInstance(
+            "m", MagicMock(returncode=None), 9999, tmp_path / "m.gguf", (0.0, 0.0)
+        )
+        self.instance.active_requests = 1
+        self.manager._instances["m"] = self.instance
+        self.stats.request_started()
+
+        self.finished = MagicMock(wraps=self.manager.request_finished)
+        monkeypatch.setattr(self.manager, "request_finished", self.finished)
+
+        self.starting = asyncio.Event()
+        self.started = asyncio.Event()
+        self.started.set()
+
+        async def ensure_running(model_name: str, *, claim: bool = False) -> object | None:
+            self.starting.set()
+            await self.started.wait()
+            return self.manager._claim_slot(model_name)
+
+        monkeypatch.setattr(self.manager, "ensure_running", ensure_running)
+
+        self.sending = asyncio.Event()
+        self.send_cancelled = asyncio.Event()
+        self.answer = asyncio.Event()  # never set by the disconnect tests
+        self.send_error: BaseException | None = None
+        self.upstream: list[httpx.Request] = []
+        self.response = MagicMock(spec=httpx.Response)
+        self.response.status_code = 200
+        self.response.headers = httpx.Headers({"content-type": "application/json"})
+        self.response.aiter_raw = lambda: aiter([b'{"ok": true}'])
+        self.response.aclose = AsyncMock()
+
+        async def send(request: httpx.Request, *, stream: bool = False) -> httpx.Response:
+            self.upstream.append(request)
+            self.sending.set()
+            if self.send_error is not None:
+                raise self.send_error
+            try:
+                await self.answer.wait()
+            except asyncio.CancelledError:
+                self.send_cancelled.set()
+                raise
+            return self.response
+
+        self.send = AsyncMock(side_effect=send)
+        monkeypatch.setattr(self.app.state.client, "send", self.send)
+
+    def call(self, endpoint: str) -> tuple[asyncio.Task[None], _Connection]:
+        path, content_type, body = _ENDPOINTS[endpoint]
+        conn = _Connection(body)
+        task = asyncio.create_task(
+            self.app(_scope(path, content_type, body), conn.receive, conn.send)
+        )
+        return task, conn
+
+    def assert_released_once(self) -> None:
+        self.finished.assert_called_once_with("m", self.instance)
+        assert self.instance.active_requests == 1
+        assert self.stats.active_requests == 1
+
+
+@pytest.fixture
+async def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    h = _Harness(tmp_path, monkeypatch)
+    yield h
+    h.manager._instances.clear()
+    await h.app.state.client.aclose()
+
+
+@pytest.mark.parametrize("endpoint", list(_ENDPOINTS))
+async def test_disconnect_during_cold_start_is_never_forwarded(
+    harness: _Harness, endpoint: str
+) -> None:
+    harness.started.clear()
+    task, conn = harness.call(endpoint)
+    await asyncio.wait_for(harness.starting.wait(), 5)
+    conn.gone.set()
+    harness.started.set()
+    await asyncio.wait_for(task, 5)
+
+    harness.send.assert_not_awaited()
+    harness.assert_released_once()
+    assert harness.stats.error_count == 0
+    assert conn.status == 499
+
+
+@pytest.mark.parametrize("endpoint", list(_ENDPOINTS))
+async def test_disconnect_during_upstream_send_cancels_it(harness: _Harness, endpoint: str) -> None:
+    task, conn = harness.call(endpoint)
+    await asyncio.wait_for(harness.sending.wait(), 5)
+    conn.gone.set()
+    # The fake upstream never answers: the handler only finishes by cancelling it.
+    await asyncio.wait_for(task, 5)
+
+    assert harness.send_cancelled.is_set()
+    assert not harness.answer.is_set()
+    harness.assert_released_once()
+    assert harness.stats.error_count == 0
+    assert conn.status == 499
+
+
+async def test_mid_stream_disconnect_releases_once(harness: _Harness) -> None:
+    more = asyncio.Event()  # never set: the second chunk never arrives
+
+    async def chunks():  # type: ignore[no-untyped-def]
+        yield b'data: {"choices": []}\n\n'
+        await more.wait()
+        yield b"data: [DONE]\n\n"
+
+    harness.response.aiter_raw = chunks
+    harness.answer.set()
+    task, conn = harness.call("chat-stream")
+    await asyncio.wait_for(conn.body_sent.wait(), 5)
+    conn.gone.set()
+    await asyncio.wait_for(task, 5)
+
+    assert conn.status == 200
+    harness.assert_released_once()
+
+
+async def test_connected_client_still_gets_the_upstream_response(harness: _Harness) -> None:
+    harness.answer.set()
+    task, conn = harness.call("chat-buffered")
+    await asyncio.wait_for(task, 5)
+
+    assert conn.status == 200
+    assert conn.body_sent.is_set()
+    harness.assert_released_once()
+
+
+async def test_fallback_model_forwards_a_non_json_body_intact(harness: _Harness) -> None:
+    harness.answer.set()
+    conn = _Connection(b"plain text body")
+    scope = _scope("v1/completions", "text/plain", b"plain text body")
+    await asyncio.wait_for(harness.app(scope, conn.receive, conn.send), 5)
+
+    assert conn.status == 200
+    assert harness.upstream[0].content == b"plain text body"
+    harness.assert_released_once()
+
+
+async def test_cancel_during_cold_start_settles_without_a_release(harness: _Harness) -> None:
+    harness.started.clear()
+    task, _ = harness.call("chat-stream")
+    await asyncio.wait_for(harness.starting.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    harness.finished.assert_not_called()
+    assert harness.instance.active_requests == 1
+    assert harness.stats.active_requests == 1
+
+
+async def test_cancel_during_upstream_send_releases_once(harness: _Harness) -> None:
+    before = asyncio.all_tasks()
+    task, _ = harness.call("chat-stream")
+    await asyncio.wait_for(harness.sending.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert harness.send_cancelled.is_set()
+    harness.assert_released_once()
+    assert harness.stats.error_count == 0
+    leftover = [t for t in asyncio.all_tasks() - before if not t.done()]
+    assert leftover == []
+
+
+async def test_base_exception_from_upstream_send_releases_once(harness: _Harness) -> None:
+    harness.send_error = _Abort()
+    task, _ = harness.call("tts")
+    with pytest.raises(_Abort):
+        await asyncio.wait_for(task, 5)
+
+    harness.assert_released_once()
+
+
+async def test_send_race_prefers_disconnect_on_a_tie() -> None:
+    from drove.proxy import _send_unless_disconnected
+
+    response = MagicMock(spec=httpx.Response)
+    response.aclose = AsyncMock()
+    client = MagicMock(spec=httpx.AsyncClient)
+    client.send = AsyncMock(return_value=response)
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.disconnect"}
+
+    assert await _send_unless_disconnected(client, MagicMock(), receive) is None
+    response.aclose.assert_awaited_once()
+
+
+async def test_send_race_ignores_non_disconnect_messages() -> None:
+    from drove.proxy import _send_unless_disconnected
+
+    response = MagicMock(spec=httpx.Response)
+    answer = asyncio.Event()
+
+    async def send(request: object, *, stream: bool = False) -> httpx.Response:
+        await answer.wait()
+        return response
+
+    client = MagicMock(spec=httpx.AsyncClient)
+    client.send = AsyncMock(side_effect=send)
+    messages = [{"type": "http.request", "body": b"", "more_body": False}]
+
+    async def receive() -> dict[str, object]:
+        if messages:
+            message = messages.pop()
+            answer.set()
+            return message
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    assert await _send_unless_disconnected(client, MagicMock(), receive) is response

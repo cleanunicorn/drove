@@ -90,8 +90,12 @@ time for both a cold start and inference. See
 | --- | --- | --- |
 | `400` | Invalid `model` value, no model specified with no default configured and none loaded, or invalid backend input | Send a model ID from `/v1/models` and validate the request fields |
 | `404` | Requested model is not installed | Compare with `/v1/models` |
+| `500` | Invalid model config (`invalid model config for '<name>'`) or an unexpected startup error | Fix the model's `.toml` sidecar; details are in the server log |
 | `502` | Proxy could not complete the backend connection or request | Inspect server logs and timeouts |
-| `503` | Backend failed to start or become healthy | Check dependencies, memory, and startup timeout |
+| `503` | Backend missing or not launchable (`backend unavailable`), or it failed to start or become healthy (`model failed to start`) | Check dependencies, memory, and startup timeout in the server log |
+
+Startup errors carry a short fixed message. Backend output and exception details
+are written to the server log only.
 
 Backend error responses are also forwarded, so inspect the response body along
 with the status. See [Troubleshooting](./troubleshooting.md) for concrete steps.

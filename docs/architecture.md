@@ -45,7 +45,11 @@ Client → FastAPI proxy (drove port)
 - `drove` keeps request-path behavior transparent by forwarding requests directly.
 - After inactivity timeout, the backend process is terminated to release resources.
 - Backend stdout is discarded; stderr is drained continuously into a bounded 256 KB tail that
-  startup-failure errors quote. No backend output can block a backend.
+  is attached to startup-failure exceptions as notes and logged on the server; it is never
+  sent to clients. No backend output can block a backend.
+- Startup failures reach clients as fixed short messages (404 unknown model, 500 invalid
+  config or unexpected error, 503 backend unavailable or unhealthy), and the model config and
+  backend are validated before any idle restart or eviction.
 - Stopping sends SIGTERM, then SIGKILL after 10 s; the final wait is bounded too, so a process
   whose descendants keep a pipe open cannot hold the manager lock.
 

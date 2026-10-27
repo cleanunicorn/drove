@@ -187,7 +187,7 @@ drove config llama_server.n_gpu_layers -1
 
 Setting a value writes only that key to the config file; `DROVE_*` overrides
 are never saved. It also works when the file holds an invalid value, so it can
-repair one. See [Sources and precedence](configuration.md#sources-and-precedence).
+repair one; a file with broken TOML syntax is refused unchanged. See [Sources and precedence](configuration.md#sources-and-precedence).
 
 ## Models management
 

@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import builtins
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from drove.model_config import resolve_model_alias
+from pydantic import ValidationError
+
+from drove.model_config import load_download_info, resolve_model_alias
 
 _MODEL_EXTS = frozenset({".gguf", ".onnx", ".safetensors", ".bin", ".pt", ".tts"})
+
+# Multimodal projector filenames (``mmproj-*.gguf``): companion files passed via
+# ``--mmproj``, never a model's primary file.
+MMPROJ_RE = re.compile(r"mmproj", re.IGNORECASE)
 
 # One path segment of a model name: no separators, no leading dot or dash.
 _NAME_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
@@ -127,7 +134,12 @@ class ModelStore:
                     for sub in sorted(p.iterdir()):
                         if sub.is_dir() and not sub.name.startswith(".") and self._contains(sub):
                             self._add_entry(sub, f"{p.name}/{sub.name}", results)
-            elif p.suffix.lower() == ".gguf" and p.is_file() and self._servable(p):
+            elif (
+                p.suffix.lower() == ".gguf"
+                and not MMPROJ_RE.search(p.name)
+                and p.is_file()
+                and self._servable(p)
+            ):
                 results.append(ModelEntry(p.stem, p, p.stat().st_size))
         return [entry for entry in results if _is_valid_name(entry.name)]
 
@@ -173,13 +185,40 @@ class ModelStore:
         """
         subdir = self._dir / name
         if subdir.is_dir() and self._contains(subdir):
-            for found in (subdir.glob("*.tts"), subdir.rglob("*.gguf"), subdir.rglob("*.onnx")):
-                contained = sorted(p for p in found if self._servable(p))
-                if contained:
-                    return contained[0]
+            files = [f for f in subdir.rglob("*") if f.is_file() and self._contains(f)]
+            primary = self._select_primary(files)
+            if primary is not None:
+                return primary
         candidate = self._dir / f"{name}.gguf"
-        if candidate.exists() and self._servable(candidate):
+        if (
+            not MMPROJ_RE.search(candidate.name)
+            and candidate.exists()
+            and self._servable(candidate)
+        ):
             return candidate
+        return None
+
+    def _select_primary(self, files: builtins.list[Path]) -> Path | None:
+        """Choose a model directory's primary file from its contained *files*.
+
+        Format priority is TTS, then GGUF, then ONNX.  Projector GGUFs
+        (``mmproj``) are never primary, whatever their name sorts like.  Among
+        GGUFs, a download sidecar whose first non-projector entry names the
+        candidate wins; otherwise the lexically first servable one (shard 1 of
+        a sharded model).  Returns None when nothing servable remains, which
+        includes a directory holding only projectors.
+        """
+        by_suffix: dict[str, builtins.list[Path]] = {".tts": [], ".gguf": [], ".onnx": []}
+        for f in sorted(files):
+            if f.suffix.lower() in by_suffix and not MMPROJ_RE.search(f.name):
+                by_suffix[f.suffix.lower()].append(f)
+        for suffix in (".tts", ".gguf", ".onnx"):
+            servable = [f for f in by_suffix[suffix] if self._servable(f)]
+            if not servable:
+                continue
+            if suffix == ".gguf":
+                return next((f for f in servable if _sidecar_names(f)), servable[0])
+            return servable[0]
         return None
 
     def _direct_root(self, name: str) -> Path | None:
@@ -199,15 +238,30 @@ class ModelStore:
     def _add_entry(self, directory: Path, name: str, results: builtins.list[ModelEntry]) -> None:
         files = [f for f in directory.rglob("*") if f.is_file() and self._contains(f)]
         total = sum(f.stat().st_size for f in files)
-        ggufs = sorted(f for f in files if f.suffix.lower() == ".gguf")
-        onnx = sorted(f for f in files if f.suffix.lower() == ".onnx")
-        tts = sorted(f for f in files if f.suffix.lower() == ".tts")
-        if tts or ggufs or onnx:
-            # Same choice as _find_primary: the first servable file, by format priority.
-            primary = next((f for f in (*tts, *ggufs, *onnx) if self._servable(f)), None)
+        if any(f.suffix.lower() in (".tts", ".gguf", ".onnx") for f in files):
+            # Same choice as _find_primary; a projector-only directory yields None.
+            primary = self._select_primary(files)
         else:
             primary = min(files, default=None)
             if primary is not None and not self._servable(primary):
                 primary = None
         if primary is not None:
             results.append(ModelEntry(name, primary, total))
+
+
+def _sidecar_names(candidate: Path) -> bool:
+    """True when *candidate*'s download sidecar names it as the first weights file.
+
+    The first non-projector entry of ``[download].files`` is the intended
+    primary (the downloader writes weights first, shard 1 leading).  Remote
+    subpaths are reduced to the basename, as the downloader flattens them.
+    Absent, stale or unreadable metadata is no preference.
+    """
+    try:
+        info = load_download_info(candidate)
+    except OSError, tomllib.TOMLDecodeError, ValidationError, TypeError:
+        return False
+    if info is None:
+        return False
+    first = next((f for f in info.files if not MMPROJ_RE.search(Path(f).name)), None)
+    return first is not None and Path(first).name == candidate.name

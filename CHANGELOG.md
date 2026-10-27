@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed vision models being served from their `mmproj` projector instead of the model weights, so
+  their model settings are found again; a directory holding only projectors is no longer listed as
+  a model.
+
 
 ## v0.13.1 (2026-10-27)
 

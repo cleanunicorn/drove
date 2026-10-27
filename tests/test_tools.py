@@ -571,6 +571,9 @@ def test_fetch_refuses_a_sixth_redirect(fake_net) -> None:
         "http://[::]/",
         "http://0.0.0.0/",
         "http://[::ffff:10.0.0.1]/",
+        "http://[64:ff9b::a9fe:a9fe]/latest/meta-data/",
+        "http://[64:ff9b::7f00:1]:8080/",
+        "http://[2002:a00:1::]/",
     ],
 )
 def test_fetch_refuses_internal_addresses(fake_net, url: str) -> None:
@@ -580,7 +583,15 @@ def test_fetch_refuses_internal_addresses(fake_net, url: str) -> None:
     assert fake_net.requests == []
 
 
-@pytest.mark.parametrize("answers", [["10.0.0.7"], ["93.184.216.34", "127.0.0.1"]])
+@pytest.mark.parametrize(
+    "answers",
+    [
+        ["10.0.0.7"],
+        ["93.184.216.34", "127.0.0.1"],
+        ["64:ff9b::a9fe:a9fe"],
+        ["93.184.216.34", "64:ff9b::a00:7"],
+    ],
+)
 def test_fetch_refuses_a_name_resolving_to_an_internal_address(fake_net, answers) -> None:
     fake_net.dns["intranet.example"] = answers
 
@@ -597,6 +608,22 @@ def test_fetch_refuses_a_redirect_to_an_internal_address(fake_net) -> None:
 
     assert isinstance(result, ToolFailure) and "internal" in result
     assert len(fake_net.requests) == 1
+
+
+def test_fetch_refuses_a_redirect_to_a_nat64_internal_address(fake_net) -> None:
+    fake_net.routes["example.com/"] = _redirect("http://[64:ff9b::a9fe:a9fe]/latest")
+
+    result = _fetch("https://example.com/")
+
+    assert isinstance(result, ToolFailure) and "internal" in result
+    assert len(fake_net.requests) == 1
+
+
+def test_a_public_nat64_answer_is_fetched_at_that_address(fake_net) -> None:
+    fake_net.dns["v6only.example"] = ["64:ff9b::5db8:d822"]
+
+    assert _fetch("https://v6only.example/") == "hello"
+    assert fake_net.requests[0].url.host == "64:ff9b::5db8:d822"
 
 
 def test_internal_access_needs_approval_for_that_host(fake_net) -> None:

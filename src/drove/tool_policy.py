@@ -55,10 +55,40 @@ def cap_tool_messages(messages: Iterable[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def is_blocked_address(address: str) -> bool:
-    """True for loopback, private, link-local, unspecified and other non-public IPs."""
+    """True for loopback, private, link-local, unspecified and other non-public IPs.
+
+    An IPv6 address that carries an IPv4 one (mapped, IPv4-compatible, NAT64, 6to4,
+    Teredo) is judged by the IPv4 address, which a translator or tunnel would reach.
+    """
     ip = ipaddress.ip_address(address.split("%", 1)[0])
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address) and (embedded := _embedded_ipv4(ip)):
+        return any(_is_internal(v4) for v4 in embedded)
+    return _is_internal(ip)
+
+
+# NAT64 prefixes (RFC 6052 well-known, RFC 8215 local-use). Only the /96 layout, with
+# the IPv4 address in the last 32 bits, is decoded; site-specific prefixes are not known.
+_NAT64_PREFIXES = (
+    ipaddress.IPv6Network("64:ff9b::/96"),
+    ipaddress.IPv6Network("64:ff9b:1::/48"),
+)
+_IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
+
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
+    if ip.ipv4_mapped is not None:
+        return [ip.ipv4_mapped]
+    if ip.sixtofour is not None:
+        return [ip.sixtofour]
+    if ip.teredo is not None:
+        return list(ip.teredo)  # the relay server and the client
+    nat64 = any(ip in prefix for prefix in _NAT64_PREFIXES)
+    if nat64 or (ip in _IPV4_COMPATIBLE and int(ip) > 1):  # :: and ::1 are not IPv4
+        return [ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)]
+    return []
+
+
+def _is_internal(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return not ip.is_global or ip.is_multicast
 
 

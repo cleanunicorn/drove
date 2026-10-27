@@ -10,17 +10,10 @@
 - A request that finishes after its model was restarted no longer releases a request slot on the
   new instance, which could make a busy model look idle and get it evicted mid-request.
 
-
-## [Unreleased]
-
-### Fixed
-
 - Speech-to-text and text-to-speech workers no longer freeze after a few thousand requests, and
   no backend can stall on its own log output; their per-request access logs are switched off.
 - Stopping a model now always finishes, even when the backend ignores SIGTERM and a child process
   keeps its output open, so one stuck backend can no longer block every other model.
-
-## [Unreleased]
 
 ### Security
 

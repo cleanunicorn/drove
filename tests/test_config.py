@@ -295,3 +295,16 @@ def test_invalid_nested_env_fails_in_load_not_import(
     monkeypatch.setenv("DROVE_LLAMA_N_GPU_LAYERS", "all")
     with pytest.raises(ConfigError, match="DROVE_LLAMA_N_GPU_LAYERS"):
         load_config(tmp_path / "missing.toml")
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [("DROVE_ALLOWED_TOOLS", "[1]"), ("DROVE_LLAMA_SERVER", '{"threads": "x"}')],
+)
+def test_invalid_env_json_member_names_its_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ConfigError) as info:
+        load_config(tmp_path / "missing.toml")
+    assert f"variable {name} (" in str(info.value)

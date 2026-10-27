@@ -660,6 +660,8 @@ def test_malformed_toml_is_readable_and_not_rewritten(tmp_path: Path) -> None:
         ("DROVE_ALLOWED_TOOLS", "not-json", "allowed_tools"),
         ("DROVE_LLAMA_SERVER__THREADS", "many", "llama_server.threads"),
         ("DROVE_LLAMA_N_GPU_LAYERS", "all", "llama_server.n_gpu_layers"),
+        ("DROVE_ALLOWED_TOOLS", '["fetch_url", 3]', "allowed_tools.1"),
+        ("DROVE_LLAMA_SERVER", '{"threads": "many"}', "llama_server.threads"),
     ],
 )
 def test_invalid_env_value_is_readable(

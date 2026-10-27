@@ -346,7 +346,7 @@ def _env_error(exc: ValidationError | SettingsError) -> ConfigError:
         match = re.search(r'field "(\w+)"', str(exc))
         keys = [match.group(1)] if match else []
         details = "not valid JSON" if match else str(exc)
-    names = [name for key in keys for name in _env_names(key)] or ["DROVE_*"]
+    names = list(dict.fromkeys(name for key in keys for name in _env_names(key))) or ["DROVE_*"]
     return ConfigError(
         f"Invalid environment variable {', '.join(names)} ({', '.join(keys) or 'unknown key'}): "
         f"{details}.",
@@ -366,11 +366,11 @@ def _error_message(err: ErrorDetails) -> str:
 
 def _env_names(key: str) -> list[str]:
     """Return the set ``DROVE_*`` variables that can supply *key* (env names ignore case)."""
-    if "." in key:
-        leaf = key.rpartition(".")[2]
-        candidates = [f"DROVE_LLAMA_SERVER__{leaf}", f"DROVE_LLAMA_{leaf}"]
-    else:
-        candidates = [f"DROVE_{key}"]
+    root, _, rest = key.partition(".")
+    candidates = [f"DROVE_{root}"]  # the whole field, e.g. a JSON list or object
+    if root == "llama_server" and rest:
+        leaf = rest.partition(".")[0]
+        candidates = [f"DROVE_LLAMA_SERVER__{leaf}", f"DROVE_LLAMA_{leaf}", *candidates]
     present = {name.upper(): name for name in os.environ}
     return [present[c.upper()] for c in candidates if c.upper() in present]
 

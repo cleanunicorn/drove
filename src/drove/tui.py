@@ -1499,10 +1499,9 @@ class ChatApp(App[None]):
 
     async def _tool_allowed(self, name: str, arguments: str) -> bool:
         decision = decide(name, arguments, self._policy_context())
-        self._call_grant = decision.grant
-        if not decision.prompt:
-            return True
-        return await self._confirm(name, arguments, decision)
+        allowed = not decision.prompt or await self._confirm(name, arguments, decision)
+        self._call_grant = decision.grant if allowed else None
+        return allowed
 
     async def _confirm(self, name: str, arguments: str, decision: Decision) -> bool:
         """Ask about one call; a session/always choice records only the decision's scope."""
@@ -1538,10 +1537,16 @@ class ChatApp(App[None]):
             future = asyncio.run_coroutine_threadsafe(
                 self._approve_host(turn, host, internal), loop
             )
-            try:
-                return future.result()
-            except Exception:
-                return False
+            # Poll, so the worker never outlives a loop that closed with the dialog open.
+            while True:
+                try:
+                    return future.result(timeout=0.5)
+                except TimeoutError:
+                    if loop.is_closed():
+                        future.cancel()
+                        return False
+                except Exception:
+                    return False
 
         return approve
 

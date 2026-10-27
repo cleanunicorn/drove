@@ -232,14 +232,15 @@ class ModelStore:
 
         Every download record between the models directory and the primary
         applies, whatever name reached it (``org`` resolving into ``org/asr``
-        still honours ``org/asr``'s record).  A record must say complete and
-        every file it lists must still exist at its expected size.  Without
+        still honours ``org/asr``'s record).  A record must say complete, list
+        the primary itself (a TTS model's generated marker excepted) and every
+        file it lists must still exist at its expected size.  Without
         any (downloads made before records existed) the files themselves are
         trusted.  Either way a split GGUF needs every shard.
         """
         directory = primary.parent
         while directory != self._dir and self._contains(directory):
-            reason = _record_reason(directory)
+            reason = _record_reason(directory, primary)
             if reason is not None:
                 return reason
             directory = directory.parent
@@ -270,8 +271,8 @@ class ModelStore:
         results.append(ModelEntry(name, primary, total))
 
 
-def _record_reason(root: Path) -> str | None:
-    """Why the download record under *root* rules its model out, or None (also without one)."""
+def _record_reason(root: Path, primary: Path) -> str | None:
+    """Why the download record under *root* rules out *primary*, or None (also without one)."""
     state = read_state(root)
     if state is UNREADABLE:
         return "its download record is unreadable"
@@ -285,6 +286,11 @@ def _record_reason(root: Path) -> str | None:
             return f"{rel} is missing"
         if size and path.stat().st_size != size:
             return f"{rel} does not have its expected size"
+    # The record vouches only for files it downloaded; the TTS marker is
+    # generated after the weights, so it is the one entry never recorded.
+    is_marker = primary.suffix.lower() == ".tts" and primary.parent == root
+    if not is_marker and primary.relative_to(root).as_posix() not in state.files:
+        return f"{primary.relative_to(root).as_posix()} is not part of its download record"
     return None
 
 

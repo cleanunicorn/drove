@@ -640,3 +640,28 @@ def test_record_above_the_listed_directory_still_applies(tmp_path: Path) -> None
     assert store.list() == []
     with pytest.raises(FileNotFoundError, match="incomplete"):
         store.resolve("old/weights")
+
+
+@pytest.mark.parametrize("recorded", [{"z.gguf": 8}, {}])
+def test_complete_record_must_cover_the_selected_primary(
+    tmp_path: Path, recorded: dict[str, int]
+) -> None:
+    """A stale or empty record cannot vouch for a file it never downloaded."""
+    root = tmp_path / "m"
+    _make_gguf(tmp_path, "m", "a.gguf").write_bytes(b"part")
+    _make_gguf(tmp_path, "m", "z.gguf").write_bytes(b"x" * 8)
+    _write_manifest(root, "complete", recorded)
+    store = ModelStore(tmp_path)
+    assert store.list() == []
+    with pytest.raises(FileNotFoundError, match="a.gguf is not part of its download record"):
+        store.resolve("m")
+
+
+def test_tts_marker_needs_no_entry_in_its_record(tmp_path: Path) -> None:
+    root = tmp_path / "voice"
+    root.mkdir()
+    (root / "model.tts").write_bytes(b"")
+    (root / "lm").mkdir()
+    (root / "lm" / "model.safetensors").write_bytes(b"w")
+    _write_manifest(root, "complete", {"lm/model.safetensors": 1})
+    assert ModelStore(tmp_path).resolve("voice") == root / "model.tts"

@@ -191,7 +191,7 @@ class ModelStore:
                 for f in subdir.rglob("*")
                 if f.is_file()
                 and self._contains(f)
-                and not (f.suffix == ".tts" and f.parent != subdir)
+                and not (f.suffix.lower() == ".tts" and f.parent != subdir)
             ]
             primary = self._select_primary(files)
             if primary is not None:

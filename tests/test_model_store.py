@@ -579,10 +579,11 @@ def test_mmproj_in_non_gguf_model_name_is_still_a_model(tmp_path: Path, filename
     _agree(ModelStore(tmp_path), "speech", primary)
 
 
-def test_nested_tts_marker_does_not_override_gguf_in_resolve(tmp_path: Path) -> None:
+@pytest.mark.parametrize("marker", ["model.tts", "model.TTS", "model.TtS"])
+def test_nested_tts_marker_does_not_override_gguf_in_resolve(tmp_path: Path, marker: str) -> None:
     """resolve() only honours a top-level .tts marker, as before the projector fix."""
     gguf = _make_gguf(tmp_path, "voice", "main.gguf")
-    _make_gguf(tmp_path, "voice", "backup", "model.tts")
+    _make_gguf(tmp_path, "voice", "backup", marker)
     assert ModelStore(tmp_path).resolve("voice") == gguf
 
 

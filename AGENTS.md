@@ -405,8 +405,9 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   `asyncio_mode = "auto"` — no markers needed.
 - **Registering new components:** a new llama-server flag becomes a
   `ModelConfig` field (mapped to its CLI arg); a new CLI command is a Typer
-  command in `src/drove/cli/`; new config keys go through `Config` and its
-  `save()`.
+  command in `src/drove/cli/`; new config keys are `Config` fields listed in
+  `write_default_config()`, and are saved with `set_config_value()` (one key,
+  never the env-loaded config).
 
 ## Testing
 

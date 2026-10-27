@@ -1,6 +1,16 @@
 # CHANGELOG
 
+## [Unreleased]
 
+### Fixed
+
+- Saving configuration (`drove config <key> <value>`, `/theme` and "allow always" in
+  `drove chat`, chat tip progress) now changes only that key in `config.toml`. `DROVE_*`
+  environment overrides stay temporary and defaults are no longer frozen into the file;
+  `drove init` writes the true defaults even when `DROVE_*` variables are set.
+- An invalid `config.toml` (a bad value or broken TOML syntax) or an invalid `DROVE_*` value now
+  stops commands with a short message naming the file or variable and the key, instead of a
+  traceback. `drove config <key> <value>` still works on such a file, so it can repair the key.
 ## v0.13.1 (2026-10-27)
 
 ### Bug Fixes

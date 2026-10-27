@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -433,3 +434,186 @@ def test_inventory_and_resolve_pick_the_same_servable_candidate(tmp_path: Path) 
         assert store.resolve(name) == path
     with pytest.raises(FileNotFoundError):
         store.resolve("blocked")
+
+
+# ── servable and complete downloads only (#117) ───────────────────────────────
+
+
+def _write_manifest(root: Path, state: str, files: dict[str, int]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".drove-download.json").write_text(
+        json.dumps({"version": 1, "state": state, "files": files})
+    )
+
+
+@pytest.mark.parametrize("name", ["interrupted", "org/interrupted"])
+def test_cache_only_directory_is_not_a_model(tmp_path: Path, name: str) -> None:
+    """An interrupted first transfer leaves only Hugging Face cache metadata."""
+    cache = tmp_path / name / ".cache" / "huggingface" / "download"
+    cache.mkdir(parents=True)
+    (cache / "model.gguf.lock").write_bytes(b"")
+    (cache / "abc123.incomplete").write_bytes(b"partial")
+    (cache / "model.gguf.metadata").write_text("etag\n")
+    _make_gguf(tmp_path, name, ".cache", "huggingface", "stray.gguf")
+    _make_gguf(tmp_path, "ready.gguf")
+
+    store = ModelStore(tmp_path)
+    assert [e.name for e in store.list()] == ["ready"]
+    assert store.complete("inter") == []
+    assert store.complete("org/") == []
+    with pytest.raises(FileNotFoundError):
+        store.resolve(name)
+
+
+@pytest.mark.parametrize("extension", ["safetensors", "bin", "pt"])
+@pytest.mark.parametrize("name", ["raw", "org/raw"])
+def test_raw_weight_directory_is_not_a_model(tmp_path: Path, extension: str, name: str) -> None:
+    folder = tmp_path / name
+    folder.mkdir(parents=True)
+    (folder / f"model.{extension}").write_bytes(b"weights")
+    (folder / "config.json").write_text("{}")
+
+    store = ModelStore(tmp_path)
+    assert store.list() == []
+    assert store.complete("") == []
+    with pytest.raises(FileNotFoundError):
+        store.resolve(name)
+
+
+def test_hidden_descendants_never_become_primary(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "m", ".partial", "a.gguf")
+    primary = _make_gguf(tmp_path, "m", "b.gguf")
+    store = ModelStore(tmp_path)
+    assert store.resolve("m") == primary
+    assert [e.primary for e in store.list()] == [primary]
+
+
+@pytest.mark.parametrize("layout", ["dir", "flat"])
+def test_first_shard_without_the_rest_is_incomplete(tmp_path: Path, layout: str) -> None:
+    parts = ("big", "big-00001-of-00003.gguf") if layout == "dir" else ("big-00001-of-00003.gguf",)
+    _make_gguf(tmp_path, *parts)
+    name = "big" if layout == "dir" else "big-00001-of-00003"
+
+    store = ModelStore(tmp_path)
+    assert store.list() == []
+    assert store.complete("big") == []
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        store.resolve(name)
+
+
+def test_missing_middle_shard_is_incomplete(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "big", "big-00001-of-00003.gguf")
+    _make_gguf(tmp_path, "big", "big-00003-of-00003.gguf")
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        ModelStore(tmp_path).resolve("big")
+    assert ModelStore(tmp_path).list() == []
+
+
+def test_later_shard_alone_is_not_listed(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "big", "big-00002-of-00003.gguf")
+    _make_gguf(tmp_path, "big-00002-of-00003.gguf")
+    assert ModelStore(tmp_path).list() == []
+
+
+def test_complete_shard_set_resolves_to_first_shard(tmp_path: Path) -> None:
+    first = _make_gguf(tmp_path, "big", "big-00001-of-00003.gguf")
+    _make_gguf(tmp_path, "big", "big-00002-of-00003.gguf")
+    _make_gguf(tmp_path, "big", "big-00003-of-00003.gguf")
+    store = ModelStore(tmp_path)
+    assert store.resolve("big") == first
+    assert [e.name for e in store.list()] == ["big"]
+
+
+def test_incomplete_manifest_hides_model(tmp_path: Path) -> None:
+    root = tmp_path / "org" / "asr"
+    (root).mkdir(parents=True)
+    (root / "model.onnx").write_bytes(b"onnx")
+    _write_manifest(root, "incomplete", {"model.onnx": 4, "model.onnx.data": 10})
+
+    store = ModelStore(tmp_path)
+    assert store.list() == []
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        store.resolve("org/asr")
+    # Still found for management (delete) purposes.
+    assert store.find_root("org/asr") == root
+
+
+def test_complete_manifest_resolves(tmp_path: Path) -> None:
+    root = tmp_path / "asr"
+    root.mkdir()
+    (root / "model.onnx").write_bytes(b"onnx")
+    (root / "vocab.txt").write_bytes(b"")
+    _write_manifest(root, "complete", {"model.onnx": 4, "vocab.txt": 0})
+    assert ModelStore(tmp_path).resolve("asr") == root / "model.onnx"
+    assert [e.name for e in ModelStore(tmp_path).list()] == ["asr"]
+
+
+@pytest.mark.parametrize("damage", ["truncate", "delete"])
+def test_complete_manifest_with_damaged_file_is_incomplete(tmp_path: Path, damage: str) -> None:
+    root = tmp_path / "m"
+    primary = _make_gguf(tmp_path, "m", "m.gguf")
+    primary.write_bytes(b"gguf")
+    (root / "mmproj.gguf").write_bytes(b"proj")
+    _write_manifest(root, "complete", {"m.gguf": 4, "mmproj.gguf": 4})
+    if damage == "truncate":
+        (root / "mmproj.gguf").write_bytes(b"p")
+    else:
+        (root / "mmproj.gguf").unlink()
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        ModelStore(tmp_path).resolve("m")
+    assert ModelStore(tmp_path).list() == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not json",
+        '{"version": 99, "state": "complete", "files": {}}',
+        '{"version": 1, "state": "complete", "files": {"../escape.gguf": 0}}',
+        '{"version": 1, "state": "complete", "files": ["m.gguf"]}',
+    ],
+)
+def test_unreadable_or_unsafe_manifest_fails_closed(tmp_path: Path, content: str) -> None:
+    _make_gguf(tmp_path, "m", "m.gguf")
+    _make_gguf(tmp_path, "escape.gguf")
+    (tmp_path / "m" / ".drove-download.json").write_text(content)
+    assert [e.name for e in ModelStore(tmp_path).list()] == ["escape"]
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        ModelStore(tmp_path).resolve("m")
+
+
+def test_incomplete_exact_root_does_not_fall_back_to_alias(tmp_path: Path) -> None:
+    root = tmp_path / "org" / "repo"
+    _make_gguf(tmp_path, "org", "repo", "model.gguf")
+    _write_manifest(root, "incomplete", {"model.gguf": 0})
+    _make_gguf(tmp_path, "other", "other.gguf")
+    (tmp_path / "other" / "other.toml").write_text('[download]\nrepo_id = "org/repo"\n')
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        ModelStore(tmp_path).resolve("org/repo")
+
+
+@pytest.mark.parametrize("layout", ["flat", "dir", "nested", "org", "onnx"])
+def test_legacy_complete_downloads_without_manifest_still_resolve(
+    tmp_path: Path, layout: str
+) -> None:
+    """Downloads made before completion tracking keep working."""
+    if layout == "flat":
+        expected, name = _make_gguf(tmp_path, "old.gguf"), "old"
+    elif layout == "dir":
+        expected, name = _make_gguf(tmp_path, "old", "old.gguf"), "old"
+    elif layout == "nested":
+        expected, name = _make_gguf(tmp_path, "old", "weights", "old.gguf"), "old"
+    elif layout == "org":
+        expected, name = _make_gguf(tmp_path, "org", "old", "old-Q4_K_M.gguf"), "org/old"
+    else:
+        expected = tmp_path / "old" / "model.onnx"
+        expected.parent.mkdir()
+        expected.write_bytes(b"onnx")
+        name = "old"
+    # Completed Hub downloads keep their cache metadata around.
+    cache = expected.parent / ".cache" / "huggingface" / "download"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "old.gguf.lock").write_bytes(b"")
+    store = ModelStore(tmp_path)
+    assert store.resolve(name) == expected
+    assert [e.primary for e in store.list()] == [expected]

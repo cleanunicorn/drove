@@ -210,8 +210,9 @@ class ModelStore:
         """
         by_suffix: dict[str, builtins.list[Path]] = {".tts": [], ".gguf": [], ".onnx": []}
         for f in sorted(files):
-            if f.suffix.lower() in by_suffix and not MMPROJ_RE.search(f.name):
-                by_suffix[f.suffix.lower()].append(f)
+            suffix = f.suffix.lower()
+            if suffix in by_suffix and not (suffix == ".gguf" and MMPROJ_RE.search(f.name)):
+                by_suffix[suffix].append(f)
         for suffix in (".tts", ".gguf", ".onnx"):
             servable = [f for f in by_suffix[suffix] if self._servable(f)]
             if not servable:

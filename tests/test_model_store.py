@@ -571,3 +571,9 @@ def test_undecodable_sidecar_does_not_break_inventory(tmp_path: Path) -> None:
     store = ModelStore(tmp_path)
     assert {e.name: e.primary for e in store.list()} == {"bad": bad, "good": good}
     assert store.resolve("bad") == bad
+
+
+@pytest.mark.parametrize("filename", ["mmproj-speech.onnx", "MMPROJ-voice.tts"])
+def test_mmproj_in_non_gguf_model_name_is_still_a_model(tmp_path: Path, filename: str) -> None:
+    primary = _make_gguf(tmp_path, "speech", filename)
+    _agree(ModelStore(tmp_path), "speech", primary)

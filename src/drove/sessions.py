@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from drove.model_store import is_within, validate_model_name
+from drove.tool_policy import cap_tool_messages
 
 _SLUG_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -52,7 +53,8 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "system_prompt": self.system_prompt,
-            "messages": self.messages,
+            # Tool results are capped here too, so a saved session never holds a larger one.
+            "messages": cap_tool_messages(self.messages),
         }
 
 

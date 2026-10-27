@@ -228,11 +228,25 @@ def _decide_fetch(args: dict[str, Any], ctx: PolicyContext) -> Decision:
         if granted.tool == "fetch_url" and granted.host == host:
             if granted.internal or not internal:
                 return _NO_PROMPT
+    return host_decision(host, internal)
+
+
+def host_decision(host: str, internal: bool) -> Decision:
+    """The prompt for fetching from *host*, also asked about a host met mid-fetch."""
     reason = f"Fetch from {host}."
     if internal:
-        reason = f"{host} is an internal (private, loopback or link-local) address."
+        reason = f"{host} is or resolves to an internal (private, loopback or link-local) address."
     grant = Grant("fetch_url", host=host, internal=internal)
     return Decision(prompt=True, grant=grant, scoped_choices=True, reason=reason)
+
+
+def fetch_hosts(ctx: PolicyContext, approved: Grant | None) -> tuple[set[str], set[str]]:
+    """Hosts fetch_url may reach, and those of them it may reach at internal addresses."""
+    grants = [g for g in ctx.grants if g.tool == "fetch_url" and g.host is not None]
+    if approved is not None and approved.tool == "fetch_url" and approved.host is not None:
+        grants.append(approved)
+    hosts = {g.host for g in grants if g.host is not None}
+    return hosts, {g.host for g in grants if g.host is not None and g.internal}
 
 
 def read_roots(name: str, ctx: PolicyContext, approved: Grant | None) -> tuple[Path, ...]:

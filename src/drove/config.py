@@ -211,6 +211,24 @@ def save_tui_completed_hints(hints: list[ChatHint], path: Path | None = None) ->
     config_path.write_bytes(tomli_w.dumps(data).encode())
 
 
+def add_allowed_tool(entry: str, path: Path | None = None) -> None:
+    """Append *entry* (a chat tool grant) to the file's ``allowed_tools``.
+
+    Like ``save_tui_completed_hints``, no other key is rewritten and env overrides are
+    never copied into the file.
+    """
+    config_path = resolve_config_path(path)
+    data = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+    tools = data.get("allowed_tools")
+    if not isinstance(tools, list):
+        tools = []
+    if entry in tools:
+        return
+    data["allowed_tools"] = [*tools, entry]
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_bytes(tomli_w.dumps(data).encode())
+
+
 def _migrate_legacy_config(config_path: Path) -> None:
     """Move ~/.config/vllama/config.toml to ~/.config/drove/config.toml on first run."""
     if config_path != DEFAULT_CONFIG_PATH:

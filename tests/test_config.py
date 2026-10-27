@@ -209,3 +209,36 @@ def test_saving_tip_progress_creates_minimal_file(tmp_path: Path) -> None:
     cfg_file = tmp_path / "nested" / "config.toml"
     save_tui_completed_hints([], cfg_file)
     assert cfg_file.read_text() == "tui_completed_hints = []\n"
+
+
+def test_add_allowed_tool_appends_once_without_copying_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+
+    from drove.config import add_allowed_tool
+
+    path = tmp_path / "config.toml"
+    path.write_text('listen_port = 7000\nallowed_tools = ["old"]\n')
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    monkeypatch.setenv("DROVE_ALLOWED_TOOLS", '["from-env"]')
+    token = '{"dir":"/srv/a, b","tool":"read_file","v":1}'
+
+    add_allowed_tool(token, path)
+    add_allowed_tool(token, path)
+
+    assert tomllib.loads(path.read_text()) == {
+        "listen_port": 7000,
+        "allowed_tools": ["old", token],
+    }
+
+
+def test_add_allowed_tool_creates_a_missing_file(tmp_path: Path) -> None:
+    import tomllib
+
+    from drove.config import add_allowed_tool
+
+    path = tmp_path / "new" / "config.toml"
+    add_allowed_tool("entry", path)
+
+    assert tomllib.loads(path.read_text()) == {"allowed_tools": ["entry"]}

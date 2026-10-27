@@ -1,19 +1,27 @@
 """Live tool feedback: running entries, activity label, end states and streamed output."""
 
 import asyncio
+import json
 import threading
+import time
+import tomllib
 from pathlib import Path
 
+import httpx
 import pytest
-from textual.widgets import Collapsible, Label
+from textual.widgets import Button, Collapsible, Label
 
-from drove.sessions import new_session
+from drove import tools
+from drove.sessions import Session, new_session
+from drove.tool_policy import TOOL_OUTPUT_LIMIT, TRUNCATION_NOTICE, Grant
 from drove.tools import ToolFailure
 from drove.tui import (
     TOOL_DENIED,
     TOOL_OUTPUT_LINES,
     ChatApp,
+    ChatInput,
     ToolCallEntry,
+    ToolConfirmationModal,
     ToolOutputTail,
 )
 
@@ -60,7 +68,7 @@ async def test_running_entry_names_tool_then_finishes_in_place(tmp_path, monkeyp
     started, release = threading.Event(), threading.Event()
     requests: list = []
 
-    def execute(name, arguments, on_output=None):
+    def execute(name, arguments, on_output=None, **kwargs):
         started.set()
         assert release.wait(3)
         return "the result"
@@ -203,7 +211,7 @@ async def test_shell_output_streams_into_the_running_entry_bounded(tmp_path, mon
     requests: list = []
     full = "".join(f"line {i}\n" for i in range(5000))
 
-    def execute(name, arguments, on_output=None):
+    def execute(name, arguments, on_output=None, **kwargs):
         assert on_output is not None
         on_output("partial without newline")
         streamed.set()
@@ -250,7 +258,7 @@ async def test_stop_while_streaming_keeps_the_result_and_skips_follow_up(tmp_pat
     streamed, release = threading.Event(), threading.Event()
     requests: list = []
 
-    def execute(name, arguments, on_output=None):
+    def execute(name, arguments, on_output=None, **kwargs):
         on_output("working")
         streamed.set()
         assert release.wait(3)
@@ -328,3 +336,271 @@ def test_output_tail_is_bounded_thread_safe_and_ignores_late_output():
     tail.close()
     tail.append("late")
     assert tail.take() is None
+
+
+# ── Approval policy in the chat (AC2, AC3) ──────────────────────────────────────
+
+
+def policy_app(tmp_path: Path, monkeypatch, endpoint: str = "http://localhost:8080"):
+    """A chat started in *work*, with its own config file."""
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    config = tmp_path / "config.toml"
+    config.write_text("listen_port = 7000\n")
+    return ChatApp(endpoint, "test-model", tmp_path / "sessions", config), work, config
+
+
+def answering(app: ChatApp, monkeypatch, *choices: str) -> list[ToolConfirmationModal]:
+    """Answer each confirmation with the next of *choices*; return the modals shown."""
+    shown: list[ToolConfirmationModal] = []
+    answers = iter(choices)
+
+    async def push_screen_wait(screen):
+        shown.append(screen)
+        return next(answers)
+
+    monkeypatch.setattr(app, "push_screen_wait", push_screen_wait)
+    return shown
+
+
+def outside_dir(tmp_path: Path) -> Path:
+    outside = tmp_path / "outside"
+    (outside / "deep").mkdir(parents=True)
+    (outside / "secret.txt").write_text("secret")
+    return outside
+
+
+async def test_reads_ask_only_outside_the_working_directory(tmp_path, monkeypatch):
+    app, work, _ = policy_app(tmp_path, monkeypatch)
+    outside = outside_dir(tmp_path)
+    (work / "link").symlink_to(outside)
+    shown = answering(app, monkeypatch, "deny-once", "deny-once", "deny-once", "deny-once")
+
+    assert await app._tool_allowed("read_file", json.dumps({"path": "notes.txt"}))
+    assert await app._tool_allowed("list_files", "{}")
+    assert await app._tool_allowed("search_files", json.dumps({"path": "."}))
+    assert shown == []
+
+    assert not await app._tool_allowed("read_file", json.dumps({"path": str(outside / "x")}))
+    assert not await app._tool_allowed("list_files", json.dumps({"path": "link"}))
+    assert not await app._tool_allowed("search_files", json.dumps({"path": "link/deep"}))
+    assert not await app._tool_allowed("read_file", json.dumps({"path": "../outside/x"}))
+    assert len(shown) == 4
+    assert all("outside the working directory" in modal._reason for modal in shown)
+
+
+async def test_every_read_asks_with_a_remote_endpoint(tmp_path, monkeypatch):
+    app, _, config = policy_app(tmp_path, monkeypatch, "https://api.example.com")
+    config.write_text(
+        f"allowed_tools = [{json.dumps(Grant('read_file', directory='/').token())}]\n"
+    )
+    shown = answering(app, monkeypatch, "allow-once", "allow-once")
+
+    assert await app._tool_allowed("read_file", json.dumps({"path": "notes.txt"}))
+    assert await app._tool_allowed("read_file", json.dumps({"path": "notes.txt"}))
+    assert len(shown) == 2
+    assert all(modal._per_call and "not local" in modal._reason for modal in shown)
+
+
+async def test_allow_always_saves_a_directory_scope_and_nothing_else(tmp_path, monkeypatch):
+    app, _, config = policy_app(tmp_path, monkeypatch)
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    outside = outside_dir(tmp_path)
+    (tmp_path / "sibling").mkdir()
+    shown = answering(app, monkeypatch, "allow-always", "deny-once")
+
+    assert await app._tool_allowed("read_file", json.dumps({"path": str(outside / "a.txt")}))
+    assert await app._tool_allowed("read_file", json.dumps({"path": str(outside / "deep/b")}))
+    assert not await app._tool_allowed(
+        "read_file", json.dumps({"path": str(tmp_path / "sibling/c")})
+    )
+    assert len(shown) == 2
+    assert shown[0]._scope == f"read_file in {outside.resolve()}"
+    token = Grant("read_file", directory=str(outside.resolve())).token()
+    assert tomllib.loads(config.read_text()) == {"listen_port": 7000, "allowed_tools": [token]}
+
+    # A new chat honours the saved scope, and only for read_file.
+    fresh = ChatApp("http://localhost:8080", "test-model", tmp_path / "sessions", config)
+    shown = answering(fresh, monkeypatch, "deny-once")
+    assert await fresh._tool_allowed("read_file", json.dumps({"path": str(outside / "a.txt")}))
+    assert not await fresh._tool_allowed("list_files", json.dumps({"path": str(outside)}))
+    assert len(shown) == 1
+
+
+@pytest.mark.parametrize("name", ["shell_execute", "write_file"])
+async def test_shell_and_write_ask_every_call_and_ignore_bare_grants(tmp_path, monkeypatch, name):
+    app, _, config = policy_app(tmp_path, monkeypatch)
+    config.write_text(f'allowed_tools = ["{name}", "fetch_url"]\n')
+    shown = answering(app, monkeypatch, "allow-always", "allow-session", "allow-once")
+    arguments = json.dumps({"command": "ls", "path": "x.txt", "content": ""})
+
+    for _ in range(3):
+        assert await app._tool_allowed(name, arguments)
+
+    assert len(shown) == 3
+    assert all(modal._per_call for modal in shown)
+    assert tomllib.loads(config.read_text()) == {"allowed_tools": [name, "fetch_url"]}
+    assert app._session_allowed_tools == set()
+
+
+async def test_fetch_grants_are_per_host_and_bare_names_are_ignored(tmp_path, monkeypatch):
+    app, _, config = policy_app(tmp_path, monkeypatch)
+    config.write_text('allowed_tools = ["fetch_url"]\n')
+    shown = answering(app, monkeypatch, "allow-session", "deny-once")
+
+    assert await app._tool_allowed("fetch_url", json.dumps({"url": "https://example.com/a"}))
+    assert await app._tool_allowed("fetch_url", json.dumps({"url": "https://example.com/b"}))
+    assert not await app._tool_allowed("fetch_url", json.dumps({"url": "https://other.org/"}))
+    assert len(shown) == 2
+    assert app._session_allowed_tools == {Grant("fetch_url", host="example.com").token()}
+
+
+async def test_per_call_dialog_offers_only_allow_once_or_deny(tmp_path):
+    app = chat_app(tmp_path)
+    choices: list[str] = []
+    async with app.run_test() as pilot:
+        modal = ToolConfirmationModal("shell_execute", "{}", per_call=True)
+        app.push_screen(modal, callback=choices.append)
+        await pilot.pause()
+        assert {button.id for button in app.screen.query(Button)} == {"allow-once", "deny-once"}
+        await pilot.press("a", "s")
+        await pilot.pause()
+        assert choices == []
+        await pilot.press("y")
+        await pilot.pause()
+        assert choices == ["allow-once"]
+
+
+async def test_an_approved_outside_read_runs_within_its_scope(tmp_path, monkeypatch):
+    app, _, _ = policy_app(tmp_path, monkeypatch)
+    outside = outside_dir(tmp_path)
+    (outside / "deep" / "inner.txt").write_text("inner")
+    requests: list = []
+    answering(app, monkeypatch, "allow-once")
+    call = json.dumps({"path": str(outside / "deep" / "inner.txt")})
+    monkeypatch.setattr(app, "_stream_chat", tool_then_reply(requests, "read_file", call))
+
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: len(requests) == 2)
+    assert requests[1][-1]["content"] == "inner"
+
+
+async def test_a_search_inside_cwd_skips_symlinks_that_lead_out(tmp_path, monkeypatch):
+    app, work, _ = policy_app(tmp_path, monkeypatch)
+    outside = outside_dir(tmp_path)
+    (work / "leak.txt").symlink_to(outside / "secret.txt")
+    requests: list = []
+    answering(app, monkeypatch)  # no prompt expected
+    search = json.dumps({"path": ".", "content_query": "secret"})
+    monkeypatch.setattr(app, "_stream_chat", tool_then_reply(requests, "search_files", search))
+
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: len(requests) == 2)
+    content = requests[1][-1]["content"]
+    assert content.startswith("No matches found.")
+    assert "outside the approved directories" in content
+
+
+async def test_fetch_asks_again_mid_fetch_for_an_internal_address(tmp_path, monkeypatch):
+    app, _, _ = policy_app(tmp_path, monkeypatch)
+    sent: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, content=b"intranet page")
+
+    monkeypatch.setattr(tools, "_resolve", lambda host, port: ["10.0.0.7"])
+    monkeypatch.setattr(tools, "_fetch_transport", httpx.MockTransport(handle))
+    shown = answering(app, monkeypatch, "allow-once", "allow-once")
+    requests: list = []
+    call = json.dumps({"url": "http://intranet.example/"})
+    monkeypatch.setattr(app, "_stream_chat", tool_then_reply(requests, "fetch_url", call))
+
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: len(requests) == 2)
+
+    assert requests[1][-1]["content"] == "intranet page"
+    assert [modal._reason for modal in shown] == [
+        "Fetch from intranet.example.",
+        "intranet.example is or resolves to an internal (private, loopback or link-local) address.",
+    ]
+    assert [request.url.host for request in sent] == ["10.0.0.7"]
+
+
+# ── Responsiveness and saved output (AC4, AC5) ──────────────────────────────────
+
+
+async def test_input_stays_responsive_during_a_five_second_shell_tool(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    requests: list = []
+    threads: list[int] = []
+    real_execute = tools.execute_tool
+
+    def execute(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real_execute(*args, **kwargs)
+
+    command = json.dumps({"command": "sleep 5", "timeout": 10})
+    monkeypatch.setattr(app, "_stream_chat", tool_then_reply(requests, "shell_execute", command))
+    monkeypatch.setattr(app, "_tool_allowed", lambda *args: asyncio.sleep(0, True))
+    monkeypatch.setattr("drove.tui.execute_tool", execute)
+
+    async with app.run_test() as pilot:
+        started = time.monotonic()
+        app._start_turn("go")
+        await until(pilot, lambda: bool(threads))
+        chat_input = app.query_one(ChatInput)
+        chat_input.focus()
+        await pilot.press(*"still typing")
+        await pilot.pause()
+        typed_after = time.monotonic() - started
+
+        assert chat_input.text == "still typing"
+        assert typed_after < 4  # typed while the 5 s command was still running
+        assert app.is_generating
+        async with asyncio.timeout(15):
+            while app.is_generating:
+                await pilot.pause(0.1)
+
+    assert threads[0] != threading.get_ident()
+    assert requests[1][-1]["content"] == "STDOUT:\n\nReturn code: 0"
+
+
+async def test_saved_session_never_holds_a_tool_result_over_the_cap(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    requests: list = []
+    huge = "ü" * TOOL_OUTPUT_LIMIT  # 128 KiB of UTF-8
+    monkeypatch.setattr(app, "_stream_chat", tool_then_reply(requests))
+    monkeypatch.setattr("drove.tui.execute_tool", lambda *args, **kwargs: huge)
+
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: not app.is_generating and len(requests) == 2)
+
+    [saved] = (tmp_path / "test-model").glob("*.json")
+    messages = json.loads(saved.read_text())["messages"]
+    [tool_message] = [m for m in messages if m["role"] == "tool"]
+    assert len(tool_message["content"].encode("utf-8")) <= TOOL_OUTPUT_LIMIT
+    assert tool_message["content"].endswith(TRUNCATION_NOTICE)
+    assert len(requests[1][-1]["content"].encode("utf-8")) <= TOOL_OUTPUT_LIMIT
+
+
+def test_resumed_sessions_cap_old_oversized_tool_results(tmp_path):
+    huge = "x" * (TOOL_OUTPUT_LIMIT * 3)
+    session = Session(
+        model="test-model",
+        session_id="old",
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "c1", "content": huge},
+        ],
+    )
+
+    app = ChatApp("http://localhost:8080", "test-model", tmp_path, None, resume_session=session)
+
+    assert len(app._history[1]["content"].encode()) <= TOOL_OUTPUT_LIMIT
+    assert app._history[0] == {"role": "user", "content": "hi"}

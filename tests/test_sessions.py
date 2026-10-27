@@ -45,3 +45,25 @@ def test_outward_symlink_is_not_followed(tmp_path: Path) -> None:
     save_session(sessions, new_session("linked"))
     assert list(outside.iterdir()) == []
     assert len(list_sessions(sessions, "linked")) == 1
+
+
+def test_saved_tool_results_are_capped_and_other_messages_kept(tmp_path: Path) -> None:
+    import json
+
+    from drove.tool_policy import TOOL_OUTPUT_LIMIT, TRUNCATION_NOTICE
+
+    huge = "€" * TOOL_OUTPUT_LIMIT
+    session = new_session("test-model")
+    session.messages = [
+        {"role": "user", "content": huge},
+        {"role": "tool", "tool_call_id": "c1", "content": huge},
+    ]
+
+    save_session(tmp_path, session)
+
+    [path] = (tmp_path / "test-model").glob("*.json")
+    user, tool = json.loads(path.read_text())["messages"]
+    assert user["content"] == huge
+    assert len(tool["content"].encode("utf-8")) <= TOOL_OUTPUT_LIMIT
+    assert tool["content"].endswith(TRUNCATION_NOTICE)
+    assert session.messages[1]["content"] == huge  # the live history is not rewritten

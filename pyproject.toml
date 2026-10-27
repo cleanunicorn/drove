@@ -1,6 +1,6 @@
 [project]
 name = "drove"
-version = "0.13.0"
+version = "0.13.1"
 description = "llama.cpp server manager and proxy"
 readme = "README.md"
 authors = [

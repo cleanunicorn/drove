@@ -1,44 +1,263 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Fixed
+## v0.13.1 (2026-10-27)
 
-- Concurrent requests for a model that is not loaded no longer start it twice when they have to
-  wait for a busy model to drain. The second request now uses the instance the first one started,
-  so no backend process is orphaned and no other busy model is evicted needlessly.
-- A request that finishes after its model was restarted no longer releases a request slot on the
-  new instance, which could make a busy model look idle and get it evicted mid-request.
+### Bug Fixes
 
-- Speech-to-text and text-to-speech workers no longer freeze after a few thousand requests, and
-  no backend can stall on its own log output; their per-request access logs are switched off.
-- Stopping a model now always finishes, even when the backend ignores SIGTERM and a child process
-  keeps its output open, so one stuck backend can no longer block every other model.
+- **cli**: Reject unsafe model names in models commands and downloads
+  ([`ebded0b`](https://github.com/cleanunicorn/drove/commit/ebded0ba98b7b4a461c5645af0407be510887e9e))
 
-### Security
+`models delete`, `info` and `config` validate the name through the shared rule and exit 1 with the
+  rule spelled out, so `delete . -y` and `delete .. -y` no longer reach rmtree. `download --name` is
+  checked before the models directory is created or the Hub is contacted, an explicit empty --name
+  is no longer silently replaced by the inferred name, and DownloadPlan.destination validates the
+  (mutable) local name and refuses a directory that resolves outside models_dir for every backend.
+  add-tts and the TTS download path reuse the shared validator.
 
-- Model names are now validated everywhere they enter drove (the API `model`
-  field, `models delete`/`info`/`config`, `models download --name` and observe
-  records). Empty, absolute, `.`/`..`, backslash and other unsafe names are
-  rejected with HTTP 400 or a CLI error before anything is read, started,
-  written or deleted, so a LAN client can no longer load or walk files outside
-  `models_dir` and `drove models delete . -y` / `.. -y` delete nothing.
-- Models whose directory or files resolve outside `models_dir` (for example a
-  symlink to another disk) are no longer listed, served or deleted; point
-  `models_dir` at that location instead. A model folder holding several weight
-  files is listed, completed and served with the same file: the first one whose
-  path and sidecar config stay inside `models_dir`. Names containing spaces are
-  no longer accepted, and existing models with such names are hidden from
-  listings until renamed on disk.
-- Chat sessions are always saved inside `sessions_dir`, even when a remote
-  endpoint advertises a model id such as `../../x`; such ids, and any id that is
-  not a valid local model name, are stored under a separate `_<name>-<digest>`
-  folder, so their earlier sessions are no longer offered for resume.
-- `drove models download` refuses to start when a file it would write, the
-  model's sidecar config, or anything already inside the download's `.cache`
-  folder leads outside `models_dir` through a symlink, even one reached via
-  another link that stays inside, so Hub metadata, lock and partial files can
-  no longer be written elsewhere on disk.
+The containment helper becomes public (is_within) now that the downloader uses it. Download fixtures
+  that used a name with a space switch to a hyphenated name, since whitespace is no longer valid.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **downloader**: Follow inward links when checking download targets (V2)
+  ([`ec1119c`](https://github.com/cleanunicorn/drove/commit/ec1119cc012f7ddcd1ac97cb2e4078b168645a32))
+
+An inward symlink (for example .cache -> another folder in models_dir) passed the containment check,
+  and the walk never looked behind it, so an outward link further down still let the Hub write
+  outside models_dir. Check every target and everything under it by resolved real path, following
+  directory links and tracking scanned real directories so link loops terminate.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **downloader**: Refuse download targets that resolve outside models_dir
+  ([`146e0f5`](https://github.com/cleanunicorn/drove/commit/146e0f5882b9d867551d3784e61b34a1c750542e))
+
+DownloadPlan only checked its destination directory, so a pre-existing symlink below it (a nested
+  repository folder, a weight file, the Hub's .cache folder, or the sidecar config and TTS marker
+  written afterwards) could redirect the download's reads and writes outside models_dir. Every one
+  of those paths is now checked before local status is read or anything is downloaded; the CLI
+  reports the offending path and exits 1, and the quant picker shows "local status unavailable" for
+  such a plan.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **downloader**: Reject escaping symlinks anywhere under the Hub cache (V2)
+  ([`66d9582`](https://github.com/cleanunicorn/drove/commit/66d9582e1e9068de90b6e576dbe51468b8b8e2b4))
+
+The previous check covered only dest/.cache itself, so an outward symlink at .cache/huggingface or a
+  metadata/lock/partial file beneath it still let huggingface_hub write outside models_dir. Walk the
+  existing cache subtree without following links and refuse the download if any entry escapes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **model-store**: List only model names that resolve accepts
+  ([`de0010e`](https://github.com/cleanunicorn/drove/commit/de0010ed92cd668af2f0eb45e828a7a833587200))
+
+list() and complete() still offered on-disk names that break the new naming rule (a flat `my
+  model.gguf`, a `bad name/` directory or namespace), so a name copied from `drove models list`,
+  completion or GET /v1/models failed with an invalid-name error. Inventory and completion now apply
+  the same rule as resolve(); such models stay hidden until renamed on disk, as the docs and
+  changelog now say. Completion also skips a flat GGUF whose sidecar escapes, matching list().
+
+The model-list output test keeps its literal-markup check by putting the markup in the models
+  directory path instead of a model name.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **model-store**: List, complete and resolve the same model candidate (correctness-4)
+  ([`f713ea6`](https://github.com/cleanunicorn/drove/commit/f713ea6d9535081e43b1880ece8d1e8c3150236b))
+
+The sidecar fix made resolve() skip an unservable first candidate while list() dropped the whole
+  model after checking only candidates[0], and complete() never checked servability at all.
+  _add_entry now picks the first servable file in the same format priority as _find_primary, and
+  complete() is derived from list() so the three always agree.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **model-store**: Treat a model with an escaping sidecar as absent
+  ([`01a694c`](https://github.com/cleanunicorn/drove/commit/01a694ce99c9e66567a23705cc3ffee8f605aed1))
+
+Config reads and writes follow a model's sidecar TOML, so a contained primary with a sidecar
+  symlinked (or dangling) outside models_dir let `models config`, `models info`, the server and
+  integrations read or overwrite an external file. The store now only serves, lists and resolves a
+  primary whose sidecar also stays inside models_dir, and the HuggingFace alias scan skips TOML
+  files that resolve outside it.
+
+Deletion is unchanged: it unlinks a sidecar symlink without following it.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **model-store**: Validate model names and keep paths inside models_dir
+  ([`b7773a7`](https://github.com/cleanunicorn/drove/commit/b7773a78cee86aa6299f5d2112fabfaefef7756a))
+
+Add validate_model_name, the one shared rule for model names (`name` or `org/name` safe-token
+  segments, `:QUANT` allowed), and call it before any disk access in ModelStore.resolve and
+  find_root. Every candidate path is also resolved and must stay strictly inside models_dir, so
+  traversal names and symlinks that point outside the store are treated as absent; list() and
+  complete() skip them too. Alias results that are not valid names are ignored.
+
+The two CLI deletion tests that relied on an outward root or namespace symlink being a model now
+  assert that deletion refuses it and leaves the link and its target untouched.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **observe**: Contain record files and unfiltered scans to observe_dir
+  ([`d0bcaaf`](https://github.com/cleanunicorn/drove/commit/d0bcaaf394351f3bce5db549734dd3612fdefda7))
+
+save_record checked the model directory but then wrote through a symlink at the record file itself,
+  and listing, search and lookup without a model filter followed directories and record files that
+  point outside observe_dir. The record path is now checked before writing, and scans skip
+  directories and symlinked record files that resolve outside observe_dir.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **observe**: Never write or read records outside observe_dir
+  ([`66a3f8b`](https://github.com/cleanunicorn/drove/commit/66a3f8b085c8e0e0564889a8eac2e758473364c4))
+
+save_record validates a record's model through the shared rule (None still maps to `_unknown`) and
+  refuses a model directory that resolves outside observe_dir, so a crafted model name or an outward
+  namespace symlink writes nothing. A model filter on listing or lookup is treated as a key: an
+  invalid or escaping one matches no records instead of reading another directory. The namespaced
+  `org/repo:QUANT` layout is unchanged.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **proxy**: Reject an explicit null model with 400
+  ([`6e9a3e6`](https://github.com/cleanunicorn/drove/commit/6e9a3e6a0c94ce4c99caeb0c478b4232eb51975e))
+
+A JSON `"model": null` was treated like an omitted field and routed to the default model. It is a
+  non-string model value, so it is now answered with HTTP 400 before ensure_running, like any other
+  invalid model; only an omitted field falls back to the default or loaded model. The speech
+  default-routing test's null case now expects the 400, and docs/api.md says so.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **proxy**: Reject an invalid model name with 400 before any lookup
+  ([`2ffad6a`](https://github.com/cleanunicorn/drove/commit/2ffad6a2e7f6842700d274f1b4b7ba9b74548473))
+
+The proxy now tells an absent `model` field apart from a present one. Any present value that is not
+  a valid model name (a non-string, an empty string, a traversal or absolute path, a file-valued
+  multipart field) is answered with HTTP 400 before ensure_running, the model store or the disk is
+  touched, and the request counters settle. JSON null and an omitted field still route to the
+  default or loaded model; a configured default_model is validated the same way.
+
+ServerManager.ensure_running validates on entry too, so non-canonical spellings such as `./qwen`
+  never become separate instance keys.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: Keep backend output and shutdown from blocking
+  ([`e9aec63`](https://github.com/cleanunicorn/drove/commit/e9aec63b8a920fabff614eec10dd50f30c2a57bc))
+
+Backends were spawned with stdout piped but never read. Once ~192 KiB queued (kernel pipe plus
+  asyncio's paused buffer), the next write blocked the worker; uvicorn's access log reached that in
+  ~2,600 requests, freezing the ASR and TTS workers. stdout now goes to DEVNULL, stderr keeps its
+  bounded drain, and both workers turn off the access log.
+
+The wait after SIGKILL was unbounded and ran under the manager lock. asyncio only reports an exit
+  once every pipe closes, so a descendant holding stderr hung every later lifecycle call. Bound that
+  wait with STOP_TIMEOUT_SECONDS, warn on timeout, and always cancel the stderr reader.
+
+Closes #114
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: Keep draining stderr after a stop gives up
+  ([`80b1bed`](https://github.com/cleanunicorn/drove/commit/80b1bed02ce953d72462f68128191993aa637165))
+
+Cancelling the stderr reader once the bounded post-kill wait expired left the pipe of a surviving
+  descendant open with no consumer: the descendant blocked after ~64 KiB more output and the
+  transport and fd leaked. Leave the reader running; it ends on EOF, after which asyncio releases
+  the pipe and subprocess transports itself.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: Kill a backend whose stop is interrupted
+  ([`36fbc6f`](https://github.com/cleanunicorn/drove/commit/36fbc6f5e81946cb8b7f81d45d7405efeac79ea9))
+
+The instance is untracked before termination starts, so cancelling a stop during the SIGTERM grace
+  wait left a backend that ignores SIGTERM running with no owner. SIGKILL it (its process group for
+  TTS) before propagating; the stderr reader drains it until EOF.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: Release a request's slot only on the instance it claimed
+  ([`8653fa0`](https://github.com/cleanunicorn/drove/commit/8653fa0f884a3d45ecebd8c1e342aec7c5366ee6))
+
+request_finished looked the instance up by model name, so a request that outlived its instance (for
+  example one whose backend died and was replaced by a peer's cold start) decremented the
+  replacement's count and could make a busy model look idle and evictable.
+
+ensure_running(claim=True) and request_started now return the claimed instance as an opaque slot,
+  the proxy passes it back to request_finished, and a slot that is no longer the registered instance
+  releases nothing. Callers that pass no slot keep the name-based behavior.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: Reuse a peer's cold start after an eviction drain
+  ([`3ab9aca`](https://github.com/cleanunicorn/drove/commit/3ab9aca474eda0b68f6b4b89645c5c520d3b0118))
+
+Two requests for the same unloaded model could both wait for a busy model to drain with the manager
+  lock released. Whichever reacquired it second evicted another busy model (or drained the first
+  request's new instance) and started a second process, overwriting the first one's registry entry
+  and orphaning it.
+
+Eviction now returns as soon as the target model is running, and ensure_running rechecks the
+  registry after eviction to claim the peer's instance. _start refuses to overwrite a tracked
+  instance or idle watcher, so no process can be left untracked.
+
+Closes #113
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **sessions**: Keep chat session files inside sessions_dir
+  ([`48b8aee`](https://github.com/cleanunicorn/drove/commit/48b8aee7ceffdaff45eda99e71c3a059620e4957))
+
+Session storage joined the chat model label onto sessions_dir verbatim, and that label can come from
+  a remote endpoint's /v1/models catalog, so an id such as `../../x` or an absolute path wrote
+  session JSON anywhere the user can write. Valid model names keep their `org/name` layout; every
+  other label (or one whose directory resolves outside through a symlink) maps to a flat
+  `_<name>-<digest>` folder that no valid name can collide with. Switching models now reports such a
+  save failure instead of raising.
+
+Refs #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Documentation
+
+- Document the model naming rule and the 400 for invalid names
+  ([`e9a1306`](https://github.com/cleanunicorn/drove/commit/e9a13068ee3d23c1ffc6b1b7a1522341bd145d68))
+
+Describe the `name` / `org/name` rule and the models_dir containment (and its symlink consequence)
+  next to the naming guidance, note in the API reference that an invalid `model` is answered with
+  HTTP 400, and add the Security entry under [Unreleased].
+
+Closes #110
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **changelog**: Consolidate combined unreleased entries
+  ([`f26f375`](https://github.com/cleanunicorn/drove/commit/f26f375e8e0dba0fbcb6f8a5b507049fd6a587b9))
 
 
 ## v0.13.0 (2026-10-26)

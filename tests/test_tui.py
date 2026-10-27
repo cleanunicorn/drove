@@ -271,6 +271,7 @@ async def test_sessions_picker_skips_corrupt_file_without_printing(
     "broken",
     [
         {"role": "tool", "content": "no call id"},
+        {"role": "bad role", "content": "hello"},
         {
             "role": "assistant",
             "content": "",
@@ -278,9 +279,7 @@ async def test_sessions_picker_skips_corrupt_file_without_printing(
         },
     ],
 )
-async def test_resume_skips_session_with_unreplayable_tool_message(
-    tmp_path: Path, broken: dict
-) -> None:
+async def test_resume_skips_session_replay_cannot_show(tmp_path: Path, broken: dict) -> None:
     saved = new_session("a")
     saved.messages += [
         {"role": "user", "content": "keep me"},

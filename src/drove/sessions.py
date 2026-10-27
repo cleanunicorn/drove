@@ -23,6 +23,10 @@ _SLUG_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # name a path outside the model's session directory.
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
+# Every role drove has ever saved; chat replay renders user/assistant and
+# turns the role into a CSS class, so any other string would crash it.
+_MESSAGE_ROLES = frozenset({"system", "user", "assistant", "tool"})
+
 Warn = Callable[[str], None]
 
 
@@ -139,9 +143,9 @@ def _optional_str(data: dict[str, Any], key: str) -> str | None:
 
 def _check_message(message: Any) -> None:
     """Reject a message the chat TUI could not replay (see ``ChatApp._replay_history``)."""
-    if not isinstance(message, dict) or not isinstance(message.get("role"), str):
-        raise ValueError("each message needs a string 'role'")
-    role = message["role"]
+    role = message.get("role") if isinstance(message, dict) else None
+    if not isinstance(role, str) or role not in _MESSAGE_ROLES:
+        raise ValueError(f"each message needs a 'role' from {sorted(_MESSAGE_ROLES)}")
     if role == "user" and not isinstance(message.get("content"), str):
         raise ValueError("user messages need text 'content'")
     if role == "tool" and not isinstance(message.get("tool_call_id"), str):

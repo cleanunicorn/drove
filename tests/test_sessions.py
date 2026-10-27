@@ -182,6 +182,10 @@ BAD_FILES: dict[str, bytes] = {
 }
 # Message shapes chat replay reads (drove.tui.ChatApp._replay_history).
 BAD_MESSAGES: dict[str, dict[str, object]] = {
+    "role-empty": {"role": "", "content": "x"},
+    "role-with-space": {"role": "bad role", "content": "x"},
+    "role-unknown": {"role": "narrator", "content": "x"},
+    "role-not-hashable": {"role": ["user"], "content": "x"},
     "tool-without-call-id": {"role": "tool", "content": "result"},
     "tool-content-not-text": {"role": "tool", "tool_call_id": "1", "content": 5},
     "assistant-content-not-text": {"role": "assistant", "content": ["x"]},
@@ -308,6 +312,8 @@ def test_replayable_message_shapes_still_load(tmp_path: Path) -> None:
         tmp_path, "a.json", json.dumps({"id": "a", "model": "m", "messages": messages}).encode()
     )
     assert load_session(path).messages == messages
+    # Every role drove has ever written to a session file (git log -p -- src/).
+    assert {m["role"] for m in messages} == {"system", "user", "assistant", "tool"}
 
 
 def test_legacy_session_ids_still_load(tmp_path: Path) -> None:

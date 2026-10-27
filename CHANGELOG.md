@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Concurrent requests for a model that is not loaded no longer start it twice when they have to
+  wait for a busy model to drain. The second request now uses the instance the first one started,
+  so no backend process is orphaned and no other busy model is evicted needlessly.
+- A request that finishes after its model was restarted no longer releases a request slot on the
+  new instance, which could make a busy model look idle and get it evicted mid-request.
+
 
 ## v0.13.0 (2026-10-26)
 

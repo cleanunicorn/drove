@@ -163,7 +163,7 @@ async def test_lazy_start_and_managed_shutdown_use_tts_worker(tmp_path: Path, en
             args = spawn.call_args.args
             assert args[args.index("--device") + 1] == "cpu"
             assert args[args.index("--voice") + 1] == "af_sarah"
-            evict.assert_awaited_once_with(512 * 1024**2)
+            evict.assert_awaited_once_with(512 * 1024**2, model_name="kokoro")
             assert manager._instances["kokoro"].est_memory_bytes == 512 * 1024**2
             assert manager._instances["kokoro"].backend == BACKEND_TTS
             manager.request_finished("kokoro")

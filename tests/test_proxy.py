@@ -305,7 +305,7 @@ async def test_speech_can_outlast_the_regular_upstream_timeout(
             ):
                 response = await client.post(f"/v1/{endpoint}", json={"model": "kitten"})
             ensure.assert_awaited_once_with("kitten", claim=True)
-            release.assert_called_once_with("kitten")
+            release.assert_called_once_with("kitten", ensure.return_value)
         assert response.status_code == status
         assert requests[0].extensions["timeout"] == {
             "connect": 0.05,
@@ -477,10 +477,12 @@ def test_default_model_routing_and_claims(
         if default is None and explicit is None:
             ensure.assert_not_awaited()
             started.assert_called_once_with(expected)
+            slot = started.return_value
         else:
             ensure.assert_awaited_once_with(expected, claim=True)
             started.assert_not_called()
-        finished.assert_called_once_with(expected)
+            slot = ensure.return_value
+        finished.assert_called_once_with(expected, slot)
         assert app.state.stats.active_requests == 0
         assert app.state.stats.error_count == 0
 

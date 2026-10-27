@@ -665,3 +665,69 @@ def test_tts_marker_needs_no_entry_in_its_record(tmp_path: Path) -> None:
     (root / "lm" / "model.safetensors").write_bytes(b"w")
     _write_manifest(root, "complete", {"lm/model.safetensors": 1})
     assert ModelStore(tmp_path).resolve("voice") == root / "model.tts"
+
+
+@pytest.mark.parametrize("layout", ["dir", "flat"])
+@pytest.mark.parametrize(
+    "state,recorded",
+    [
+        ("incomplete", {"model.gguf": 4, "vocab.txt": 1}),  # unfinished
+        ("complete", {"other.gguf": 0}),  # stale: target never recorded
+    ],
+)
+def test_symlink_alias_cannot_bypass_its_target_record(
+    tmp_path: Path, layout: str, state: str, recorded: dict[str, int]
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "model.gguf").write_bytes(b"GGUF")
+    (real / "other.gguf").write_bytes(b"")
+    _write_manifest(real, state, recorded)
+    if layout == "dir":
+        (tmp_path / "alias").mkdir()
+        (tmp_path / "alias" / "model.gguf").symlink_to(real / "model.gguf")
+    else:
+        (tmp_path / "alias.gguf").symlink_to(real / "model.gguf")
+
+    store = ModelStore(tmp_path)
+    assert store.list() == []
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        store.resolve("alias")
+
+
+@pytest.mark.parametrize("layout", ["dir", "flat"])
+def test_symlink_alias_to_complete_or_legacy_target_resolves(tmp_path: Path, layout: str) -> None:
+    for name, record in (("legacy", None), ("done", {"model.gguf": 4})):
+        target = tmp_path / name / "model.gguf"
+        target.parent.mkdir()
+        target.write_bytes(b"GGUF")
+        if record is not None:
+            _write_manifest(target.parent, "complete", record)
+        link = (
+            tmp_path / f"{name}-alias" / "model.gguf"
+            if layout == "dir"
+            else tmp_path / f"{name}-alias.gguf"
+        )
+        link.parent.mkdir(exist_ok=True)
+        link.symlink_to(target)
+        assert ModelStore(tmp_path).resolve(f"{name}-alias") == link
+
+
+def test_split_shard_alias_needs_every_target_shard(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "real", "big-00001-of-00002.gguf")
+    (tmp_path / "alias.gguf").symlink_to(tmp_path / "real" / "big-00001-of-00002.gguf")
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        ModelStore(tmp_path).resolve("alias")
+
+
+def test_record_applies_under_a_symlinked_models_dir(tmp_path: Path) -> None:
+    real = tmp_path / "real-models"
+    (real / "m").mkdir(parents=True)
+    (real / "m" / "model.gguf").write_bytes(b"GGUF")
+    (real / "legacy.gguf").write_bytes(b"GGUF")
+    _write_manifest(real / "m", "incomplete", {"model.gguf": 4})
+    (tmp_path / "models").symlink_to(real)
+    store = ModelStore(tmp_path / "models")
+    assert [e.name for e in store.list()] == ["legacy"]
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        store.resolve("m")

@@ -232,19 +232,26 @@ class ModelStore:
 
         Every download record between the models directory and the primary
         applies, whatever name reached it (``org`` resolving into ``org/asr``
-        still honours ``org/asr``'s record).  A record must say complete, list
-        the primary itself (a TTS model's generated marker excepted) and every
-        file it lists must still exist at its expected size.  Without
-        any (downloads made before records existed) the files themselves are
-        trusted.  Either way a split GGUF needs every shard.
+        still honours ``org/asr``'s record), and so does every record above
+        the file a symlinked primary points to, so an alias never bypasses its
+        target's record.  A record must say complete, list the primary itself
+        (a TTS model's generated marker excepted) and every file it lists must
+        still exist at its expected size.  Without any (downloads made before
+        records existed) the files themselves are trusted.  Either way a split
+        GGUF needs every shard.
         """
-        directory = primary.parent
-        while directory != self._dir and self._contains(directory):
-            reason = _record_reason(directory, primary)
-            if reason is not None:
-                return reason
-            directory = directory.parent
-        return _split_reason(primary)
+        try:
+            real_dir, real_primary = self._dir.resolve(), primary.resolve()
+        except OSError, RuntimeError:
+            return "its files cannot be read"
+        for top, path in ((self._dir, primary), (real_dir, real_primary)):
+            directory = path.parent
+            while directory != top and directory.is_relative_to(top):
+                reason = _record_reason(directory, path)
+                if reason is not None:
+                    return reason
+                directory = directory.parent
+        return _split_reason(primary) or _split_reason(real_primary)
 
     def _direct_root(self, name: str) -> Path | None:
         """Return model directory or legacy flat file without alias resolution."""

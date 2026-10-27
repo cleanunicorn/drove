@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- `drove chat`, its model picker, `drove observe` and the quantization picker no longer
+  print HTTP request log lines (and other log records) over the screen next to the input
+  box; while they run, records go to Textual's log, visible with `textual console`.
+  `drove server` and other commands still log to stderr.
+
 
 ## v0.13.1 (2026-10-27)
 

@@ -12,7 +12,7 @@
 
 ### Security
 
-- Backend stderr is no longer returned to clients on startup failure; it stays in the server log.
+- Backend stderr is no longer returned to clients on startup failure; it stays in the server log. The 404 for an unknown model no longer reveals the server's models directory.
 
 ## v0.13.1 (2026-10-27)
 

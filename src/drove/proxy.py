@@ -344,7 +344,12 @@ def _startup_error(model_name: str, error: Exception) -> HTTPException:
     if isinstance(error, BackendUnavailableError):
         return HTTPException(status_code=503, detail="backend unavailable; see server logs")
     if isinstance(error, FileNotFoundError):
-        return HTTPException(status_code=404, detail=str(error))
+        return HTTPException(
+            status_code=404,
+            detail=(
+                f"Model {model_name!r} not found. Run 'drove models list' to see available models."
+            ),
+        )
     if isinstance(error, ValueError):  # includes TOMLDecodeError and ValidationError
         return HTTPException(status_code=500, detail=f"invalid model config for {model_name!r}")
     if isinstance(error, RuntimeError | OSError):  # OSError includes TimeoutError

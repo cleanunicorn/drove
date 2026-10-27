@@ -759,6 +759,7 @@ def test_models_endpoint_hides_names_the_api_would_reject(tmp_path: Path) -> Non
 
 # ── Startup failures: deliberate statuses, balanced accounting, private stderr ─────
 
+_LIST_HINT = "Run 'drove models list' to see available models."
 _SENTINEL = "SECRET-STDERR-/home/user/.cache/model.gguf"
 
 
@@ -794,6 +795,7 @@ def _startup_cases() -> list[Any]:
     config_detail = "invalid model config for 'm'"
     failed = "model failed to start; see server logs"
     return [
+        (FileNotFoundError(_SENTINEL), 404, "Model 'm' not found. " + _LIST_HINT),
         (TypeError(_SENTINEL), 500, "model startup failed; see server logs"),
         (ValueError(_SENTINEL), 500, config_detail),
         (_toml_error(), 500, config_detail),
@@ -855,6 +857,9 @@ def test_unknown_model_still_returns_404_with_balanced_stats(tmp_path: Path) -> 
     assert resp.status_code == 404
     assert reported["active"] == 0
     assert reported["errors"] == 1
+    # The store's own message names models_dir; clients get only the model name.
+    assert resp.json() == {"detail": "Model 'ghost' not found. " + _LIST_HINT}
+    assert str(app.state.config.models_dir) not in resp.text
 
 
 def _real_manager_app(tmp_path: Path, **updates: Any) -> tuple[Any, Path]:

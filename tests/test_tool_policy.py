@@ -187,6 +187,13 @@ def test_host_grant_is_exact(tree) -> None:
 
     assert not asks("https://example.com/page")
     assert not asks("https://EXAMPLE.com./other")
+    assert asks("https://bücher.example/")
+    bucher = frozenset({Grant("fetch_url", host="xn--bcher-kva.example")})
+    assert not decide(
+        "fetch_url",
+        json.dumps({"url": "https://BÜCHER.example/"}),
+        context(tree["cwd"], grants=bucher),
+    ).prompt
     assert asks("https://evil.example.com/")
     assert asks("https://example.com.evil.net/")
     assert asks("https://other.org/")

@@ -68,9 +68,10 @@ def canonical_host(url: str) -> str | None:
         parsed = httpx.URL(url)
     except httpx.InvalidURL, TypeError:
         return None
-    if parsed.scheme not in {"http", "https"} or not parsed.host:
+    if parsed.scheme not in {"http", "https"} or not parsed.raw_host:
         return None
-    host = parsed.host.lower().rstrip(".")
+    # raw_host is the IDNA (ASCII) form, so a Unicode and a punycode spelling match.
+    host = parsed.raw_host.decode("ascii", errors="replace").lower().rstrip(".")
     try:
         return str(ipaddress.ip_address(host))
     except ValueError:

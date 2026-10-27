@@ -38,7 +38,7 @@ from drove.model_config import (
     load_global_model_config,
     load_model_config,
 )
-from drove.model_store import ModelStore
+from drove.model_store import ModelStore, validate_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -294,21 +294,33 @@ class ServerManager:
         if inst:
             inst.last_request_time = time.monotonic()
 
-    def request_started(self, model_name: str) -> None:
-        """Mark a request as in-flight for a model."""
+    def request_started(self, model_name: str) -> object | None:
+        """Mark a request as in-flight for a model.
+
+        Returns the claimed slot to pass to ``request_finished``, or None when
+        the model is not loaded.
+        """
         inst = self._instances.get(model_name)
         if inst:
             inst.active_requests += 1
             inst.last_request_time = time.monotonic()
+        return inst
 
-    def request_finished(self, model_name: str) -> None:
-        """Mark a request as complete and reset the idle timer for a model."""
+    def request_finished(self, model_name: str, slot: object | None = None) -> None:
+        """Mark a request as complete and reset the idle timer for a model.
+
+        *slot* is what ``ensure_running(claim=True)`` or ``request_started``
+        returned. When given, only that instance is released: if the model has
+        since been restarted, the new instance's count is left alone.
+        """
         inst = self._instances.get(model_name)
+        if slot is not None and inst is not slot:
+            return
         if inst:
             inst.active_requests = max(0, inst.active_requests - 1)
             inst.last_request_time = time.monotonic()
 
-    async def ensure_running(self, model_name: str, *, claim: bool = False) -> None:
+    async def ensure_running(self, model_name: str, *, claim: bool = False) -> object | None:
         """Ensure llama-server is running for the requested model.
 
         If the model is already loaded with an up-to-date config, this is a no-op.
@@ -324,8 +336,12 @@ class ServerManager:
         ``ensure_running`` call for a different model could evict and kill
         this server between the time ``ensure_running`` returns and the
         caller records the request as in-flight.  Callers passing
-        ``claim=True`` must pair it with a later ``request_finished`` call.
+        ``claim=True`` must pair it with a later ``request_finished`` call,
+        passing the slot this returns (None when *claim* is False).
+        Raises ValueError for an unsafe or non-canonical model name, before
+        any instance lookup, so alternate spellings never become new keys.
         """
+        validate_model_name(model_name)
         async with self._lock:
             inst = self._instances.get(model_name)
             if inst is not None and inst.is_running:
@@ -345,13 +361,10 @@ class ServerManager:
                             model_name,
                         )
                         inst.needs_restart = True
-                        if claim:
-                            self._claim_slot(model_name)
-                        return
+                        return self._claim_slot(model_name) if claim else None
                 else:
-                    if claim:
-                        self._claim_slot(model_name)
-                    return  # running with current config, nothing to do
+                    # Running with current config, nothing to do.
+                    return self._claim_slot(model_name) if claim else None
             elif inst is not None:
                 # Clean up stale instance if process died
                 await self._stop_instance(model_name)
@@ -360,19 +373,31 @@ class ServerManager:
             incoming_bytes = _estimate_model_memory(
                 model_path, self._effective_model_config(model_path)
             )
-            await self._evict_if_needed(incoming_bytes)
+            await self._evict_if_needed(incoming_bytes, model_name=model_name)
+            # Eviction may have released the lock to drain a busy model, and a
+            # concurrent request for this model may have started it meanwhile.
+            inst = self._instances.get(model_name)
+            if inst is not None and inst.is_running:
+                return self._claim_slot(model_name) if claim else None
+            if inst is not None:
+                await self._stop_instance(model_name)
             await self._start(model_name)
-            if claim:
-                self._claim_slot(model_name)
+            return self._claim_slot(model_name) if claim else None
 
-    def _claim_slot(self, model_name: str) -> None:
-        """Increment active_requests for a model (caller must hold the lock)."""
+    def _claim_slot(self, model_name: str) -> _ModelInstance | None:
+        """Increment active_requests for a model (caller must hold the lock).
+
+        Returns the claimed instance, which identifies the slot to release.
+        """
         inst = self._instances.get(model_name)
         if inst is not None:
             inst.active_requests += 1
             inst.last_request_time = time.monotonic()
+        return inst
 
-    async def _evict_if_needed(self, incoming_bytes: int = 0) -> None:
+    async def _evict_if_needed(
+        self, incoming_bytes: int = 0, *, model_name: str | None = None
+    ) -> None:
         """Evict loaded models until count and memory budgets allow one more.
 
         Two independent limits apply: ``max_loaded_models`` caps the number of
@@ -385,6 +410,10 @@ class ServerManager:
         models the least-recently-used is chosen. Only when every loaded model
         is busy do we fall back to draining the least-recently-used one (wait
         for its active requests to finish before stopping it).
+
+        *model_name* is the model about to start: if a concurrent request has
+        started it while the lock was released, return without evicting
+        anything, so the caller can reuse that instance.
 
         Must be called while holding ``self._lock``.
         """
@@ -406,6 +435,8 @@ class ServerManager:
         # or eviction — memory pressure can require evicting more than one model.
         while True:
             running = {n: i for n, i in self._instances.items() if i.is_running}
+            if model_name is not None and model_name in running:
+                return
             over_count = max_models > 0 and len(running) >= max_models
             used_bytes = sum(i.est_memory_bytes for i in running.values())
             over_memory = (
@@ -460,6 +491,13 @@ class ServerManager:
             await self._stop_instance(model_name)
 
     async def _start(self, model_name: str) -> None:
+        """Spawn a backend for a model that has no tracked instance or watcher.
+
+        Must be called while holding ``self._lock``. Refuses rather than
+        overwrite an existing entry, which would leave its process untracked.
+        """
+        if model_name in self._instances or model_name in self._idle_tasks:
+            raise RuntimeError(f"Model {model_name!r} is already registered; not starting it again")
         model_path = self._resolve_model(model_name)
         model_cfg = self._effective_model_config(model_path)
         backend = detect_backend(model_path, model_cfg)
@@ -489,7 +527,9 @@ class ServerManager:
         logger.info("Starting %s backend: %s", backend, " ".join(cmd))
         process = await asyncio.create_subprocess_exec(
             *cmd,
-            stdout=asyncio.subprocess.PIPE,
+            # Nothing reads backend stdout; an unread pipe would block the
+            # backend once it fills. stderr is drained for diagnostics.
+            stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=backend == BACKEND_TTS,
         )
@@ -529,7 +569,17 @@ class ServerManager:
         inst = self._instances.pop(model_name, None)
         if inst is None:
             return
+        # The stderr reader is left running: it ends on EOF, and until then it
+        # drains any descendant still holding the pipe so it cannot block.
+        try:
+            await self._terminate(inst)
+        except BaseException:
+            # Interrupted (e.g. cancelled mid-grace-wait): the instance is no
+            # longer tracked, so never leave its process running.
+            _kill_now(inst)
+            raise
 
+    async def _terminate(self, inst: _ModelInstance) -> None:
         if inst.backend == BACKEND_TTS:
             # uv supervises the Python worker. Signal its isolated process group,
             # including when the supervisor has already exited but a child remains.
@@ -548,7 +598,7 @@ class ServerManager:
                     os.killpg(inst.process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            await inst.process.wait()
+            await _wait_reaped(inst)
             return
 
         if not inst.is_running:
@@ -556,15 +606,15 @@ class ServerManager:
 
         await self._save_prompt_cache(inst)
 
-        logger.info("Stopping llama-server (model=%s, pid=%d)", model_name, inst.process.pid)
+        logger.info("Stopping llama-server (model=%s, pid=%d)", inst.model_name, inst.process.pid)
         try:
             inst.process.send_signal(signal.SIGTERM)
             try:
-                await asyncio.wait_for(inst.process.wait(), timeout=10.0)
+                await asyncio.wait_for(inst.process.wait(), timeout=STOP_TIMEOUT_SECONDS)
             except TimeoutError:
                 logger.warning("llama-server did not stop in time, sending SIGKILL")
                 inst.process.kill()
-                await inst.process.wait()
+                await _wait_reaped(inst)
         except ProcessLookupError:
             pass  # already gone
 
@@ -978,6 +1028,32 @@ def _find_free_port() -> int:
         s.bind(("", 0))
         port: int = s.getsockname()[1]
         return port
+
+
+def _kill_now(inst: _ModelInstance) -> None:
+    try:
+        if inst.backend == BACKEND_TTS:
+            os.killpg(inst.process.pid, signal.SIGKILL)
+        else:
+            inst.process.kill()
+    except ProcessLookupError:
+        pass
+
+
+async def _wait_reaped(inst: _ModelInstance) -> None:
+    """Wait for a killed backend, giving up after STOP_TIMEOUT_SECONDS.
+
+    asyncio only reports the exit once every pipe closes, which a surviving
+    descendant can prevent forever; the caller holds the manager lock.
+    """
+    try:
+        await asyncio.wait_for(inst.process.wait(), timeout=STOP_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning(
+            "Backend did not exit after SIGKILL (model=%s, pid=%d); giving up waiting",
+            inst.model_name,
+            inst.process.pid,
+        )
 
 
 def _tail(text: str, n: int) -> str:

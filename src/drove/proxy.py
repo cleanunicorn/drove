@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from drove.config import Config, load_config
+from drove.model_store import validate_model_name
 from drove.observe import ObserveContext, save_record
 from drove.server_manager import ServerManager
 from drove.stats import ProxyStats
@@ -168,12 +169,22 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     )
     async def proxy(request: Request, path: str) -> StreamingResponse:
         stats.request_started()
-        model_name = await _extract_model(request)
+        requested = await _extract_model(request)
         current_config: Config = app.state.config
-        used_default = model_name is None and current_config.default_model is not None
-        if model_name is None:
-            model_name = current_config.default_model
+        used_default = requested is _ABSENT and current_config.default_model is not None
+        selected = current_config.default_model if requested is _ABSENT else requested
+        model_name: str | None = None
+        if requested is not _ABSENT or selected is not None:
+            # Validate before any lookup: a name is joined onto models_dir, so an
+            # unsafe one must never reach the store, the manager or the disk.
+            try:
+                model_name = validate_model_name(selected)
+            except ValueError as e:
+                stats.request_finished()
+                stats.request_error()
+                raise HTTPException(status_code=400, detail=str(e)) from e
 
+        slot: object | None = None
         if model_name is None:
             if not manager.is_running:
                 stats.request_finished()
@@ -195,7 +206,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 # claim=True atomically reserves a request slot before releasing
                 # the manager lock, so a concurrent ensure_running for another
                 # model cannot evict this one while we're mid-request.
-                await manager.ensure_running(model_name, claim=True)
+                slot = await manager.ensure_running(model_name, claim=True)
             except FileNotFoundError as e:
                 stats.request_finished()
                 stats.request_error()
@@ -210,7 +221,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         # This path is less racy because nothing competes to evict a model
         # that was picked as the current fallback.
         if model_name is None:
-            manager.request_started(resolved_model)
+            slot = manager.request_started(resolved_model)
         try:
             manager.record_request(resolved_model)
 
@@ -292,6 +303,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     response_status=resp.status_code,
                     audio_duration=resp.headers.get("x-drove-audio-seconds"),
                     upstream_started=upstream_started,
+                    slot=slot,
                 ),
                 status_code=resp.status_code,
                 headers=response_headers,
@@ -299,7 +311,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 background=None,
             )
         except Exception:
-            manager.request_finished(resolved_model)
+            manager.request_finished(resolved_model, slot)
             stats.request_finished()
             stats.request_error()
             raise
@@ -377,30 +389,34 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-async def _extract_model(request: Request) -> str | None:
+_ABSENT = object()  # the request body carries no 'model' field
+
+
+async def _extract_model(request: Request) -> object:
     """Try to read the 'model' field from the request body without consuming the stream.
 
     Supports JSON bodies (chat/completions) and multipart form bodies
-    (OpenAI-style audio endpoints, where 'model' is a form field).
+    (OpenAI-style audio endpoints, where 'model' is a form field).  Returns
+    the raw value, unvalidated (JSON null included), or ``_ABSENT`` when there
+    is no such field or the body cannot be parsed.
     """
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         try:
             body = await request.json()
-            return body.get("model") if isinstance(body, dict) else None
         except Exception:
-            return None
+            return _ABSENT
+        return body["model"] if isinstance(body, dict) and "model" in body else _ABSENT
     if "multipart/form-data" in content_type:
         try:
             # Cache the raw body first so the multipart parser consumes the
             # cached copy and the proxy can still forward the original bytes.
             await request.body()
             form = await request.form()
-            value = form.get("model")
-            return value if isinstance(value, str) and value else None
         except Exception:
-            return None
-    return None
+            return _ABSENT
+        return form["model"] if "model" in form else _ABSENT
+    return _ABSENT
 
 
 async def _counting_stream(
@@ -415,6 +431,7 @@ async def _counting_stream(
     response_status: int = 200,
     audio_duration: str | None = None,
     upstream_started: float | None = None,
+    slot: object | None = None,
 ) -> AsyncIterator[bytes]:
     """Wrap a response stream, collecting bytes to extract token usage afterwards."""
     try:
@@ -467,7 +484,7 @@ async def _counting_stream(
         stats.request_error()
         raise
     finally:
-        manager.request_finished(model_name)
+        manager.request_finished(model_name, slot)
         stats.request_finished()
 
 

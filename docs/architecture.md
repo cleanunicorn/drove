@@ -44,5 +44,9 @@ Client → FastAPI proxy (drove port)
   budget. Only llama-server models use the prompt (KV) cache.
 - `drove` keeps request-path behavior transparent by forwarding requests directly.
 - After inactivity timeout, the backend process is terminated to release resources.
+- Backend stdout is discarded; stderr is drained continuously into a bounded 256 KB tail that
+  startup-failure errors quote. No backend output can block a backend.
+- Stopping sends SIGTERM, then SIGKILL after 10 s; the final wait is bounded too, so a process
+  whose descendants keep a pipe open cannot hold the manager lock.
 
 [Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)

@@ -217,9 +217,11 @@ async def test_narrow_terminal_long_list_scroll_and_literal_labels(tmp_path: Pat
 
 def test_remote_label_is_literal(tmp_path: Path) -> None:
     plan = _plan()
-    plan.local_name = "[red]custom[/red]"
-    _write_files(tmp_path / plan.local_name, {"model-Q4_K_M.gguf": 1})
-    label = build_candidates(plan, None, tmp_path)[0].label(2000)
+    plan.local_name = "custom"
+    # Model names cannot hold markup (#110), but the models directory can.
+    models_dir = tmp_path / "[red]custom[/red]"
+    _write_files(models_dir / plan.local_name, {"model-Q4_K_M.gguf": 1})
+    label = build_candidates(plan, None, models_dir)[0].label(2000)
     assert "[red]custom[/red]" in label.plain
     assert label.spans == []
 

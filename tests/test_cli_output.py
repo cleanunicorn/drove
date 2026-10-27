@@ -39,22 +39,26 @@ def _unwrapped(text: str) -> str:
 
 
 def test_model_list_empty_and_populated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
+    # Model names can't hold markup (#110); the storage path still can and
+    # must print literally.
+    models_dir = tmp_path / "[red]store"
+    models_dir.mkdir()
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(models_dir))
     runner = CliRunner()
     result = runner.invoke(app, ["models", "list"])
     assert result.exit_code == 0
     assert "drove models download" in result.stdout
-    primary = tmp_path / "[red]model.gguf"
+    primary = models_dir / "plain-model.gguf"
     primary.write_bytes(b"GGUF")
     result = runner.invoke(app, ["models", "list"])
     assert result.exit_code == 0
-    assert "[red]model" in result.stdout
+    assert "plain-model" in result.stdout
     assert "CONFIG" not in result.stdout
-    assert str(tmp_path) not in result.stdout
+    assert str(models_dir) not in result.stdout
     detailed = runner.invoke(app, ["models", "list", "--verbose"])
     assert detailed.exit_code == 0
     assert "defaults" in detailed.stdout
-    assert _unwrapped(str(tmp_path)) in _unwrapped(detailed.stdout)
+    assert _unwrapped(str(models_dir)) in _unwrapped(detailed.stdout)
     assert "1 model(s)" in result.stdout
     assert "\x1b" not in result.stdout
 

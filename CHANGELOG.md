@@ -1,5 +1,45 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Concurrent requests for a model that is not loaded no longer start it twice when they have to
+  wait for a busy model to drain. The second request now uses the instance the first one started,
+  so no backend process is orphaned and no other busy model is evicted needlessly.
+- A request that finishes after its model was restarted no longer releases a request slot on the
+  new instance, which could make a busy model look idle and get it evicted mid-request.
+
+- Speech-to-text and text-to-speech workers no longer freeze after a few thousand requests, and
+  no backend can stall on its own log output; their per-request access logs are switched off.
+- Stopping a model now always finishes, even when the backend ignores SIGTERM and a child process
+  keeps its output open, so one stuck backend can no longer block every other model.
+
+### Security
+
+- Model names are now validated everywhere they enter drove (the API `model`
+  field, `models delete`/`info`/`config`, `models download --name` and observe
+  records). Empty, absolute, `.`/`..`, backslash and other unsafe names are
+  rejected with HTTP 400 or a CLI error before anything is read, started,
+  written or deleted, so a LAN client can no longer load or walk files outside
+  `models_dir` and `drove models delete . -y` / `.. -y` delete nothing.
+- Models whose directory or files resolve outside `models_dir` (for example a
+  symlink to another disk) are no longer listed, served or deleted; point
+  `models_dir` at that location instead. A model folder holding several weight
+  files is listed, completed and served with the same file: the first one whose
+  path and sidecar config stay inside `models_dir`. Names containing spaces are
+  no longer accepted, and existing models with such names are hidden from
+  listings until renamed on disk.
+- Chat sessions are always saved inside `sessions_dir`, even when a remote
+  endpoint advertises a model id such as `../../x`; such ids, and any id that is
+  not a valid local model name, are stored under a separate `_<name>-<digest>`
+  folder, so their earlier sessions are no longer offered for resume.
+- `drove models download` refuses to start when a file it would write, the
+  model's sidecar config, or anything already inside the download's `.cache`
+  folder leads outside `models_dir` through a symlink, even one reached via
+  another link that stays inside, so Hub metadata, lock and partial files can
+  no longer be written elsewhere on disk.
+
 
 ## v0.13.0 (2026-10-26)
 

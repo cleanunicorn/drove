@@ -469,22 +469,35 @@ async def _send_unless_disconnected(
     """
     send = asyncio.ensure_future(client.send(upstream, stream=True))
     watch = asyncio.ensure_future(_wait_for_disconnect(receive))
-    keep = False
+    handed_over = False
     try:
         await asyncio.wait((send, watch), return_when=asyncio.FIRST_COMPLETED)
-        keep = not watch.done()
-    finally:
-        # Also reached when the caller is cancelled: never leave either task running.
+        if watch.done():
+            watch.result()  # re-raise a failed watcher rather than report a disconnect
+            return None
         watch.cancel()
-        if not keep:
-            send.cancel()
-        await asyncio.gather(send, watch, return_exceptions=True)
-        if not keep and not send.cancelled() and send.exception() is None:
-            await send.result().aclose()
-    if keep:
-        return send.result()
-    watch.result()  # re-raise a failed watcher rather than report a disconnect
-    return None
+        await asyncio.gather(watch, return_exceptions=True)
+        response = send.result()
+        handed_over = True
+        return response
+    finally:
+        if not handed_over:
+            # Disconnected, failed or cancelled (possibly mid-handoff): stop both
+            # tasks and close any response nobody will read. Shielded, so a repeated
+            # cancellation cannot abandon the upstream connection half-closed.
+            cleanup = asyncio.ensure_future(_discard_send(send, watch))
+            _background_tasks.add(cleanup)
+            cleanup.add_done_callback(_background_tasks.discard)
+            await asyncio.shield(cleanup)
+
+
+async def _discard_send(send: asyncio.Future[httpx.Response], watch: asyncio.Future[None]) -> None:
+    """Cancel a send race and close the upstream response if one arrived anyway."""
+    send.cancel()
+    watch.cancel()
+    await asyncio.gather(send, watch, return_exceptions=True)
+    if not send.cancelled() and send.exception() is None:
+        await send.result().aclose()
 
 
 async def _wait_for_disconnect(receive: Receive) -> None:

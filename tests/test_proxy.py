@@ -1062,3 +1062,80 @@ async def test_send_race_ignores_non_disconnect_messages() -> None:
         raise AssertionError("unreachable")
 
     assert await _send_unless_disconnected(client, MagicMock(), receive) is response
+
+
+def _race_parts() -> tuple[MagicMock, MagicMock, asyncio.Event, asyncio.Event]:
+    """A client whose send answers at once, and a response whose close can be held."""
+    closing = asyncio.Event()
+    may_close = asyncio.Event()
+    response = MagicMock(spec=httpx.Response)
+
+    async def aclose() -> None:
+        closing.set()
+        await may_close.wait()
+
+    response.aclose = AsyncMock(side_effect=aclose)
+    client = MagicMock(spec=httpx.AsyncClient)
+    client.send = AsyncMock(return_value=response)
+    return client, response, closing, may_close
+
+
+def _cancel_on_watcher_cleanup(parent: list[asyncio.Task[object]]):  # type: ignore[no-untyped-def]
+    """A receive() that blocks, and cancels the handler once the watcher is cancelled.
+
+    That is the moment the send has won and the helper is winding the watcher down.
+    """
+
+    async def receive() -> dict[str, object]:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            parent[0].cancel()
+            raise
+        raise AssertionError("unreachable")
+
+    return receive
+
+
+async def test_send_race_closes_the_response_when_cancelled_during_handoff() -> None:
+    from drove.proxy import _send_unless_disconnected
+
+    client, response, closing, may_close = _race_parts()
+    may_close.set()
+    parent: list[asyncio.Task[object]] = []
+    before = asyncio.all_tasks()
+    receive = _cancel_on_watcher_cleanup(parent)
+    parent.append(asyncio.create_task(_send_unless_disconnected(client, MagicMock(), receive)))
+    with pytest.raises(asyncio.CancelledError):
+        await parent[0]
+
+    await asyncio.wait_for(closing.wait(), 5)
+    response.aclose.assert_awaited_once()
+    assert [t for t in asyncio.all_tasks() - before if not t.done()] == []
+
+
+async def test_send_race_finishes_closing_when_cancelled_again() -> None:
+    from drove.proxy import _send_unless_disconnected
+
+    client, response, closing, may_close = _race_parts()
+    parent: list[asyncio.Task[object]] = []
+    receive = _cancel_on_watcher_cleanup(parent)
+    parent.append(asyncio.create_task(_send_unless_disconnected(client, MagicMock(), receive)))
+    await asyncio.wait_for(closing.wait(), 5)
+    parent[0].cancel()  # a second cancellation must not abandon the close
+    with pytest.raises(asyncio.CancelledError):
+        await parent[0]
+
+    from drove.proxy import _background_tasks
+
+    assert _background_tasks  # the shielded cleanup is still closing the response
+    may_close.set()
+    await asyncio.wait_for(_drain_background_tasks(), 5)
+    response.aclose.assert_awaited_once()
+
+
+async def _drain_background_tasks() -> None:
+    from drove.proxy import _background_tasks
+
+    while _background_tasks:
+        await asyncio.gather(*_background_tasks)

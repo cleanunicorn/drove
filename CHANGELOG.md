@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Requests from clients that disconnect while their model is starting, or before the backend
+  answers, are no longer forwarded (or are cancelled in flight), so the model no longer stays busy
+  for nobody. A cancelled request no longer leaves the active-request counts raised.
+
 
 ## v0.13.1 (2026-10-27)
 

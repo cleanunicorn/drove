@@ -645,3 +645,19 @@ def test_legacy_record_without_new_fields_still_loads(tmp_path: Path) -> None:
     assert record.request_body == "fffe00"
     assert record.response_body_raw == ""
     assert [p for p, _ in list_records(tmp_path)] == [path]
+
+
+@pytest.mark.parametrize(("flat_age", "nested_age"), [(1, 40), (40, 1), (40, 40)])
+def test_prune_records_handles_flat_and_namespaced_records_under_one_parent(
+    tmp_path: Path, flat_age: int, nested_age: int
+) -> None:
+    # "org" and "org/repo:q4" are both valid model names and can coexist.
+    now = time.time()
+    flat = _aged(tmp_path / "org" / "flat.json", now, flat_age * 86400)
+    nested = _aged(tmp_path / "org" / "repo:q4" / "nested.json", now, nested_age * 86400)
+
+    removed = prune_records(tmp_path, 30, now=now)
+
+    assert flat.exists() == (flat_age < 30)
+    assert nested.exists() == (nested_age < 30)
+    assert removed == (flat_age >= 30) + (nested_age >= 30)

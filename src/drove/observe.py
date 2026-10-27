@@ -612,7 +612,7 @@ def prune_records(observe_dir: Path, max_age_days: int, now: float | None = None
         return 0
     cutoff = (time.time() if now is None else now) - max_age_days * 86400
     removed = 0
-    for d in _record_dirs(observe_dir, None):
+    for d in _retention_dirs(observe_dir):
         try:
             with os.scandir(d) as entries:
                 for entry in entries:
@@ -621,6 +621,21 @@ def prune_records(observe_dir: Path, max_age_days: int, now: float | None = None
         except OSError as e:
             logger.warning("Observe retention could not read %s: %s", d, e)
     return removed
+
+
+def _retention_dirs(observe_dir: Path) -> list[Path]:
+    """Every directory that can hold records: each model dir and each namespace child.
+
+    Unlike _record_dirs, a directory with records of its own is still searched
+    one level deeper, since ``org`` and ``org/repo`` can both be models.
+    """
+    dirs: list[Path] = []
+    for d in observe_dir.iterdir():
+        if d.is_symlink() or not d.is_dir():
+            continue
+        dirs.append(d)
+        dirs.extend(sub for sub in d.iterdir() if sub.is_dir() and not sub.is_symlink())
+    return dirs
 
 
 def _prune_entry(entry: os.DirEntry[str], cutoff: float) -> bool:

@@ -23,7 +23,7 @@ def record(name: str = "org/model-with-a-long-name:Q4", number: int = 1) -> Obse
         model=name,
         endpoint="v1/chat/completions-with-long-name",
         method="POST",
-        request_headers={"Authorization": "literal [value]"},
+        request_headers={"X-Trace": "literal [value]"},
         request_body='{"nested": [true, null, 12, "hello"]}',
         response_status=200,
         response_headers={"Content-Type": "application/json"},

@@ -490,3 +490,58 @@ async def test_observe_writer_drops_when_full_and_drains(tmp_path: Path) -> None
 
     assert heartbeat == "alive"
     assert sorted(written) == ["e0", "e1"]
+
+
+@pytest.mark.parametrize("observe", [False, True])
+async def test_large_non_streaming_json_keeps_usage(tmp_path: Path, observe: bool) -> None:
+    body = json.dumps(
+        {
+            "choices": [{"message": {"content": "z" * (proxy_module._USAGE_TAIL_BYTES + 500_000)}}],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+            "timings": {"prompt_n": 7, "predicted_n": 3, "predicted_per_second": 30.0},
+        }
+    ).encode()
+    # Chunk boundaries fall inside the usage and timings objects.
+    cuts = sorted({body.index(b'"usage"') + 9, body.index(b'"timings"') + 12, len(body)})
+    chunks, start = [], 0
+    for offset in range(65536, cuts[0], 65536):
+        chunks.append(body[start:offset])
+        start = offset
+    for cut in cuts:
+        chunks.append(body[start:cut])
+        start = cut
+    assert b"".join(chunks) == body
+
+    stats = ProxyStats()
+    ctx = (
+        ObserveContext(
+            timestamp="2026-04-08T12:00:00",
+            model="testmodel",
+            endpoint="v1/chat/completions",
+            method="POST",
+            request_headers={},
+            request_body=b"{}",
+            response_headers={"content-type": "application/json"},
+        )
+        if observe
+        else None
+    )
+    forwarded = await _drain(
+        proxy_module._counting_stream(
+            aiter(chunks),
+            stats,
+            MagicMock(),
+            "testmodel",
+            ctx,
+            tmp_path,
+            endpoint="v1/chat/completions",
+            observe_writer=MagicMock(),
+        )
+    )
+
+    assert forwarded == body
+    assert stats.tokens_prompt == 7
+    assert stats.tokens_completion == 3
+    assert stats.avg_tokens_per_second == pytest.approx(30.0)
+    if ctx is not None:
+        assert ctx.tokens_completion == 3

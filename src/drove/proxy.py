@@ -610,6 +610,27 @@ def _extract_tokens_from_obj(data: dict[str, object], out: dict[str, int | float
             out["speed"] = timings["predicted_per_second"]
 
 
+def _extract_trailing_objects(text: str, out: dict[str, int | float | None]) -> None:
+    """Parse the last ``"usage"`` and ``"timings"`` objects found in a JSON fragment."""
+    decoder = json.JSONDecoder()
+    for key in ("usage", "timings"):
+        idx = text.rfind(f'"{key}"')
+        if idx < 0:
+            continue
+        colon = text.find(":", idx + len(key) + 2)
+        if colon < 0:
+            continue
+        start = colon + 1
+        while start < len(text) and text[start].isspace():
+            start += 1
+        try:
+            obj, _ = decoder.raw_decode(text, start)
+        except json.JSONDecodeError, ValueError:
+            continue
+        if isinstance(obj, dict):
+            _extract_tokens_from_obj({key: obj}, out)
+
+
 def _record_usage(
     body: bytes, stats: ProxyStats, duration: float = 0.0
 ) -> dict[str, int | float | None]:
@@ -643,6 +664,11 @@ def _record_usage(
                     break
             except json.JSONDecodeError, ValueError:
                 continue
+
+    # A non-streaming JSON body longer than the usage tail arrives cut at the
+    # front; its trailing usage/timings objects are still whole, so parse them.
+    if not tokens_out["completion"]:
+        _extract_trailing_objects(text, tokens_out)
 
     prompt_tokens = int(tokens_out["prompt"] or 0)
     completion_tokens = int(tokens_out["completion"] or 0)

@@ -187,9 +187,9 @@ Every record is bounded and private, whatever the traffic:
 Records are built and written in worker threads. If more than 64 are waiting
 on a slow disk, new ones are dropped with a warning instead of queueing in
 memory; pending writes finish before shutdown. Token usage is read from the
-last 1 MiB of each response, so usage in a single non-streaming JSON response
-larger than that is best effort. Retention bounds the age of records, not the
-total disk use: a busy server keeps 30 days of traffic.
+last 1 MiB of each response, where streaming and non-streaming backends put
+their `usage` and `timings` objects. Retention bounds the age of records, not
+the total disk use: a busy server keeps 30 days of traffic.
 
 Records written before this change keep whatever credentials, sizes and file
 modes they were written with until retention deletes them.

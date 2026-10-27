@@ -50,6 +50,7 @@ not the example budget in the next section.
 | `max_memory` | `"0"` | Estimated combined model memory budget (`"0"` = unlimited) |
 | `observe` | `false` | Save request/response logs |
 | `observe_dir` | `~/.local/share/drove/observe` | Request log storage |
+| `observe_max_age_days` | `30` | Delete observe records older than this many days (`0` = keep forever) |
 | `prompt_cache` | `true` | Persist llama-server KV caches across shutdowns |
 | `prompt_cache_dir` | `~/.local/share/drove/prompt-cache` | KV cache storage |
 | `prompt_cache_ttl_seconds` | `3600` | Cache expiry (`0` = never) |

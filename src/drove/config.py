@@ -93,6 +93,8 @@ class Config(BaseSettings):
     sessions_dir: Path = DEFAULT_SESSIONS_DIR
     observe: bool = False
     observe_dir: Path = DEFAULT_OBSERVE_DIR
+    # Observe records older than this are deleted at startup and hourly; 0 = keep forever.
+    observe_max_age_days: int = Field(default=30, ge=0)
     listen_host: str = "0.0.0.0"
     listen_port: int = 8080
     allowed_tools: list[str] = []
@@ -155,6 +157,7 @@ class Config(BaseSettings):
             "sessions_dir": str(self.sessions_dir),
             "observe": self.observe,
             "observe_dir": str(self.observe_dir),
+            "observe_max_age_days": self.observe_max_age_days,
             "listen_host": self.listen_host,
             "listen_port": self.listen_port,
             "allowed_tools": self.allowed_tools,

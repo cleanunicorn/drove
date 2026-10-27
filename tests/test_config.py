@@ -209,3 +209,30 @@ def test_saving_tip_progress_creates_minimal_file(tmp_path: Path) -> None:
     cfg_file = tmp_path / "nested" / "config.toml"
     save_tui_completed_hints([], cfg_file)
     assert cfg_file.read_text() == "tui_completed_hints = []\n"
+
+
+def test_observe_max_age_days_defaults_to_30(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "nonexistent.toml")
+    assert cfg.observe_max_age_days == 30
+
+
+def test_observe_max_age_days_zero_allowed_and_survives_save(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg = load_config(tmp_path / "nonexistent.toml")
+    cfg.model_copy(update={"observe_max_age_days": 0}).save(cfg_file)
+    assert load_config(cfg_file).observe_max_age_days == 0
+
+    cfg.model_copy(update={"observe_max_age_days": 7}).save(cfg_file)
+    assert load_config(cfg_file).observe_max_age_days == 7
+
+
+def test_observe_max_age_days_rejects_negative(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_bytes(tomli_w.dumps({"observe_max_age_days": -1}).encode())
+    with pytest.raises(ValidationError):
+        load_config(cfg_file)
+
+
+def test_observe_max_age_days_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DROVE_OBSERVE_MAX_AGE_DAYS", "3")
+    assert load_config(tmp_path / "nonexistent.toml").observe_max_age_days == 3

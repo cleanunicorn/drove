@@ -382,7 +382,7 @@ class ServerManager:
             # Resolve before evicting so an unknown model cannot evict anything.
             # Validate the config (and backend choice) first too, so a broken
             # sidecar cannot evict healthy models for a start that must fail.
-            model_path, model_cfg, backend = self._prepare_start(model_name)
+            model_path, model_cfg, _ = self._prepare_start(model_name)
             incoming_bytes = _estimate_model_memory(model_path, model_cfg)
             await self._evict_if_needed(incoming_bytes, model_name=model_name)
             # Eviction may have released the lock to drain a busy model, and a
@@ -392,7 +392,9 @@ class ServerManager:
                 return self._claim_slot(model_name) if claim else None
             if inst is not None:
                 await self._stop_instance(model_name)
-            await self._start(model_name, prepared=(model_path, model_cfg, backend))
+            # _start re-reads the config: a sidecar edited while eviction waited
+            # must be what launches (and what the recorded mtimes describe).
+            await self._start(model_name)
             return self._claim_slot(model_name) if claim else None
 
     def _prepare_start(self, model_name: str) -> tuple[Path, ModelConfig, str]:
@@ -511,12 +513,7 @@ class ServerManager:
         async with self._lock:
             await self._stop_instance(model_name)
 
-    async def _start(
-        self,
-        model_name: str,
-        *,
-        prepared: tuple[Path, ModelConfig, str] | None = None,
-    ) -> None:
+    async def _start(self, model_name: str) -> None:
         """Spawn a backend for a model that has no tracked instance or watcher.
 
         Must be called while holding ``self._lock``. Refuses rather than
@@ -524,7 +521,7 @@ class ServerManager:
         """
         if model_name in self._instances or model_name in self._idle_tasks:
             raise RuntimeError(f"Model {model_name!r} is already registered; not starting it again")
-        model_path, model_cfg, backend = prepared or self._prepare_start(model_name)
+        model_path, model_cfg, backend = self._prepare_start(model_name)
 
         port = _find_free_port()
         slot_save_path: Path | None = None

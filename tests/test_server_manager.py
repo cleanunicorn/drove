@@ -133,7 +133,7 @@ async def test_ensure_running_restarts_when_idle_and_config_changed(tmp_path: Pa
     cfg_path = model_path.with_suffix(".toml")
     cfg_path.write_text("ctx_size = 8192\n")
 
-    async def fake_start(model_name: str, **_: Any) -> None:
+    async def fake_start(model_name: str) -> None:
         new_mtimes = manager._get_config_mtimes(model_path)
         manager._instances[model_name] = make_fake_instance(model_name, model_path, new_mtimes)
 
@@ -221,7 +221,7 @@ async def test_ensure_running_claim_prevents_eviction_race(tmp_path: Path) -> No
             inst_a.active_requests = 0
         await original_sleep(0)
 
-    async def fake_start_b(model_name: str, **_: Any) -> None:
+    async def fake_start_b(model_name: str) -> None:
         manager._instances[model_name] = make_fake_instance(
             model_name, config.models_dir / model_name / f"{model_name}.gguf", mtimes
         )
@@ -1269,3 +1269,50 @@ async def test_exec_oserror_raises_backend_unavailable_with_cause(tmp_path: Path
     ):
         await manager.ensure_running("m")
     assert excinfo.value.__cause__ is boom
+
+
+async def test_sidecar_edited_during_eviction_drain_is_what_launches(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config, "m")
+    sidecar = model_path.with_suffix(".toml")
+    sidecar.write_text("ctx_size = 4096\n")
+    spawn = AsyncMock(return_value=make_fake_process())
+
+    async def edit_while_draining(*_: Any, **__: Any) -> None:
+        sidecar.write_text("ctx_size = 8192\n")
+
+    with (
+        patch.object(manager, "_evict_if_needed", side_effect=edit_while_draining),
+        patch("drove.server_manager.asyncio.create_subprocess_exec", spawn),
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        patch.object(manager, "_wait_for_health", new=AsyncMock()),
+        patch.object(manager, "_start_idle_watcher"),
+    ):
+        await manager.ensure_running("m")
+
+    cmd = list(spawn.await_args.args)
+    assert cmd[cmd.index("--ctx-size") + 1] == "8192"
+
+
+async def test_sidecar_broken_during_eviction_drain_is_rejected(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config, "m")
+    sidecar = model_path.with_suffix(".toml")
+    sidecar.write_text("ctx_size = 4096\n")
+    spawn = AsyncMock(return_value=make_fake_process())
+
+    async def break_while_draining(*_: Any, **__: Any) -> None:
+        sidecar.write_text("ctx_size = = 1\n")
+
+    with (
+        patch.object(manager, "_evict_if_needed", side_effect=break_while_draining),
+        patch("drove.server_manager.asyncio.create_subprocess_exec", spawn),
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        pytest.raises(ValueError),
+    ):
+        await manager.ensure_running("m")
+
+    spawn.assert_not_awaited()
+    assert not manager._instances

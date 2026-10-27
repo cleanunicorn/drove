@@ -259,7 +259,7 @@ def _sidecar_names(candidate: Path) -> bool:
     """
     try:
         info = load_download_info(candidate)
-    except OSError, tomllib.TOMLDecodeError, ValidationError, TypeError:
+    except OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValidationError, TypeError:
         return False
     if info is None:
         return False

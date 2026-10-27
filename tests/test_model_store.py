@@ -562,3 +562,12 @@ def test_projector_alongside_onnx_serves_onnx(tmp_path: Path) -> None:
     _make_gguf(tmp_path, "asr", "mmproj-F16.gguf")
     onnx = _make_gguf(tmp_path, "asr", "model.onnx")
     _agree(ModelStore(tmp_path), "asr", onnx)
+
+
+def test_undecodable_sidecar_does_not_break_inventory(tmp_path: Path) -> None:
+    bad = _make_gguf(tmp_path, "bad", "main.gguf")
+    bad.with_suffix(".toml").write_bytes(b"\xff\xfe[download]")
+    good = _make_gguf(tmp_path, "good", "main.gguf")
+    store = ModelStore(tmp_path)
+    assert {e.name: e.primary for e in store.list()} == {"bad": bad, "good": good}
+    assert store.resolve("bad") == bad

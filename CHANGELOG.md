@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Added
+
+- Added the `observe_max_age_days` setting (default 30): observe records older than that are
+  deleted at startup and hourly while serving; `0` keeps them forever.
+
+### Security
+
+- Observe records no longer store `Authorization`, `Proxy-Authorization`, `Cookie`,
+  `Set-Cookie` or `X-Api-Key` header values; they are saved as `[REDACTED]`.
+- Observe record files are created readable by their owner only (mode 0600).
+
+### Fixed
+
+- Observe records stay below 1 MiB: text bodies are capped at 256 KiB with a truncation marker,
+  and binary uploads and audio are saved as a size and content-type placeholder instead of hex.
+- The proxy no longer keeps whole responses in memory to count tokens, and never buffers audio.
+- Saving an observe record no longer blocks request handling on the event loop.
+- Proxy speed and time-to-first-token statistics no longer grow with every request, so
+  `/status` stays cheap on long-running servers.
+
 
 ## v0.13.1 (2026-10-27)
 

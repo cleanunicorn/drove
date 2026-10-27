@@ -1065,3 +1065,81 @@ def test_download_cli_reports_escaping_target_without_traceback(tmp_path, downlo
     assert result.exit_code == 1, result.output
     assert "outside" in result.output and "Traceback" not in result.output
     assert list(outside.iterdir()) == []
+
+
+# ── unattended quant choice and incomplete downloads (#117) ──────────────────
+
+
+@pytest.mark.parametrize("flag", ["--yes", "-y"])
+def test_download_yes_with_several_quants_asks_for_quant(tmp_path, monkeypatch, flag):
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
+    plan = DownloadPlan(
+        "org/repo-GGUF", {"m-Q4_K_M.gguf": 4, "m-Q8_0.gguf": 8}, "org/repo-GGUF", False
+    )
+    monkeypatch.setattr("drove.downloader.resolve_download", lambda *args, **kwargs: plan)
+
+    def never(*args, **kwargs):
+        raise AssertionError("nothing may be checked or downloaded")
+
+    monkeypatch.setattr(DownloadPlan, "execute", never)
+    monkeypatch.setattr(DownloadPlan, "check_local_files", never)
+    monkeypatch.setattr("drove.downloader.hf_hub_download", never)
+    result = CliRunner().invoke(app, ["models", "download", "org/repo-GGUF", flag])
+    assert result.exit_code == 1
+    assert "org/repo-GGUF:QUANT" in result.output
+    assert "Q4_K_M" in result.output and "Q8_0" in result.output
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_yes_with_one_sharded_quant_downloads(tmp_path, download_cli):
+    from drove.model_store import ModelStore
+
+    plan = DownloadPlan(
+        "org/big",
+        {"big-Q4_K_M-00001-of-00002.gguf": 3, "big-Q4_K_M-00002-of-00002.gguf": 3},
+        "big",
+        True,
+    )
+    result = download_cli(plan)
+    assert result.exit_code == 0, result.output
+    assert [e.name for e in ModelStore(tmp_path).list()] == ["big"]
+
+
+def test_download_rerun_publishes_files_left_unrecorded(tmp_path, download_cli):
+    """Every file landed but the run stopped before recording completion."""
+    from drove.download_state import read_state, write_state
+    from drove.model_store import ModelStore
+
+    plan = DownloadPlan("org/repo", {"m.gguf": 4}, "m", False)
+    dest = plan.destination(tmp_path)
+    dest.mkdir()
+    (dest / "m.gguf").write_bytes(b"GGUF")
+    write_state(dest, "incomplete", {"m.gguf": 4})
+    assert ModelStore(tmp_path).list() == []
+
+    result = download_cli(plan)
+    assert result.exit_code == 0, result.output
+    assert read_state(dest).complete
+    assert ModelStore(tmp_path).resolve("m") == dest / "m.gguf"
+
+
+def test_info_reports_incomplete_download(tmp_path, monkeypatch):
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
+    shard = tmp_path / "big" / "big-00001-of-00003.gguf"
+    shard.parent.mkdir()
+    shard.write_bytes(b"GGUF")
+    result = CliRunner().invoke(app, ["models", "info", "big"])
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1
+    assert "Model 'big' is incomplete: 2 of 3 shards are missing" in output
+    assert "drove models download" in output
+
+
+def test_retry_after_all_gguf_variants_keeps_the_picker() -> None:
+    from drove.cli.models import _download_retry_command
+
+    plan = DownloadPlan("org/repo", {"m-Q4_K_M.gguf": 4, "m-Q8_0.gguf": 8}, "org/repo", False)
+    command = _download_retry_command(plan, None, None, None)
+    assert "--yes" not in command
+    one = DownloadPlan("org/repo", {"m-Q4_K_M.gguf": 4}, "org/repo:Q4_K_M", False)
+    assert "--yes" in _download_retry_command(one, "Q4_K_M", None, None)

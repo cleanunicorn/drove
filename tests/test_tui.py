@@ -267,7 +267,20 @@ async def test_sessions_picker_skips_corrupt_file_without_printing(
     assert [r for r in caplog.records if r.name == "drove.sessions"] == []
 
 
-async def test_resume_skips_session_with_unreplayable_tool_message(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"role": "tool", "content": "no call id"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "1", "function": {"name": "f", "arguments": None}}],
+        },
+    ],
+)
+async def test_resume_skips_session_with_unreplayable_tool_message(
+    tmp_path: Path, broken: dict
+) -> None:
     saved = new_session("a")
     saved.messages += [
         {"role": "user", "content": "keep me"},
@@ -275,7 +288,6 @@ async def test_resume_skips_session_with_unreplayable_tool_message(tmp_path: Pat
         {"role": "tool", "tool_call_id": "1", "content": "ok"},
     ]
     save_session(tmp_path, saved)
-    broken = {"role": "tool", "content": "no call id"}
     (tmp_path / "a" / "20990101-000000.json").write_text(
         json.dumps({"id": "20990101-000000", "model": "a", "messages": [broken]})
     )

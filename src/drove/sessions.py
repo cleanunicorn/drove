@@ -156,8 +156,11 @@ def _check_message(message: Any) -> None:
         if not isinstance(function, dict):
             raise ValueError("each tool call must be an object with an object 'function'")
         _optional_str(call, "id")
-        _optional_str(function, "name")
-        _optional_str(function, "arguments")
+        # Replay defaults a missing name/arguments to "" but renders a present one
+        # as text, so an explicit null is as unusable as a number here.
+        for key in ("name", "arguments"):
+            if key in function and not isinstance(function[key], str):
+                raise ValueError(f"tool call '{key}' must be a string")
 
 
 def load_session(path: Path) -> Session:

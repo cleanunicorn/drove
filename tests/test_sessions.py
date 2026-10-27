@@ -194,6 +194,16 @@ BAD_MESSAGES: dict[str, dict[str, object]] = {
         "content": "",
         "tool_calls": [{"id": "1", "function": "f"}],
     },
+    "tool-call-arguments-null": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "1", "function": {"name": "f", "arguments": None}}],
+    },
+    "tool-call-name-null": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "1", "function": {"name": None, "arguments": "{}"}}],
+    },
     "tool-call-name-not-text": {
         "role": "assistant",
         "content": "",

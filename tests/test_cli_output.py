@@ -483,3 +483,199 @@ def test_download_remaining_all_categories_and_oversized():
             "mmproj.gguf": (FileStatus.INCOMPLETE, 20),
         },
     ) == (55, 1)
+
+
+def _toml(path: Path) -> dict[str, object]:
+    import tomllib
+
+    return tomllib.loads(path.read_text())
+
+
+def test_config_set_keeps_env_overrides_and_defaults_out_of_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text('models_dir = "~/mine"\nlisten_host = "127.0.0.1"\nfuture_key = 1\n')
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    monkeypatch.setenv("DROVE_LISTEN_HOST", "10.0.0.1")
+    monkeypatch.setenv("DROVE_LLAMA_SERVER__THREADS", "4")
+
+    result = CliRunner().invoke(app, ["-c", str(custom), "config", "idle_timeout_seconds", "600"])
+
+    assert result.exit_code == 0, result.output
+    assert _toml(custom) == {
+        "models_dir": "~/mine",
+        "listen_host": "127.0.0.1",
+        "future_key": 1,
+        "idle_timeout_seconds": 600,
+    }
+
+
+def test_config_set_overridden_key_writes_file_value_while_env_still_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text("listen_port = 7000\n")
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["-c", str(custom), "config", "listen_port", "7100"]).exit_code == 0
+
+    assert _toml(custom) == {"listen_port": 7100}
+    assert runner.invoke(app, ["-c", str(custom), "config", "listen_port"]).stdout == "9000\n"
+
+
+def test_config_set_nested_key_keeps_siblings_and_ignores_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text("listen_port = 7000\n[llama_server]\nthreads = 8\n")
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    monkeypatch.setenv("DROVE_LLAMA_SERVER__THREADS", "2")
+    monkeypatch.setenv("DROVE_LLAMA_N_GPU_LAYERS", "5")
+
+    result = CliRunner().invoke(
+        app, ["-c", str(custom), "config", "llama_server.n_gpu_layers", "20"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _toml(custom) == {
+        "listen_port": 7000,
+        "llama_server": {"threads": 8, "n_gpu_layers": 20},
+    }
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"DROVE_LISTEN_PORT": "9000"},
+        {"DROVE_LLAMA_SERVER__N_GPU_LAYERS": "12", "DROVE_LLAMA_N_GPU_LAYERS": "13"},
+        {"DROVE_MAX_MEMORY": "24XB"},
+    ],
+)
+def test_init_writes_true_defaults_not_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force: bool, env: dict[str, str]
+) -> None:
+    custom = tmp_path / "config.toml"
+    if force:
+        custom.write_text("listen_port = 7000\nidle_timeout_seconds = 5\n")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    args = ["-c", str(custom), "init", *(["--force"] if force else [])]
+    result = CliRunner().invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    written = _toml(custom)
+    assert written["listen_port"] == 8080
+    assert written["idle_timeout_seconds"] == 1800
+    assert written["max_memory"] == "0"
+    assert written["llama_server"] == {"n_gpu_layers": -1}
+    assert "0.0.0.0:8080" in result.stdout
+
+
+def test_init_without_force_leaves_existing_file(tmp_path: Path) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text("listen_port = 7000\n")
+    result = CliRunner().invoke(app, ["-c", str(custom), "init"])
+    assert result.exit_code == 1
+    assert custom.read_text() == "listen_port = 7000\n"
+
+
+def _no_traceback(result) -> None:  # type: ignore[no-untyped-def]
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Traceback" not in result.output
+
+
+def test_invalid_file_value_is_readable_and_repairable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text(f'models_dir = "{tmp_path}"\nmax_memory = "24XB"\nlisten_port = 7000\n')
+    monkeypatch.delenv("DROVE_MAX_MEMORY", raising=False)
+    runner = CliRunner()
+
+    broken = runner.invoke(app, ["-c", str(custom), "models", "list"])
+    assert broken.exit_code == 1
+    _no_traceback(broken)
+    assert str(custom) in broken.output.replace("\n", "")
+    assert "max_memory" in broken.output
+
+    repair = runner.invoke(app, ["-c", str(custom), "config", "max_memory", "24GB"])
+    assert repair.exit_code == 0, repair.output
+    assert _toml(custom) == {"models_dir": str(tmp_path), "max_memory": "24GB", "listen_port": 7000}
+    assert runner.invoke(app, ["-c", str(custom), "models", "list"]).exit_code == 0
+
+
+def test_invalid_replacement_value_leaves_file_unchanged(tmp_path: Path) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text('max_memory = "24XB"\n')
+    result = CliRunner().invoke(app, ["-c", str(custom), "config", "max_memory", "lots"])
+    assert result.exit_code == 1
+    _no_traceback(result)
+    assert custom.read_text() == 'max_memory = "24XB"\n'
+
+
+def test_config_set_refuses_while_another_file_key_is_invalid(tmp_path: Path) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text('max_memory = "24XB"\n')
+    result = CliRunner().invoke(app, ["-c", str(custom), "config", "listen_port", "7000"])
+    assert result.exit_code == 1
+    _no_traceback(result)
+    assert "max_memory" in result.output
+    assert custom.read_text() == 'max_memory = "24XB"\n'
+
+
+def test_config_set_validates_file_value_masked_by_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text('max_memory = "24XB"\n')
+    monkeypatch.setenv("DROVE_MAX_MEMORY", "8GB")
+    result = CliRunner().invoke(app, ["-c", str(custom), "config", "listen_port", "7000"])
+    assert result.exit_code == 1
+    assert "max_memory" in result.output
+    assert custom.read_text() == 'max_memory = "24XB"\n'
+
+
+def test_malformed_toml_is_readable_and_not_rewritten(tmp_path: Path) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text("listen_port = = 1\n")
+    runner = CliRunner()
+
+    for args in (["models", "list"], ["config"], ["config", "listen_port", "7000"]):
+        result = runner.invoke(app, ["-c", str(custom), *args])
+        assert result.exit_code == 1, args
+        _no_traceback(result)
+        assert str(custom) in result.output.replace("\n", "")
+        assert "line 1" in result.output
+    assert custom.read_text() == "listen_port = = 1\n"
+
+
+@pytest.mark.parametrize(
+    "name,value,key",
+    [
+        ("DROVE_LISTEN_PORT", "abc", "listen_port"),
+        ("DROVE_ALLOWED_TOOLS", "not-json", "allowed_tools"),
+        ("DROVE_LLAMA_SERVER__THREADS", "many", "llama_server.threads"),
+        ("DROVE_LLAMA_N_GPU_LAYERS", "all", "llama_server.n_gpu_layers"),
+    ],
+)
+def test_invalid_env_value_is_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str, key: str
+) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text(f'models_dir = "{tmp_path}"\n')
+    monkeypatch.setenv(name, value)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["-c", str(custom), "models", "list"])
+
+    assert result.exit_code == 1
+    _no_traceback(result)
+    flat = result.output.replace("\n", " ")
+    assert name in flat and key in flat
+    # A key write still works (the file is fine) but does not claim to fix the env.
+    assert runner.invoke(app, ["-c", str(custom), "config", "listen_port", "7000"]).exit_code == 0
+    assert _toml(custom) == {"models_dir": str(tmp_path), "listen_port": 7000}

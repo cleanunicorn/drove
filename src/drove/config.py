@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 import tomli_w
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator
+from pydantic_core import ErrorDetails
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
+    SettingsError,
     TomlConfigSettingsSource,
 )
 
@@ -113,7 +115,9 @@ class Config(BaseSettings):
     tui_theme: str = "textual-dark"
     tui_completed_hints: list[ChatHint] = []
 
-    llama_server: LlamaServerDefaults = LlamaServerDefaults()
+    # A factory, not an instance: DROVE_LLAMA_* is then read (and can fail) in
+    # load_config() rather than at import time.
+    llama_server: LlamaServerDefaults = Field(default_factory=LlamaServerDefaults)
 
     @classmethod
     def settings_customise_sources(
@@ -148,36 +152,50 @@ class Config(BaseSettings):
     def max_memory_bytes(self) -> int:
         return parse_size(self.max_memory)
 
-    def save(self, path: Path = DEFAULT_CONFIG_PATH) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict[str, Any] = {
-            "models_dir": str(self.models_dir),
-            "sessions_dir": str(self.sessions_dir),
-            "observe": self.observe,
-            "observe_dir": str(self.observe_dir),
-            "listen_host": self.listen_host,
-            "listen_port": self.listen_port,
-            "allowed_tools": self.allowed_tools,
-            "llama_server_bin": self.llama_server_bin,
-            "startup_timeout_seconds": self.startup_timeout_seconds,
-            "speech_timeout_seconds": self.speech_timeout_seconds,
-            "idle_timeout_seconds": self.idle_timeout_seconds,
-            "max_loaded_models": self.max_loaded_models,
-            "max_memory": self.max_memory,
-            "prompt_cache": self.prompt_cache,
-            "prompt_cache_dir": str(self.prompt_cache_dir),
-            "prompt_cache_ttl_seconds": self.prompt_cache_ttl_seconds,
-            "prompt_cache_timeout_seconds": self.prompt_cache_timeout_seconds,
-            "llama_server_host": self.llama_server_host,
-            "tui_theme": self.tui_theme,
-            "tui_completed_hints": self.tui_completed_hints,
-            "llama_server": {
-                k: v for k, v in self.llama_server.model_dump().items() if v is not None
-            },
-        }
-        if self.default_model is not None:
-            data["default_model"] = self.default_model
-        path.write_bytes(tomli_w.dumps(data).encode())
+
+class _FileLlamaServerDefaults(LlamaServerDefaults):
+    """``LlamaServerDefaults`` validated from explicit values only (no ``DROVE_LLAMA_*``)."""
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings,)
+
+
+class _FileConfig(Config):
+    """``Config`` validated from explicit values only: no env vars, no TOML source.
+
+    Used to check what is (or would be) in the file, and for true defaults.
+    """
+
+    model_config = SettingsConfigDict(toml_file=None)
+
+    llama_server: _FileLlamaServerDefaults = Field(default_factory=_FileLlamaServerDefaults)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings,)
+
+
+class ConfigError(ValueError):
+    """A config file or ``DROVE_*`` value that cannot be loaded or saved, said plainly."""
+
+    def __init__(self, message: str, next_step: str | None = None) -> None:
+        super().__init__(message)
+        self.next_step = next_step
 
 
 def resolve_config_path(path: Path | None = None) -> Path:
@@ -191,24 +209,170 @@ def resolve_config_path(path: Path | None = None) -> Path:
 
 
 def load_config(path: Path | None = None) -> Config:
-    """Load config from TOML file (if it exists), then apply env var overrides."""
+    """Load config from TOML file (if it exists), then apply env var overrides.
+
+    Raises ConfigError naming the file or ``DROVE_*`` variable and the key at fault.
+    """
     config_path = resolve_config_path(path)
     _migrate_legacy_config(config_path)
+    data = read_config_file(config_path)  # surfaces TOML syntax errors with the path
     # Point the TOML source at the requested file by temporarily updating model_config
     Config.model_config["toml_file"] = str(config_path)
-    return Config()
+    try:
+        return Config()
+    except (ValidationError, SettingsError) as exc:
+        _validate_file_data(data, config_path)  # blame the file first, if it is at fault
+        raise _env_error(exc) from exc
+
+
+def read_config_file(path: Path | None = None) -> dict[str, Any]:
+    """Return the raw TOML mapping of the config file ({} when it does not exist)."""
+    config_path = resolve_config_path(path)
+    if not config_path.exists():
+        return {}
+    try:
+        return tomllib.loads(config_path.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(
+            f"Config file {config_path} is not valid TOML: {exc}.",
+            next_step=f"Fix the syntax in {config_path}, or reset it: drove init --force",
+        ) from exc
+
+
+def set_config_value(key: str, value: Any, path: Path | None = None) -> None:
+    """Write one key (``name`` or ``llama_server.name``) into the config file.
+
+    Every other key keeps its file value; env overrides and defaults are never
+    written. The merged file is validated first, so an invalid value, or another
+    invalid key already in the file, raises ConfigError and leaves the file as is.
+    A value that normalizes to None (an empty ``default_model``) removes the key.
+    """
+    section, _, name = key.rpartition(".")
+    model: type[BaseSettings] = _FileLlamaServerDefaults if section else _FileConfig
+    if section not in ("", "llama_server") or name not in model.model_fields:
+        raise ValueError(f"Unknown config key '{key}'.")
+    config_path = resolve_config_path(path)
+    data = read_config_file(config_path)
+    table = data
+    if section:
+        nested = data.setdefault(section, {})
+        if not isinstance(nested, dict):
+            raise ConfigError(f"Config file {config_path}: '{section}' must be a table.")
+        table = nested
+    table[name] = value
+    validated: BaseSettings = _validate_file_data(data, config_path)
+    if section:
+        validated = getattr(validated, section)
+    stored = getattr(validated, name)
+    if stored is None:
+        del table[name]
+    else:
+        table[name] = str(stored) if isinstance(stored, Path) else stored
+    _write_config_file(data, config_path)
+
+
+def add_allowed_tool(name: str, path: Path | None = None) -> None:
+    """Add *name* to the file's ``allowed_tools`` (never copying env-provided entries)."""
+    tools = read_config_file(path).get("allowed_tools", [])
+    if not isinstance(tools, list):
+        tools = []
+    if name not in tools:
+        set_config_value("allowed_tools", [*tools, name], path)
 
 
 def save_tui_completed_hints(hints: list[ChatHint], path: Path | None = None) -> None:
-    """Persist chat tip progress without rewriting any other key.
+    """Persist chat tip progress without rewriting any other key."""
+    set_config_value("tui_completed_hints", sorted(hints), path)
 
-    Unlike ``Config.save``, this never writes env overrides or defaults into the file.
+
+def write_default_config(path: Path | None = None) -> Config:
+    """Overwrite the config file with every setting at its built-in default.
+
+    Env overrides are ignored: this is what ``drove init`` writes. Returns the defaults.
     """
-    config_path = resolve_config_path(path)
-    data = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
-    data["tui_completed_hints"] = sorted(hints)
+    defaults = _FileConfig()
+    data: dict[str, Any] = {
+        "models_dir": str(defaults.models_dir),
+        "sessions_dir": str(defaults.sessions_dir),
+        "observe": defaults.observe,
+        "observe_dir": str(defaults.observe_dir),
+        "listen_host": defaults.listen_host,
+        "listen_port": defaults.listen_port,
+        "allowed_tools": defaults.allowed_tools,
+        "llama_server_bin": defaults.llama_server_bin,
+        "startup_timeout_seconds": defaults.startup_timeout_seconds,
+        "speech_timeout_seconds": defaults.speech_timeout_seconds,
+        "idle_timeout_seconds": defaults.idle_timeout_seconds,
+        "max_loaded_models": defaults.max_loaded_models,
+        "max_memory": defaults.max_memory,
+        "prompt_cache": defaults.prompt_cache,
+        "prompt_cache_dir": str(defaults.prompt_cache_dir),
+        "prompt_cache_ttl_seconds": defaults.prompt_cache_ttl_seconds,
+        "prompt_cache_timeout_seconds": defaults.prompt_cache_timeout_seconds,
+        "llama_server_host": defaults.llama_server_host,
+        "tui_theme": defaults.tui_theme,
+        "tui_completed_hints": defaults.tui_completed_hints,
+        "llama_server": {
+            k: v for k, v in defaults.llama_server.model_dump().items() if v is not None
+        },
+    }
+    _write_config_file(data, resolve_config_path(path))
+    return defaults
+
+
+def _write_config_file(data: dict[str, Any], config_path: Path) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_bytes(tomli_w.dumps(data).encode())
+
+
+def _validate_file_data(data: dict[str, Any], config_path: Path) -> _FileConfig:
+    """Validate file values alone (no env); raise ConfigError naming the bad keys."""
+    try:
+        return _FileConfig(**data)
+    except ValidationError as exc:
+        problems = "; ".join(f"{_error_key(err)}: {_error_message(err)}" for err in exc.errors())
+        raise ConfigError(
+            f"Invalid config file {config_path}: {problems}.",
+            next_step=f"Set a valid value with drove config <key> <value>, or edit {config_path}.",
+        ) from exc
+
+
+def _env_error(exc: ValidationError | SettingsError) -> ConfigError:
+    """Describe a load failure the file is not responsible for: a bad ``DROVE_*`` value."""
+    if isinstance(exc, ValidationError):
+        keys = [_error_key(err) for err in exc.errors()]
+        details = "; ".join(_error_message(err) for err in exc.errors())
+    else:
+        match = re.search(r'field "(\w+)"', str(exc))
+        keys = [match.group(1)] if match else []
+        details = "not valid JSON" if match else str(exc)
+    names = [name for key in keys for name in _env_names(key)] or ["DROVE_*"]
+    return ConfigError(
+        f"Invalid environment variable {', '.join(names)} ({', '.join(keys) or 'unknown key'}): "
+        f"{details}.",
+        next_step="Fix or unset the variable; DROVE_* values override config.toml.",
+    )
+
+
+def _error_key(err: ErrorDetails) -> str:
+    """Dotted config key of a validation error (``llama_server.`` added for its fields)."""
+    key = ".".join(str(part) for part in err["loc"])
+    return f"llama_server.{key}" if key in LlamaServerDefaults.model_fields else key
+
+
+def _error_message(err: ErrorDetails) -> str:
+    return err["msg"].removeprefix("Value error, ").rstrip(".")
+
+
+def _env_names(key: str) -> list[str]:
+    """Return the set ``DROVE_*`` variables that can supply *key* (env names ignore case)."""
+    if "." in key:
+        leaf = key.rpartition(".")[2]
+        candidates = [f"DROVE_LLAMA_SERVER__{leaf}", f"DROVE_LLAMA_{leaf}"]
+    else:
+        candidates = [f"DROVE_{key}"]
+    present = {name.upper(): name for name in os.environ}
+    return [present[c.upper()] for c in candidates if c.upper() in present]
 
 
 def _migrate_legacy_config(config_path: Path) -> None:

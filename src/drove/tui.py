@@ -1103,11 +1103,9 @@ class ChatApp(App[None]):
         if self._config_path is None:
             return "No config file was supplied; the theme was not saved."
         try:
-            from drove.config import load_config
+            from drove.config import set_config_value
 
-            cfg = load_config(self._config_path)
-            cfg = cfg.model_copy(update={"tui_theme": theme})
-            cfg.save(self._config_path)  # creates the file if it doesn't exist
+            set_config_value("tui_theme", theme, self._config_path)  # creates a missing file
         except Exception:
             return "Warning: could not save the theme. Check the config path and permissions."
         return None
@@ -1458,12 +1456,9 @@ class ChatApp(App[None]):
             self._session_allowed_tools.add(name)
         if choice == "allow-always" and self._config_path is not None:
             try:
-                from drove.config import load_config
+                from drove.config import add_allowed_tool
 
-                cfg = load_config(self._config_path)
-                if name not in cfg.allowed_tools:
-                    cfg.allowed_tools.append(name)
-                    cfg.save(self._config_path)
+                add_allowed_tool(name, self._config_path)
             except Exception:
                 pass
         return True

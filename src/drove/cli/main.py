@@ -15,7 +15,14 @@ from drove.cli.integrate import integrate
 from drove.cli.models import _complete_model_name, models_app
 from drove.cli.output import console, error, fields, heading, info, success, unknown, warning
 from drove.cli.server import server_app
-from drove.config import Config, load_config, resolve_config_path
+from drove.config import (
+    Config,
+    ConfigError,
+    load_config,
+    resolve_config_path,
+    set_config_value,
+    write_default_config,
+)
 
 app = typer.Typer(
     name="drove",
@@ -59,7 +66,19 @@ def _root(
     )
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = resolve_config_path(config_file)
-    ctx.obj["config"] = load_config(ctx.obj["config_path"])
+    # `config` and `init` load on their own terms, so they can repair or replace a
+    # broken config file instead of failing on it.
+    if ctx.invoked_subcommand not in ("config", "init"):
+        ctx.obj["config"] = _load_or_exit(ctx.obj["config_path"])
+
+
+def _load_or_exit(config_path: Path) -> Config:
+    """Load the effective config, or explain what is wrong with it and exit 1."""
+    try:
+        return load_config(config_path)
+    except ConfigError as exc:
+        error(str(exc), next_step=exc.next_step)
+        raise typer.Exit(1) from exc
 
 
 def _complete_config_key(ctx: typer.Context, incomplete: str) -> list[str]:
@@ -97,8 +116,12 @@ def config(
         drove config idle_timeout_seconds 3600    # set a value
     """
     cfg_path: Path = ctx.obj["config_path"]
-    conf = ctx.obj["config"]
 
+    if value is not None:
+        _config_set_command(ctx, cfg_path, key, value)
+        return
+
+    conf = _load_or_exit(cfg_path)
     if key is None:
         out = console()
         heading(out, "Configuration", str(ctx.obj["config_path"]))
@@ -111,29 +134,22 @@ def config(
         fields(out, rows)
         return
 
-    if value is None:
-        # Get single key (supports dot notation for nested: llama_server.n_gpu_layers)
-        val = _config_get(conf, key)
-        if val is _MISSING:
-            error(
-                unknown("key", key, _complete_config_key(ctx, "")),
-                next_step="List valid keys: drove config",
-            )
-            raise typer.Exit(1)
-        typer.echo(str(val))
-        return
-
-    # Set key — load, update, save
-    if _config_get(conf, key) is _MISSING:
+    # Get single key (supports dot notation for nested: llama_server.n_gpu_layers)
+    val = _config_get(conf, key)
+    if val is _MISSING:
         error(
             unknown("key", key, _complete_config_key(ctx, "")),
             next_step="List valid keys: drove config",
         )
         raise typer.Exit(1)
-    try:
-        updated = _config_set(conf, key, value)
-    except (ValueError, KeyError) as e:
-        error(str(e))
+    typer.echo(str(val))
+
+
+def _config_set_command(ctx: typer.Context, cfg_path: Path, key: str | None, value: str) -> None:
+    """Write one key to the file. Needs no loadable config, so it can repair one."""
+    valid_keys = _complete_config_key(ctx, "")
+    if key not in valid_keys:
+        error(unknown("key", str(key), valid_keys), next_step="List valid keys: drove config")
         raise typer.Exit(1)
 
     if not cfg_path.exists():
@@ -144,7 +160,13 @@ def config(
         raise typer.Exit(1)
 
     try:
-        updated.save(cfg_path)
+        _config_set(cfg_path, key, value)
+    except ConfigError as exc:
+        error(str(exc), next_step=exc.next_step)
+        raise typer.Exit(1) from exc
+    except ValueError as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
     except OSError as exc:
         error(
             f"Could not write configuration: {exc}",
@@ -169,31 +191,13 @@ def _config_get(conf: Config, key: str) -> object:
     return section.get(parts[1], _MISSING)
 
 
-def _config_set(conf: Config, key: str, raw_value: str) -> Config:
-    from drove.config import Config, LlamaServerDefaults
+def _config_set(cfg_path: Path, key: str, raw_value: str) -> None:
+    """Coerce *raw_value* to the key's type and write only that key to *cfg_path*."""
+    from drove.config import LlamaServerDefaults
 
-    parts = key.split(".", 1)
-
-    if len(parts) == 2:
-        section_name, subkey = parts
-        if section_name != "llama_server":
-            raise ValueError(f"Unknown section '{section_name}'. Only 'llama_server' is nested.")
-        fields = LlamaServerDefaults.model_fields
-        if subkey not in fields:
-            valid = ", ".join(f"llama_server.{k}" for k in sorted(fields))
-            raise ValueError(f"Unknown key '{key}'. Valid nested keys: {valid}")
-        coerced = _coerce(fields[subkey].annotation, raw_value)
-        new_llama = conf.llama_server.model_copy(update={subkey: coerced})
-        return conf.model_copy(update={"llama_server": new_llama})
-
-    fields = Config.model_fields
-    if key not in fields:
-        top = ", ".join(sorted(fields))
-        nested = ", ".join(f"llama_server.{k}" for k in sorted(LlamaServerDefaults.model_fields))
-        raise ValueError(f"Unknown key '{key}'.\nTop-level keys: {top}\nNested keys: {nested}")
-
-    coerced = _coerce(fields[key].annotation, raw_value)
-    return Config.model_validate({**conf.model_dump(), key: coerced})
+    section, _, name = key.rpartition(".")
+    fields = LlamaServerDefaults.model_fields if section else Config.model_fields
+    set_config_value(key, _coerce(fields[name].annotation, raw_value), cfg_path)
 
 
 def _coerce(annotation: object, raw: str) -> object:
@@ -424,7 +428,6 @@ def init_config(
     Writes to ~/.config/drove/config.toml (or the path from --config / DROVE_CONFIG).
     """
     cfg_path: Path = ctx.obj["config_path"]
-    conf = ctx.obj["config"]
 
     if cfg_path.exists() and not force:
         warning(
@@ -433,7 +436,7 @@ def init_config(
         raise typer.Exit(1)
 
     try:
-        conf.save(cfg_path)
+        conf = write_default_config(cfg_path)
     except OSError as exc:
         error(
             f"Could not write configuration: {exc}",

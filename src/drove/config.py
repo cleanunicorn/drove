@@ -134,7 +134,13 @@ class Config(BaseSettings):
     @field_validator("models_dir", "sessions_dir", "observe_dir", "prompt_cache_dir", mode="before")
     @classmethod
     def expand_path(cls, v: Any) -> Path:
-        return Path(v).expanduser()
+        # Raise ValueError, not TypeError/RuntimeError, so a bad path is a validation error.
+        try:
+            return Path(v).expanduser()
+        except TypeError as exc:
+            raise ValueError(f"Invalid path {v!r}; use a string such as '~/models'.") from exc
+        except RuntimeError as exc:
+            raise ValueError(f"Cannot expand '~' in {v!r}: unknown user or home.") from exc
 
     @field_validator("default_model")
     @classmethod
@@ -201,11 +207,21 @@ class ConfigError(ValueError):
 def resolve_config_path(path: Path | None = None) -> Path:
     """Return the config file to use: *path*, else ``$DROVE_CONFIG``, else the default."""
     if path is not None:
-        return path.expanduser()
+        return _expand_config_path(path, "--config")
     env_path = os.environ.get("DROVE_CONFIG")
     if env_path:
-        return Path(env_path).expanduser()
+        return _expand_config_path(Path(env_path), "DROVE_CONFIG")
     return DEFAULT_CONFIG_PATH
+
+
+def _expand_config_path(path: Path, source: str) -> Path:
+    try:
+        return path.expanduser()
+    except RuntimeError as exc:
+        raise ConfigError(
+            f"Cannot expand '~' in config path {str(path)!r} from {source}: unknown user or home.",
+            next_step=f"Pass an absolute path in {source}.",
+        ) from exc
 
 
 def load_config(path: Path | None = None) -> Config:

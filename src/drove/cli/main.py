@@ -65,7 +65,11 @@ def _root(
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     ctx.ensure_object(dict)
-    ctx.obj["config_path"] = resolve_config_path(config_file)
+    try:
+        ctx.obj["config_path"] = resolve_config_path(config_file)
+    except ConfigError as exc:
+        error(str(exc), next_step=exc.next_step)
+        raise typer.Exit(1) from exc
     # `config` and `init` load on their own terms, so they can repair or replace a
     # broken config file instead of failing on it.
     if ctx.invoked_subcommand not in ("config", "init"):

@@ -662,6 +662,7 @@ def test_malformed_toml_is_readable_and_not_rewritten(tmp_path: Path) -> None:
         ("DROVE_LLAMA_N_GPU_LAYERS", "all", "llama_server.n_gpu_layers"),
         ("DROVE_ALLOWED_TOOLS", '["fetch_url", 3]', "allowed_tools.1"),
         ("DROVE_LLAMA_SERVER", '{"threads": "many"}', "llama_server.threads"),
+        ("DROVE_SESSIONS_DIR", "~no-such-user-drove/s", "sessions_dir"),
     ],
 )
 def test_invalid_env_value_is_readable(
@@ -681,3 +682,37 @@ def test_invalid_env_value_is_readable(
     # A key write still works (the file is fine) but does not claim to fix the env.
     assert runner.invoke(app, ["-c", str(custom), "config", "listen_port", "7000"]).exit_code == 0
     assert _toml(custom) == {"models_dir": str(tmp_path), "listen_port": 7000}
+
+
+@pytest.mark.parametrize("bad", ["123", '"~no-such-user-drove/models"'])
+def test_invalid_path_value_is_readable_and_repairable(tmp_path: Path, bad: str) -> None:
+    custom = tmp_path / "config.toml"
+    custom.write_text(f"models_dir = {bad}\n")
+    runner = CliRunner()
+
+    broken = runner.invoke(app, ["-c", str(custom), "models", "list"])
+    assert broken.exit_code == 1
+    _no_traceback(broken)
+    assert str(custom) in broken.output.replace("\n", "")
+    assert "models_dir" in broken.output
+
+    refused = runner.invoke(
+        app, ["-c", str(custom), "config", "observe_dir", "~no-such-user-drove"]
+    )
+    assert refused.exit_code == 1
+    _no_traceback(refused)
+    assert custom.read_text() == f"models_dir = {bad}\n"
+
+    repair = runner.invoke(app, ["-c", str(custom), "config", "models_dir", str(tmp_path)])
+    assert repair.exit_code == 0, repair.output
+    assert _toml(custom) == {"models_dir": str(tmp_path)}
+    assert runner.invoke(app, ["-c", str(custom), "models", "list"]).exit_code == 0
+
+
+def test_unexpandable_config_path_is_readable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DROVE_CONFIG", "~no-such-user-drove/config.toml")
+    for args in (["models", "list"], ["config", "listen_port", "7000"]):
+        result = CliRunner().invoke(app, args)
+        assert result.exit_code == 1
+        _no_traceback(result)
+        assert "DROVE_CONFIG" in result.output

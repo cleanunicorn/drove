@@ -478,6 +478,7 @@ def _prompt_quant_choice(candidates: list[QuantCandidate], theme: str) -> str | 
     import sys
 
     from drove.cli.quant_picker import QuantPicker, available_memory
+    from drove.cli.tui_logging import textual_logging
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         typer.echo(
@@ -486,7 +487,8 @@ def _prompt_quant_choice(candidates: list[QuantCandidate], theme: str) -> str | 
         )
         raise typer.Exit(1)
     try:
-        return QuantPicker(candidates, available_memory(), theme).run()
+        with textual_logging():
+            return QuantPicker(candidates, available_memory(), theme).run()
     except KeyboardInterrupt, EOFError:
         return None
 

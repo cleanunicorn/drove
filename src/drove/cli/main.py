@@ -249,6 +249,7 @@ def chat(
 
     Use /help inside the chat to see available commands (/sessions, /theme, …).
     """
+    from drove.cli.tui_logging import textual_logging
     from drove.sessions import latest_session
     from drove.tui import ChatApp
 
@@ -293,7 +294,8 @@ def chat(
         theme=config.tui_theme,
         api_key=api_key,
     )
-    tui.run()
+    with textual_logging():
+        tui.run()
 
 
 def _select_model_from_endpoint(
@@ -301,6 +303,7 @@ def _select_model_from_endpoint(
 ) -> str | None:
     """Fetch eligible models and show the shared keyboard picker."""
     from drove.chat_models import CatalogError, fetch_models
+    from drove.cli.tui_logging import textual_logging
     from drove.model_picker import ModelPickerApp
 
     try:
@@ -309,7 +312,8 @@ def _select_model_from_endpoint(
         error(str(exc), next_step="Check the endpoint, server and available chat models.")
         raise typer.Exit(1) from exc
     try:
-        return ModelPickerApp(models, theme).run()
+        with textual_logging():
+            return ModelPickerApp(models, theme).run()
     except KeyboardInterrupt:
         return None
 
@@ -354,6 +358,7 @@ def _observe_default(
     if ctx.invoked_subcommand is not None:
         return
 
+    from drove.cli.tui_logging import textual_logging
     from drove.observe_tui import ObserveApp
 
     config = ctx.obj["config"]
@@ -373,7 +378,8 @@ def _observe_default(
         model=model,
         theme=config.tui_theme,
     )
-    tui.run()
+    with textual_logging():
+        tui.run()
 
 
 @observe_app.command()

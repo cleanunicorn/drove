@@ -617,3 +617,26 @@ def test_legacy_complete_downloads_without_manifest_still_resolve(
     store = ModelStore(tmp_path)
     assert store.resolve(name) == expected
     assert [e.primary for e in store.list()] == [expected]
+
+
+@pytest.mark.parametrize("request_name", ["org", "org/asr"])
+def test_incomplete_record_holds_for_every_spelling_of_the_model(
+    tmp_path: Path, request_name: str
+) -> None:
+    """A parent namespace name must not reach a child download that is unfinished."""
+    root = tmp_path / "org" / "asr"
+    root.mkdir(parents=True)
+    (root / "model.onnx").write_bytes(b"onnx")
+    _write_manifest(root, "incomplete", {"model.onnx": 4, "vocab.txt": 1})
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        ModelStore(tmp_path).resolve(request_name)
+
+
+def test_record_above_the_listed_directory_still_applies(tmp_path: Path) -> None:
+    root = tmp_path / "old"
+    _make_gguf(tmp_path, "old", "weights", "old.gguf")
+    _write_manifest(root, "incomplete", {"weights/old.gguf": 0})
+    store = ModelStore(tmp_path)
+    assert store.list() == []
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        store.resolve("old/weights")

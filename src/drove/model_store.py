@@ -151,7 +151,7 @@ class ModelStore:
                 p.suffix.lower() == ".gguf"
                 and p.is_file()
                 and self._servable(p)
-                and _split_reason(p) is None
+                and self._incomplete_reason(p) is None
             ):
                 results.append(ModelEntry(p.stem, p, p.stat().st_size))
         return [entry for entry in results if _is_valid_name(entry.name)]
@@ -201,10 +201,10 @@ class ModelStore:
         if subdir.is_dir() and self._contains(subdir):
             primary = self._select_primary(subdir)
             if primary is not None:
-                return primary, self._incomplete_reason(subdir, primary)
+                return primary, self._incomplete_reason(primary)
         candidate = self._dir / f"{name}.gguf"
         if candidate.is_file() and self._servable(candidate):
-            return candidate, _split_reason(candidate)
+            return candidate, self._incomplete_reason(candidate)
         return None
 
     def _select_primary(self, directory: Path) -> Path | None:
@@ -227,26 +227,22 @@ class ModelStore:
                 return servable[0]
         return None
 
-    def _incomplete_reason(self, root: Path, primary: Path) -> str | None:
-        """Why the model under *root* cannot be served yet, or None when it is complete.
+    def _incomplete_reason(self, primary: Path) -> str | None:
+        """Why *primary* cannot be served yet, or None when its model is complete.
 
-        A download record, when present, must say complete and every file it
-        lists must still exist at its expected size.  Without one (downloads
-        made before the record existed) the files themselves are trusted.
-        Either way a split GGUF needs every shard.
+        Every download record between the models directory and the primary
+        applies, whatever name reached it (``org`` resolving into ``org/asr``
+        still honours ``org/asr``'s record).  A record must say complete and
+        every file it lists must still exist at its expected size.  Without
+        any (downloads made before records existed) the files themselves are
+        trusted.  Either way a split GGUF needs every shard.
         """
-        state = read_state(root)
-        if state is UNREADABLE:
-            return "its download record is unreadable"
-        if state is not None:
-            if not state.complete:
-                return "the download did not finish"
-            for rel, size in state.files.items():
-                path = root / rel
-                if not (path.is_file() and is_within(root, path)):
-                    return f"{rel} is missing"
-                if size and path.stat().st_size != size:
-                    return f"{rel} does not have its expected size"
+        directory = primary.parent
+        while directory != self._dir and self._contains(directory):
+            reason = _record_reason(directory)
+            if reason is not None:
+                return reason
+            directory = directory.parent
         return _split_reason(primary)
 
     def _direct_root(self, name: str) -> Path | None:
@@ -266,12 +262,30 @@ class ModelStore:
     def _add_entry(self, directory: Path, name: str, results: builtins.list[ModelEntry]) -> None:
         # Same choice as _find_primary, so list() only offers what resolve() serves.
         primary = self._select_primary(directory)
-        if primary is None or self._incomplete_reason(directory, primary) is not None:
+        if primary is None or self._incomplete_reason(primary) is not None:
             return
         total = sum(
             f.stat().st_size for f in directory.rglob("*") if f.is_file() and self._contains(f)
         )
         results.append(ModelEntry(name, primary, total))
+
+
+def _record_reason(root: Path) -> str | None:
+    """Why the download record under *root* rules its model out, or None (also without one)."""
+    state = read_state(root)
+    if state is UNREADABLE:
+        return "its download record is unreadable"
+    if state is None:
+        return None
+    if not state.complete:
+        return "the download did not finish"
+    for rel, size in state.files.items():
+        path = root / rel
+        if not (path.is_file() and is_within(root, path)):
+            return f"{rel} is missing"
+        if size and path.stat().st_size != size:
+            return f"{rel} does not have its expected size"
+    return None
 
 
 def _split_reason(primary: Path) -> str | None:

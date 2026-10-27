@@ -428,7 +428,6 @@ def test_model_listing_keeps_core_fields_and_adds_trustworthy_chat_metadata(tmp_
         ("missing", "chosen", "other", "chosen"),
         (None, None, "other", "other"),
         ("org/model:Q4_K_M", None, None, "org/model:Q4_K_M"),
-        ("preferred", "", None, ""),
     ],
 )
 def test_default_model_routing_and_claims(
@@ -614,6 +613,13 @@ async def test_default_speech_reaches_real_worker(tmp_path: Path, selection: str
                 transport=httpx.ASGITransport(app=app), base_url="http://proxy"
             ) as client:
                 response = await client.post("/v1/audio/speech", json=payload)
+            if selection == "null":
+                # An explicit null is a non-string model, not an omitted one (#110).
+                assert response.status_code == 400
+                ensure.assert_not_awaited()
+                assert requests == []
+                assert app.state.stats.active_requests == 0
+                return
             if selection == "unset":
                 assert response.status_code == 400
                 ensure.assert_not_awaited()
@@ -633,3 +639,116 @@ async def test_default_speech_reaches_real_worker(tmp_path: Path, selection: str
             assert app.state.stats.active_requests == 0
     finally:
         await app.state.client.aclose()
+
+
+# ── model name validation (#110) ─────────────────────────────────────────────
+
+_INVALID_JSON_MODELS = ["/", "../x", "../../some/dir", "/abs", "", "./m", "m/", "a\\b", "a/b/c"]
+
+
+def _forbid_disk_walk(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("model lookup touched the disk")
+
+    monkeypatch.setattr(Path, "rglob", forbidden)
+    monkeypatch.setattr(Path, "glob", forbidden)
+
+
+@pytest.mark.parametrize("model", [*_INVALID_JSON_MODELS, None, 1, 1.5, True, ["m"], {"name": "m"}])
+@pytest.mark.parametrize("default", [None, "preferred"])
+def test_proxy_rejects_invalid_json_model_with_400(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: object, default: str | None
+) -> None:
+    config = make_config(tmp_path).model_copy(update={"default_model": default})
+    app = create_app(config)
+    manager = app.state.manager
+    with (
+        patch.object(manager, "ensure_running", new_callable=AsyncMock) as ensure,
+        patch.object(type(manager), "is_running", new_callable=PropertyMock, return_value=True),
+        patch.object(
+            type(manager), "current_model", new_callable=PropertyMock, return_value="loaded"
+        ),
+        patch.object(app.state.client, "send", new_callable=AsyncMock) as send,
+        TestClient(app, raise_server_exceptions=False) as client,
+    ):
+        _forbid_disk_walk(monkeypatch)
+        resp = client.post("/v1/chat/completions", json={"model": model, "messages": []})
+        status = client.get("/status").json()
+    assert resp.status_code == 400, resp.text
+    assert "model" in resp.json()["detail"].lower()
+    ensure.assert_not_awaited()
+    send.assert_not_awaited()
+    assert status["requests"]["active"] == 0
+    assert status["requests"]["errors"] == 1
+
+
+@pytest.mark.parametrize("model", ["", "../x", "/abs", "a//b"])
+def test_proxy_rejects_invalid_multipart_model_with_400(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    app = create_app(make_config(tmp_path).model_copy(update={"default_model": "preferred"}))
+    with (
+        patch.object(app.state.manager, "ensure_running", new_callable=AsyncMock) as ensure,
+        TestClient(app, raise_server_exceptions=False) as client,
+    ):
+        _forbid_disk_walk(monkeypatch)
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("audio.wav", b"RIFFxxxx", "audio/wav")},
+            data={"model": model},
+        )
+    assert resp.status_code == 400, resp.text
+    ensure.assert_not_awaited()
+
+
+def test_proxy_rejects_file_valued_multipart_model_with_400(tmp_path: Path) -> None:
+    app = create_app(make_config(tmp_path).model_copy(update={"default_model": "preferred"}))
+    with (
+        patch.object(app.state.manager, "ensure_running", new_callable=AsyncMock) as ensure,
+        TestClient(app, raise_server_exceptions=False) as client,
+    ):
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={
+                "file": ("audio.wav", b"RIFFxxxx", "audio/wav"),
+                "model": ("model.txt", b"preferred", "text/plain"),
+            },
+        )
+    assert resp.status_code == 400, resp.text
+    ensure.assert_not_awaited()
+
+
+def test_proxy_rejects_invalid_default_model_with_400(tmp_path: Path) -> None:
+    app = create_app(make_config(tmp_path).model_copy(update={"default_model": "../escape"}))
+    with (
+        patch.object(app.state.manager, "ensure_running", new_callable=AsyncMock) as ensure,
+        TestClient(app, raise_server_exceptions=False) as client,
+    ):
+        resp = client.post("/v1/chat/completions", json={"messages": []})
+    assert resp.status_code == 400, resp.text
+    ensure.assert_not_awaited()
+
+
+def test_proxy_treats_traversal_to_a_real_gguf_as_invalid(tmp_path: Path) -> None:
+    """Even when the traversal target holds a real model, nothing is loaded."""
+    config = make_config(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "model.gguf").write_bytes(b"GGUF")
+    app = create_app(config)
+    with (
+        patch.object(app.state.manager, "_start", new_callable=AsyncMock) as start,
+        TestClient(app, raise_server_exceptions=False) as client,
+    ):
+        resp = client.post("/v1/chat/completions", json={"model": "../elsewhere", "messages": []})
+    assert resp.status_code == 400
+    start.assert_not_awaited()
+
+
+def test_models_endpoint_hides_names_the_api_would_reject(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    for name in ("good", "bad name"):
+        (config.models_dir / name).mkdir()
+        (config.models_dir / name / "model.gguf").write_bytes(b"")
+    with TestClient(create_app(config)) as client:
+        ids = [m["id"] for m in client.get("/v1/models").json()["data"]]
+    assert ids == ["good"]

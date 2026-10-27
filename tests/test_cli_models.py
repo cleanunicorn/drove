@@ -227,13 +227,13 @@ def test_download_summary_and_existing_path_preserve_config(tmp_path, download_c
     from drove.model_config import load_model_config, set_model_config_key
 
     plan = DownloadPlan(
-        "org/repo", {"m.gguf": 10}, "my model", False, mmproj_files={"mmproj.gguf": 4}
+        "org/repo", {"m.gguf": 10}, "my-model", False, mmproj_files={"mmproj.gguf": 4}
     )
     result = download_cli(plan)
     assert result.exit_code == 0, result.output
     assert "Download complete" in result.output
     assert "Size on disk" in result.output and "mmproj.gguf" in result.output
-    assert "Next: drove chat 'my model'" in result.output
+    assert "Next: drove chat my-model" in result.output
     primary = plan.destination(tmp_path) / "m.gguf"
     assert load_model_config(primary).mmproj == "mmproj.gguf"
     size = sum(f.stat().st_size for f in primary.parent.rglob("*") if f.is_file())
@@ -253,8 +253,8 @@ def test_download_failures_keep_data_and_print_exact_retry(
 ):
     import shlex
 
-    plan = DownloadPlan("org/repo", {"a.gguf": 10, "z.gguf": 10}, "my model", False)
-    result = download_cli(plan, failure=failure, extra_args=("--name", "my model"))
+    plan = DownloadPlan("org/repo", {"a.gguf": 10, "z.gguf": 10}, "my-model", False)
+    result = download_cli(plan, failure=failure, extra_args=("--name", "my-model"))
     assert result.exit_code == exit_code, result.output
     assert "Download complete" not in result.output
     assert "Traceback" not in result.output
@@ -270,7 +270,7 @@ def test_download_failures_keep_data_and_print_exact_retry(
         "download",
         "org/repo",
         "--name",
-        "my model",
+        "my-model",
         "--yes",
     ]
     if exit_code == 1:
@@ -504,11 +504,13 @@ def test_deletion_inventory_alias_legacy_and_symlinks(tmp_path, monkeypatch):
     result = CliRunner().invoke(app, ["models", "delete", "legacy", "--yes"])
     assert result.exit_code == 0
     assert not legacy.exists() and not legacy.with_suffix(".toml").exists()
+    # A model root that resolves outside the store is not a model (#110):
+    # deletion refuses it and leaves both the link and its target alone.
     link = tmp_path / "linked"
     link.symlink_to(outside, target_is_directory=True)
     result = CliRunner().invoke(app, ["models", "delete", "linked", "--yes"])
-    assert result.exit_code == 0, result.output
-    assert not link.exists() and protected.exists()
+    assert result.exit_code == 1, result.output
+    assert link.is_symlink() and protected.exists()
 
 
 @pytest.mark.parametrize("name", [".", "sub/..", "../outside"])
@@ -772,24 +774,15 @@ def test_namespace_delete_warns_for_loaded_descendant(tmp_path, monkeypatch, ali
     assert primary.exists()
 
 
-def test_symlink_namespace_preview_does_not_claim_target_contents_removed(tmp_path, monkeypatch):
+def test_symlink_namespace_outside_store_is_not_previewed_or_deleted(tmp_path, monkeypatch):
     monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
     outside = tmp_path.parent / (tmp_path.name + "-contents")
     primary = _make_model(outside, "child")
     (tmp_path / "org").symlink_to(outside, target_is_directory=True)
-
-    def get(url, **kwargs):
-        return httpx.Response(
-            200,
-            json={"models": [{"name": "org/child", "active_requests": 2}]},
-            request=httpx.Request("GET", url),
-        )
-
-    monkeypatch.setattr(httpx, "get", get)
-    result = CliRunner().invoke(app, ["models", "delete", "org"], input="n\n")
+    result = CliRunner().invoke(app, ["models", "delete", "org"], input="y\n")
     assert result.exit_code == 1
-    assert "Not currently loaded" in result.output
-    assert "symlink only" in result.output
+    assert "Delete model" not in result.output
+    assert (tmp_path / "org").is_symlink()
     assert primary.exists()
 
 
@@ -864,3 +857,211 @@ def test_recovery_commands_preserve_custom_config(tmp_path, monkeypatch, stage, 
     assert retried.exit_code == 0, retried.output
     assert destinations == [models_dir, models_dir]
     assert (plan.destination(models_dir) / "model.gguf").is_file()
+
+
+# ── model name validation (#110) ─────────────────────────────────────────────
+
+_UNSAFE_CLI_NAMES = ["", ".", "..", "/", "/tmp/x", "../x", "sub/..", "./m", "m/", "a//b", "a\\b"]
+
+
+def _sentinel_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    models = tmp_path / "models"
+    primary = _make_model(models, "keep")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep")
+    sibling = tmp_path / "sessions" / "s.json"
+    sibling.parent.mkdir()
+    sibling.write_text("{}")
+    return models, primary, outside
+
+
+@pytest.mark.parametrize("name", _UNSAFE_CLI_NAMES)
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["models", "delete", "{name}", "--yes"],
+        ["models", "info", "{name}"],
+        ["models", "config", "{name}"],
+        ["models", "config", "{name}", "ctx_size", "1024"],
+        ["models", "config", "{name}", "--unset", "ctx_size"],
+    ],
+)
+def test_model_commands_reject_unsafe_names(tmp_path, monkeypatch, name, command):
+    models, primary, outside = _sentinel_tree(tmp_path)
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(models))
+    args = [part.replace("{name}", name) for part in command]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output
+    assert "model name" in result.output.lower()
+    assert primary.exists() and outside.read_text() == "keep"
+    assert (tmp_path / "sessions" / "s.json").exists()
+    assert not primary.with_suffix(".toml").exists()
+
+
+@pytest.mark.parametrize("name", [*_UNSAFE_CLI_NAMES, "my model"])
+def test_download_rejects_unsafe_name_before_any_work(tmp_path, monkeypatch, name):
+    from drove.cli.models import models_app
+
+    models = tmp_path / "models"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("download work started for an invalid --name")
+
+    monkeypatch.setattr("drove.downloader.resolve_download", forbidden)
+    monkeypatch.setattr("drove.downloader.hf_hub_download", forbidden)
+    result = CliRunner().invoke(
+        models_app,
+        ["download", "org/repo", "--name", name, "--yes"],
+        obj={"config": Config(models_dir=models)},
+    )
+    assert result.exit_code == 1, result.output
+    assert "model name" in result.output.lower()
+    assert not models.exists()
+    assert not (tmp_path / "x").exists()
+
+
+def test_download_plan_destination_rejects_mutated_or_escaping_name(tmp_path):
+    plan = DownloadPlan("org/repo", {"m.gguf": 10}, "ok", False)
+    assert plan.destination(tmp_path) == tmp_path / "ok"
+    plan.local_name = "../x"
+    with pytest.raises(ValueError, match="relative"):
+        plan.destination(tmp_path)
+    outside = tmp_path.parent / (tmp_path.name + "-dest")
+    outside.mkdir()
+    (tmp_path / "org").symlink_to(outside, target_is_directory=True)
+    plan.local_name = "org/repo"
+    with pytest.raises(ValueError, match="outside"):
+        plan.destination(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["org/kokoro", "kokoro:v1", "../x", ""])
+def test_add_tts_rejects_names_outside_the_flat_rule(tmp_path, monkeypatch, name):
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(tmp_path))
+    result = CliRunner().invoke(app, ["models", "add-tts", name])
+    assert result.exit_code != 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_config_set_refuses_sidecar_symlinked_outside(tmp_path, monkeypatch):
+    models = tmp_path / "models"
+    _make_model(models, "real")
+    sidecar = next((models / "real").glob("*.gguf")).with_suffix(".toml")
+    external = tmp_path / "external.toml"
+    external.write_text("ctx_size = 2048\n")
+    sidecar.symlink_to(external)
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(models))
+    for args in (["real", "ctx_size", "4096"], ["real"], ["real", "--unset", "ctx_size"]):
+        result = CliRunner().invoke(app, ["models", "config", *args])
+        assert result.exit_code == 1, result.output
+    result = CliRunner().invoke(app, ["models", "info", "real"])
+    assert result.exit_code == 1, result.output
+    assert external.read_text() == "ctx_size = 2048\n"
+
+
+def _outward(tmp_path: Path, label: str) -> Path:
+    outside = tmp_path / f"outside-{label}"
+    outside.mkdir()
+    return outside
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        "child-dir",
+        "flat-file",
+        "sidecar",
+        "tts-marker",
+        "hub-cache",
+        "hub-cache-child",
+        "hub-cache-file",
+        "cache-inward-root",
+        "cache-inward-child",
+        "cache-loop",
+    ],
+)
+def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeypatch, layout):
+    models = tmp_path / "models"
+    dest = models / "real"
+    dest.mkdir(parents=True)
+    outside = _outward(tmp_path, layout)
+    sentinel = outside / "keep"
+    sentinel.write_text("keep")
+    tts = layout == "tts-marker"
+    files = {"weights/checkpoint.pt": 4} if layout == "child-dir" or tts else {"m.gguf": 4}
+    plan = DownloadPlan("org/repo", files, "real", False, tts_engine="kokoro" if tts else None)
+    if layout == "child-dir":
+        (dest / "weights").symlink_to(outside, target_is_directory=True)
+    elif layout == "flat-file":
+        (dest / "m.gguf").symlink_to(sentinel)
+    elif layout == "sidecar":
+        (dest / "m.toml").symlink_to(outside / "cfg.toml")
+    elif layout == "tts-marker":
+        (dest / "weights").mkdir()
+        (dest / "model.toml").symlink_to(outside / "cfg.toml")
+    elif layout == "hub-cache":
+        (dest / ".cache").symlink_to(outside, target_is_directory=True)
+    elif layout == "hub-cache-child":
+        (dest / ".cache").mkdir()
+        (dest / ".cache" / "huggingface").symlink_to(outside, target_is_directory=True)
+    elif layout == "hub-cache-file":
+        download = dest / ".cache" / "huggingface" / "download"
+        download.mkdir(parents=True)
+        (download / "m.gguf.metadata").symlink_to(outside / "metadata")
+    elif layout == "cache-inward-root":
+        # Reviewer A/B layout 1: an inward link hides an outward one below it.
+        (models / "shared-cache").mkdir()
+        (models / "shared-cache" / "huggingface").symlink_to(outside, target_is_directory=True)
+        (dest / ".cache").symlink_to(models / "shared-cache", target_is_directory=True)
+    elif layout == "cache-inward-child":
+        # Reviewer A/B layout 2: the inward link sits at .cache/huggingface.
+        (dest / ".cache").mkdir()
+        (models / "shared-cache").mkdir()
+        (models / "shared-cache" / "download").symlink_to(outside, target_is_directory=True)
+        (dest / ".cache" / "huggingface").symlink_to(
+            models / "shared-cache", target_is_directory=True
+        )
+    else:
+        # A link loop must neither hang the check nor hide the outward link.
+        hf = dest / ".cache" / "huggingface"
+        hf.mkdir(parents=True)
+        (hf / "loop").symlink_to(dest / ".cache", target_is_directory=True)
+        (hf / "z").mkdir()
+        (hf / "z" / "download").symlink_to(outside, target_is_directory=True)
+
+    def fetch(**kwargs):
+        raise AssertionError("download started despite an escaping target")
+
+    monkeypatch.setattr("drove.downloader.hf_hub_download", fetch)
+    with pytest.raises(ValueError, match="outside"):
+        plan.check_local_files(models)
+    with pytest.raises(ValueError, match="outside"):
+        plan.execute(models)
+    assert sorted(p.name for p in outside.iterdir()) == ["keep"]
+    assert sentinel.read_text() == "keep"
+
+
+def test_download_accepts_inward_cache_links_and_loops(tmp_path):
+    """Contained links, loops included, are followed and accepted."""
+    models = tmp_path / "models"
+    dest = models / "real"
+    (models / "shared-cache" / "huggingface" / "download").mkdir(parents=True)
+    dest.mkdir()
+    (dest / ".cache").symlink_to(models / "shared-cache", target_is_directory=True)
+    hf = models / "shared-cache" / "huggingface"
+    (hf / "loop").symlink_to(models / "shared-cache", target_is_directory=True)
+    (hf / "download" / "up").symlink_to(hf, target_is_directory=True)
+    plan = DownloadPlan("org/repo", {"m.gguf": 4}, "real", False)
+    assert plan.check_local_files(models) == {"m.gguf": (FileStatus.MISSING, 0)}
+
+
+def test_download_cli_reports_escaping_target_without_traceback(tmp_path, download_cli):
+    dest = tmp_path / "real"
+    dest.mkdir()
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-cli"
+    outside.mkdir()
+    (dest / "m.gguf").symlink_to(outside / "m.gguf")
+    result = download_cli(DownloadPlan("org/repo", {"m.gguf": 4}, "real", False))
+    assert result.exit_code == 1, result.output
+    assert "outside" in result.output and "Traceback" not in result.output
+    assert list(outside.iterdir()) == []

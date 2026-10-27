@@ -1055,7 +1055,7 @@ class ChatApp(App[None]):
                 return
             try:
                 save_session(self._sessions_dir, self._session)
-            except OSError:
+            except OSError, ValueError:
                 await self._show_note("Could not save this conversation. Model was not changed.")
                 return
             system_prompt = self._session.system_prompt

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from drove.observe import (
     ObserveContext,
     ObserveRecord,
@@ -361,3 +363,74 @@ def test_observe_context_to_record_none_model() -> None:
     )
     record = ctx.to_record()
     assert record.model is None
+
+
+# ── model name containment (#110) ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("model", ["../escape", "../../x", "/abs/dir", "a/../../b", "a//b", ""])
+def test_save_record_rejects_unsafe_model_and_writes_nothing(tmp_path: Path, model: str) -> None:
+    observe_dir = tmp_path / "observe"
+    observe_dir.mkdir()
+    with pytest.raises(ValueError):
+        save_record(observe_dir, _make_record(model=model))
+    assert sorted(p for p in tmp_path.rglob("*")) == [observe_dir]
+
+
+def test_save_record_refuses_outward_namespace_symlink(tmp_path: Path) -> None:
+    observe_dir = tmp_path / "observe"
+    observe_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (observe_dir / "org").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="outside"):
+        save_record(observe_dir, _make_record(model="org/repo:Q4_K_M"))
+    assert list(outside.iterdir()) == []
+
+
+def test_save_record_keeps_namespaced_quant_and_unknown_layout(tmp_path: Path) -> None:
+    named = save_record(tmp_path, _make_record(model="org/repo:Q4_K_M"))
+    assert named == tmp_path / "org" / "repo:Q4_K_M" / f"{named.stem}.json"
+    unknown = save_record(tmp_path, _make_record(model=None, record_id="20260408-120001-x"))
+    assert unknown.parent == tmp_path / "_unknown"
+
+
+@pytest.mark.parametrize("model", ["../outside", "/abs", "org"])
+def test_filtered_reads_never_leave_observe_dir(tmp_path: Path, model: str) -> None:
+    observe_dir = tmp_path / "observe"
+    observe_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    save_record(outside, _make_record(model="victim"))
+    (observe_dir / "org").symlink_to(outside / "victim", target_is_directory=True)
+    assert list_records(observe_dir, model=model) == []
+    assert find_record_path(observe_dir, "20260408-120000-abcd1234", model=model) is None
+
+
+def test_save_record_refuses_outward_symlink_at_record_file(tmp_path: Path) -> None:
+    observe_dir = tmp_path / "observe"
+    record = _make_record(model="real")
+    (observe_dir / "real").mkdir(parents=True)
+    sentinel = tmp_path / "sentinel.json"
+    sentinel.write_text("keep")
+    (observe_dir / "real" / f"{record.id}.json").symlink_to(sentinel)
+    with pytest.raises(ValueError, match="outside"):
+        save_record(observe_dir, record)
+    assert sentinel.read_text() == "keep"
+
+
+def test_unfiltered_scans_skip_outward_directories_and_files(tmp_path: Path) -> None:
+    observe_dir = tmp_path / "observe"
+    observe_dir.mkdir()
+    outside = tmp_path / "outside"
+    save_record(outside, _make_record(model="victim", record_id="20260408-120000-out00001"))
+    (observe_dir / "linked").symlink_to(outside / "victim", target_is_directory=True)
+    (observe_dir / "org").mkdir()
+    (observe_dir / "org" / "ns").symlink_to(outside / "victim", target_is_directory=True)
+    kept = save_record(observe_dir, _make_record(model="local"))
+    (kept.parent / "20260408-120000-out00002.json").symlink_to(
+        outside / "victim" / "20260408-120000-out00001.json"
+    )
+    assert [p for p, _ in list_records(observe_dir)] == [kept]
+    assert find_record_path(observe_dir, "20260408-120000-out00001") is None
+    assert find_record_path(observe_dir, "20260408-120000-out00002") is None

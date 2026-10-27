@@ -323,8 +323,10 @@ def resolve_model_alias(models_dir: Path, ref: str) -> str | None:
     else:
         repo_id, quant = ref, None
 
+    from drove.model_store import is_within  # local: model_store imports this module
+
     for p in sorted(models_dir.rglob("*.toml")):
-        if p.name == GLOBAL_CONFIG_FILENAME:
+        if p.name == GLOBAL_CONFIG_FILENAME or not is_within(models_dir, p):
             continue
         try:
             with p.open("rb") as f:

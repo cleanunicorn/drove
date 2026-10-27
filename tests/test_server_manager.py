@@ -1185,3 +1185,18 @@ time.sleep(60)
         if process.returncode is None:
             process.kill()
         await asyncio.wait_for(process.wait(), 5)
+
+
+@pytest.mark.parametrize("name", ["./testmodel", "testmodel/", "org//testmodel", "../x", "", "/"])
+async def test_ensure_running_rejects_noncanonical_names_before_lookup(
+    tmp_path: Path, name: str
+) -> None:
+    """Alternate spellings must not become separate instance keys (#110)."""
+    config = make_config(tmp_path)
+    make_model(config)
+    manager = ServerManager(config)
+    with patch.object(manager, "_start", new_callable=AsyncMock) as start:
+        with pytest.raises(ValueError, match="model name"):
+            await manager.ensure_running(name)
+    start.assert_not_awaited()
+    assert manager._instances == {}

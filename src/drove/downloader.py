@@ -13,6 +13,7 @@ from typing import Literal
 from huggingface_hub import HfApi, hf_hub_download
 
 from drove.backend import infer_tts_engine
+from drove.model_store import is_within, validate_model_name
 
 type ProgressCallback = Callable[[int, int, str], None]
 
@@ -316,10 +317,40 @@ class DownloadPlan:
         )
 
     def destination(self, models_dir: Path) -> Path:
-        """Return the model directory (always a directory)."""
-        if self.is_tts:
-            _validate_relative_path(self.local_name)
-        return models_dir / self.local_name
+        """Return the model directory (always a directory).
+
+        Validated on every call, not once at construction: ``local_name`` is
+        mutable (the quant picker rewrites it), and the directory must stay
+        inside *models_dir* even through an existing namespace symlink.
+        """
+        destination = models_dir / validate_model_name(self.local_name)
+        if not is_within(models_dir, destination):
+            raise ValueError(
+                f"Model '{self.local_name}' would be written outside {models_dir}; "
+                "remove the symlink or choose another --name."
+            )
+        return destination
+
+    def _check_targets(self, models_dir: Path) -> None:
+        """Refuse to start if any path the download touches resolves outside *models_dir*.
+
+        Covers every local file, the Hub's raw target for nested repository
+        files, the Hub's ``.cache`` folder (metadata, locks and partial files
+        live there), and the sidecar config (and TTS marker) written
+        afterwards. Each target is checked with everything already beneath
+        it, following links, so a pre-existing symlink can't redirect a read
+        or write, not even from behind a link that itself stays inside.
+        """
+        dest = self.destination(models_dir)
+        targets = [dest / ".cache"]
+        for repo_file in self._all_remote_files():
+            targets += [self._local_path(repo_file, models_dir), dest / repo_file]
+        if self.is_tts or self.file_names:
+            entry = "model.tts" if self.is_tts else Path(first_shard(self.file_names)).name
+            targets += [dest / entry, (dest / entry).with_suffix(".toml")]
+        seen: set[Path] = set()
+        for target in targets:
+            _check_tree(models_dir, target, seen)
 
     def _local_path(self, repo_file: str, models_dir: Path) -> Path:
         """Return the local path, preserving TTS repository directories."""
@@ -341,6 +372,7 @@ class DownloadPlan:
 
         Returns {repo_filename: (status, local_size_bytes)}.
         """
+        self._check_targets(models_dir)
         result: dict[str, tuple[FileStatus, int]] = {}
         for repo_file, remote_size in self._all_remote_files().items():
             local = self._local_path(repo_file, models_dir)
@@ -363,6 +395,7 @@ class DownloadPlan:
         event_cb: EventCallback | None = None,
     ) -> Path:
         """Download all files and return the path to the model entry point."""
+        self._check_targets(models_dir)
         dest = self.destination(models_dir)
         dest.mkdir(parents=True, exist_ok=True)
         all_files = (
@@ -517,7 +550,11 @@ def resolve_download(
 
     mmproj_files = pick_mmproj(mmproj_files)
     sharded = is_sharded(list(files.keys()))
-    local_name = name_override or infer_local_name(repo_id, list(files.keys()), quant)
+    if name_override is not None:
+        local_name = name_override
+    else:
+        local_name = infer_local_name(repo_id, list(files.keys()), quant)
+    validate_model_name(local_name)
 
     return DownloadPlan(
         repo_id=repo_id,
@@ -554,11 +591,33 @@ def _validate_relative_path(value: str) -> None:
         raise ValueError(f"Expected a relative model path, got '{value}'.")
 
 
+def _check_tree(models_dir: Path, root: Path, seen: set[Path]) -> None:
+    """Raise ValueError unless *root* and everything under it resolve inside *models_dir*.
+
+    Directory links are followed and their real targets scanned as well;
+    *seen* holds the real directories already scanned, which also ends loops.
+    """
+    stack = [root]
+    while stack:
+        path = stack.pop()
+        if not is_within(models_dir, path):
+            raise ValueError(
+                f"'{path}' resolves outside {models_dir}; remove the symlink and retry."
+            )
+        real = path.resolve()
+        if real in seen or not real.is_dir():
+            continue
+        seen.add(real)
+        try:
+            stack += real.iterdir()
+        except OSError as exc:
+            raise ValueError(f"Cannot check '{path}' before downloading: {exc}") from exc
+
+
 def _resolve_tts_download(repo_id: str, engine: str, name: str | None) -> DownloadPlan:
     if engine not in {"kokoro", "qwen", "chatterbox", "fish", "kitten"}:
         raise ValueError("Unknown TTS engine. Use kokoro, qwen, chatterbox, fish, or kitten.")
-    local_name = name or repo_id
-    _validate_relative_path(local_name)
+    local_name = validate_model_name(name if name is not None else repo_id)
     info = HfApi().model_info(repo_id, files_metadata=True)
     weights: dict[str, int] = {}
     support: dict[str, int] = {}

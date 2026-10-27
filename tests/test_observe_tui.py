@@ -1,6 +1,7 @@
 """Interaction, scheduling and rendering regressions for the observe browser."""
 
 import asyncio
+import json
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -299,9 +300,15 @@ async def test_teardown_does_not_start_queued_scan(
 async def test_details_follow_theme_and_preserve_literal_content(
     tmp_path: Path, theme: str
 ) -> None:
-    found = record("org/[bold]literal")
+    found = record("org/literal")
     found.response_body = "invalid [bold] json [/x]"
-    save_record(tmp_path, found)
+    saved = save_record(tmp_path, found)
+    # New records can't carry markup in a model name (#110); older ones on
+    # disk still might, and must render literally.
+    found.model = "org/[bold]literal"
+    data = json.loads(saved.read_text())
+    data["model"] = found.model
+    saved.write_text(json.dumps(data))
     app = ObserveApp(tmp_path, theme=theme)
     async with app.run_test(size=(140, 45)) as pilot:
         await loaded(app)

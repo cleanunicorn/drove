@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from drove.model_store import ModelStore
+from drove.model_store import ModelStore, validate_model_name
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -209,3 +209,227 @@ def test_list_includes_onnx_model_with_onnx_primary(tmp_path: Path) -> None:
 def test_complete_includes_onnx_models(tmp_path: Path) -> None:
     _make_onnx_model(tmp_path, "parakeet")
     assert ModelStore(tmp_path).complete("para") == ["parakeet"]
+
+
+# ── name validation and containment ──────────────────────────────────────────
+
+_VALID_NAMES = [
+    "mymodel",
+    "org/mymodel",
+    "unsloth/Qwen3-8B-GGUF:Q4_K_M",
+    "model..v2",
+    "a.b_c-d",
+]
+
+_INVALID_NAMES = [
+    "",
+    ".",
+    "..",
+    "/",
+    "/abs",
+    "/abs/path/model",
+    "../x",
+    "../../some/dir",
+    "a/../../b",
+    "sub/..",
+    "./qwen",
+    "qwen/",
+    "a//b",
+    "a/./b",
+    "a/b/c",
+    "a\\b",
+    "C:\\x",
+    "my model",
+    " qwen",
+    "qwen\n",
+    "nul\x00",
+    "%2e%2e",
+    "-flag",
+    ".hidden",
+]
+
+
+@pytest.mark.parametrize("name", _VALID_NAMES)
+def test_validate_model_name_accepts_safe_names(name: str) -> None:
+    assert validate_model_name(name) == name
+
+
+@pytest.mark.parametrize("name", _INVALID_NAMES)
+def test_validate_model_name_rejects_unsafe_names(name: str) -> None:
+    with pytest.raises(ValueError, match="relative"):
+        validate_model_name(name)
+
+
+@pytest.mark.parametrize("value", [None, 1, True, ["m"], {"m": 1}, b"m"])
+def test_validate_model_name_rejects_non_strings(value: object) -> None:
+    with pytest.raises(ValueError, match="string"):
+        validate_model_name(value)
+
+
+@pytest.mark.parametrize("name", _INVALID_NAMES)
+def test_store_rejects_unsafe_names_without_touching_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("filesystem accessed for an invalid name")
+
+    for attr in ("rglob", "glob", "is_dir", "exists", "iterdir"):
+        monkeypatch.setattr(Path, attr, forbidden)
+    store = ModelStore(tmp_path)
+    with pytest.raises(ValueError):
+        store.resolve(name)
+    with pytest.raises(ValueError):
+        store.find_root(name)
+
+
+def _outside(tmp_path: Path, label: str) -> Path:
+    outside = tmp_path.parent / f"{tmp_path.name}-{label}"
+    outside.mkdir()
+    return outside
+
+
+def test_store_ignores_outward_model_directory_symlink(tmp_path: Path) -> None:
+    outside = _outside(tmp_path, "dir")
+    _make_gguf(outside, "model.gguf")
+    (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
+    store = ModelStore(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        store.resolve("linked")
+    assert store.find_root("linked") is None
+    assert "linked" not in [e.name for e in store.list()]
+    assert store.complete("") == []
+
+
+def test_store_ignores_outward_namespace_symlink(tmp_path: Path) -> None:
+    outside = _outside(tmp_path, "ns")
+    _make_gguf(outside, "model", "model.gguf")
+    (tmp_path / "org").symlink_to(outside, target_is_directory=True)
+    store = ModelStore(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        store.resolve("org/model")
+    assert store.find_root("org/model") is None
+    assert store.list() == []
+    assert store.complete("org") == []
+
+
+def test_store_ignores_outward_flat_and_primary_file_symlinks(tmp_path: Path) -> None:
+    outside = _outside(tmp_path, "file")
+    target = _make_gguf(outside, "weights.gguf")
+    (tmp_path / "flat.gguf").symlink_to(target)
+    (tmp_path / "boxed").mkdir()
+    (tmp_path / "boxed" / "model.gguf").symlink_to(target)
+    store = ModelStore(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        store.resolve("flat")
+    assert store.find_root("flat") is None
+    with pytest.raises(FileNotFoundError):
+        store.resolve("boxed")
+    assert [e.name for e in store.list()] == []
+
+
+def test_store_keeps_symlinks_that_stay_inside(tmp_path: Path) -> None:
+    primary = _make_gguf(tmp_path, "real", "model.gguf")
+    (tmp_path / "alias-dir").symlink_to(tmp_path / "real", target_is_directory=True)
+    assert ModelStore(tmp_path).resolve("alias-dir") == tmp_path / "alias-dir" / primary.name
+
+
+def test_store_supports_symlinked_models_dir(tmp_path: Path) -> None:
+    storage = tmp_path / "storage"
+    primary = _make_gguf(storage, "org", "model", "model.gguf")
+    link = tmp_path / "models"
+    link.symlink_to(storage, target_is_directory=True)
+    store = ModelStore(link)
+    assert store.resolve("org/model") == link / "org" / "model" / primary.name
+    assert [e.name for e in store.list()] == ["org/model"]
+
+
+def test_store_ignores_alias_that_is_not_a_valid_name(tmp_path: Path) -> None:
+    from drove.model_config import DownloadInfo, save_download_info
+
+    primary = _make_gguf(tmp_path, "a", "b", "c", "model.gguf")
+    save_download_info(primary, DownloadInfo(repo_id="org/repo", files=[primary.name]))
+    store = ModelStore(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        store.resolve("org/repo")
+    assert store.find_root("org/repo") is None
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_store_ignores_model_whose_sidecar_escapes(tmp_path: Path, dangling: bool) -> None:
+    """A sidecar symlinked outside models_dir would let config reads/writes escape."""
+    models = tmp_path / "models"
+    _make_gguf(models, "real", "model.gguf")
+    _make_gguf(models, "flat.gguf")
+    external = tmp_path / "external.toml"
+    if not dangling:
+        external.write_text("ctx_size = 2048\n")
+    (models / "real" / "model.toml").symlink_to(external)
+    (models / "flat.toml").symlink_to(external)
+    store = ModelStore(models)
+    for name in ("real", "flat"):
+        with pytest.raises(FileNotFoundError):
+            store.resolve(name)
+    assert store.list() == []
+    if not dangling:
+        assert external.read_text() == "ctx_size = 2048\n"
+
+
+def test_store_keeps_model_with_inside_sidecar_symlink(tmp_path: Path) -> None:
+    primary = _make_gguf(tmp_path, "real", "model.gguf")
+    shared = tmp_path / "shared.toml"
+    shared.write_text("ctx_size = 2048\n")
+    (tmp_path / "real" / "model.toml").symlink_to(shared)
+    assert ModelStore(tmp_path).resolve("real") == primary
+
+
+def test_alias_scan_skips_sidecars_outside_models_dir(tmp_path: Path) -> None:
+    from drove.model_config import resolve_model_alias
+
+    models = tmp_path / "models"
+    _make_gguf(models, "real", "model.gguf")
+    external = tmp_path / "external.toml"
+    external.write_text('[download]\nrepo_id = "org/repo"\nfiles = ["model.gguf"]\n')
+    (models / "real" / "meta.toml").symlink_to(external)
+    assert resolve_model_alias(models, "org/repo") is None
+    with pytest.raises(FileNotFoundError):
+        ModelStore(models).resolve("org/repo")
+
+
+def test_inventory_only_offers_names_the_validator_accepts(tmp_path: Path) -> None:
+    """Every listed or completed name must be usable with resolve() and the CLI."""
+    _make_gguf(tmp_path, "good", "model.gguf")
+    _make_gguf(tmp_path, "org", "good", "model.gguf")
+    _make_gguf(tmp_path, "my model.gguf")
+    _make_gguf(tmp_path, "bad name", "model.gguf")
+    _make_gguf(tmp_path, "org", "bad name", "model.gguf")
+    _make_gguf(tmp_path, "bad ns", "inner", "model.gguf")
+    _make_gguf(tmp_path, "_scratch", "model.gguf")
+    store = ModelStore(tmp_path)
+    listed = [e.name for e in store.list()]
+    assert listed == ["good", "org/good"]
+    assert store.complete("") == ["good", "org/good"]
+    for name in listed:
+        assert store.resolve(name)
+
+
+def test_inventory_and_resolve_pick_the_same_servable_candidate(tmp_path: Path) -> None:
+    """list(), complete() and resolve() agree when the first candidate is unservable."""
+    models = tmp_path / "models"
+    external = tmp_path / "external.toml"
+    external.write_text("ctx_size = 2048\n")
+    _make_gguf(models, "multi", "a.gguf")
+    safe = _make_gguf(models, "multi", "b.gguf")
+    (models / "multi" / "a.toml").symlink_to(external)
+    _make_gguf(models, "org", "multi", "a.gguf")
+    nested_safe = _make_gguf(models, "org", "multi", "b.gguf")
+    (models / "org" / "multi" / "a.toml").symlink_to(external)
+    _make_gguf(models, "blocked", "a.gguf")
+    (models / "blocked" / "a.toml").symlink_to(external)
+    store = ModelStore(models)
+    entries = {e.name: e.primary for e in store.list()}
+    assert entries == {"multi": safe, "org/multi": nested_safe}
+    assert store.complete("") == ["multi", "org/multi"]
+    for name, path in entries.items():
+        assert store.resolve(name) == path
+    with pytest.raises(FileNotFoundError):
+        store.resolve("blocked")

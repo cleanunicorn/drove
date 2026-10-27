@@ -76,7 +76,8 @@ def _local_status(plan: DownloadPlan, models_dir: Path) -> str:
             return "partly downloaded"  # Unknown-size existing files are unverified.
         if any(_has_partial_cache(plan.destination(models_dir), name) for name in sizes):
             return "partly downloaded"
-    except OSError:
+    except OSError, ValueError:
+        # ValueError: a target escapes models_dir; the download itself refuses it.
         return "local status unavailable"
     return ""
 

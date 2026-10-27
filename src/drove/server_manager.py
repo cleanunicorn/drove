@@ -38,7 +38,7 @@ from drove.model_config import (
     load_global_model_config,
     load_model_config,
 )
-from drove.model_store import ModelStore
+from drove.model_store import ModelStore, validate_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +338,10 @@ class ServerManager:
         caller records the request as in-flight.  Callers passing
         ``claim=True`` must pair it with a later ``request_finished`` call,
         passing the slot this returns (None when *claim* is False).
+        Raises ValueError for an unsafe or non-canonical model name, before
+        any instance lookup, so alternate spellings never become new keys.
         """
+        validate_model_name(model_name)
         async with self._lock:
             inst = self._instances.get(model_name)
             if inst is not None and inst.is_running:

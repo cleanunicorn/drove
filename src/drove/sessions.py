@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from drove.model_store import is_within, validate_model_name
+
+_SLUG_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class Session:
@@ -61,7 +67,23 @@ def new_session(model: str, system_prompt: str | None = None) -> Session:
 
 
 def _session_dir(sessions_dir: Path, model: str) -> Path:
-    return sessions_dir / model
+    """Return the directory holding *model*'s sessions, always inside *sessions_dir*.
+
+    Valid model names keep their readable ``org/name`` layout.  Any other label
+    (remote endpoints may name models anything) maps to one flat ``_``-prefixed
+    directory with a digest suffix, which no valid name can collide with.
+    """
+    try:
+        directory = sessions_dir / validate_model_name(model)
+    except ValueError:
+        directory = None
+    if directory is None or not is_within(sessions_dir, directory):
+        safe = _SLUG_UNSAFE_RE.sub("_", model).strip("._")[:64] or "model"
+        digest = hashlib.sha256(model.encode()).hexdigest()[:12]
+        directory = sessions_dir / f"_{safe}-{digest}"
+        if not is_within(sessions_dir, directory):
+            raise ValueError(f"Session directory for '{model}' is outside {sessions_dir}.")
+    return directory
 
 
 def _session_path(sessions_dir: Path, model: str, session_id: str) -> Path:

@@ -185,7 +185,14 @@ class ModelStore:
         """
         subdir = self._dir / name
         if subdir.is_dir() and self._contains(subdir):
-            files = [f for f in subdir.rglob("*") if f.is_file() and self._contains(f)]
+            # Only a top-level .tts marker counts here (a registered TTS model).
+            files = [
+                f
+                for f in subdir.rglob("*")
+                if f.is_file()
+                and self._contains(f)
+                and not (f.suffix == ".tts" and f.parent != subdir)
+            ]
             primary = self._select_primary(files)
             if primary is not None:
                 return primary

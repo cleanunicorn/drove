@@ -577,3 +577,16 @@ def test_undecodable_sidecar_does_not_break_inventory(tmp_path: Path) -> None:
 def test_mmproj_in_non_gguf_model_name_is_still_a_model(tmp_path: Path, filename: str) -> None:
     primary = _make_gguf(tmp_path, "speech", filename)
     _agree(ModelStore(tmp_path), "speech", primary)
+
+
+def test_nested_tts_marker_does_not_override_gguf_in_resolve(tmp_path: Path) -> None:
+    """resolve() only honours a top-level .tts marker, as before the projector fix."""
+    gguf = _make_gguf(tmp_path, "voice", "main.gguf")
+    _make_gguf(tmp_path, "voice", "backup", "model.tts")
+    assert ModelStore(tmp_path).resolve("voice") == gguf
+
+
+def test_top_level_tts_marker_wins_over_gguf(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "voice", "main.gguf")
+    marker = _make_gguf(tmp_path, "voice", "model.tts")
+    _agree(ModelStore(tmp_path), "voice", marker)

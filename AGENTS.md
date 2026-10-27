@@ -324,6 +324,9 @@ src/drove/
   observe_web.py (+ observe_web_static/)   Small web UI for observe logs
   sessions.py, tui.py, tools.py, stats.py Chat TUI app, session persistence,
                        tool execution, token/process metrics
+  tool_policy.py       Chat tool approvals (cwd/remote reads, scoped grants,
+                       per-call shell/write) and the 64 KiB tool output cap,
+                       testable without the TUI
   cli/                 Typer CLI: main.py (config, chat, observe, init),
                        models.py (list, download, add-tts, delete, info, config),
                        server.py (serve — default, status), integrate.py

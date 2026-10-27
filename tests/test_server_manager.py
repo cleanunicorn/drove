@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import os
+import signal
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -13,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from drove.backend import BACKEND_ASR, BACKEND_LLAMA, BACKEND_TTS
 from drove.config import Config
 from drove.server_manager import ServerManager, _estimate_model_memory, _ModelInstance
 
@@ -969,3 +974,214 @@ def test_request_started_returns_the_claimed_slot(tmp_path: Path) -> None:
     assert manager.request_started("testmodel") is inst
     assert inst.active_requests == 1
     assert manager.request_started("missing") is None
+
+
+# A stand-in backend: floods stdout before binding (like a chatty model load)
+# and on every request (like an access log), and writes a stderr burst ending
+# in a sentinel. With an unread stdout pipe it blocks once ~192 KiB are queued.
+_FLOODING_BACKEND = """
+import http.server, sys
+sys.stdout.buffer.write(b"x" * (1024 * 1024))
+sys.stdout.flush()
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        sys.stdout.buffer.write(b"GET 200 OK\\n" * 50000)
+        sys.stdout.flush()
+        sys.stderr.write("e" * 300000 + "\\nSENTINEL\\n")
+        sys.stderr.flush()
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):
+        pass
+
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+"""
+
+
+@pytest.mark.parametrize("backend", [BACKEND_LLAMA, BACKEND_ASR, BACKEND_TTS])
+async def test_backend_output_flood_does_not_block(tmp_path: Path, backend: str) -> None:
+    config = make_config(tmp_path)
+    config.llama_server_bin = sys.executable
+    config.prompt_cache = False
+    config.startup_timeout_seconds = 10
+    make_model(config)
+    manager = ServerManager(config)
+
+    def command(*args: Any) -> list[str]:
+        port = next(a for a in args if isinstance(a, int))
+        return [sys.executable, "-c", _FLOODING_BACKEND, str(port)]
+
+    def llama_args(*args: Any) -> list[str]:
+        return command(*args)[1:]
+
+    with (
+        patch("drove.server_manager.detect_backend", return_value=backend),
+        patch.object(manager, "_build_args", side_effect=llama_args),
+        patch.object(manager, "_build_asr_command", side_effect=command),
+        patch.object(manager, "_build_tts_command", side_effect=command),
+    ):
+        try:
+            await asyncio.wait_for(manager.ensure_running("testmodel"), 20)
+            inst = manager._instances["testmodel"]
+            async with httpx.AsyncClient() as client:
+                for _ in range(2):
+                    url = f"http://127.0.0.1:{inst.port}/v1/models"
+                    resp = await asyncio.wait_for(client.get(url), 10)
+                    assert resp.status_code == 200
+            for _ in range(200):
+                if inst.stderr_text.endswith("SENTINEL"):
+                    break
+                await asyncio.sleep(0.02)
+            assert inst.stderr_text.endswith("SENTINEL")
+            assert len(inst._stderr_buf) <= 256 * 1024
+        finally:
+            await asyncio.wait_for(manager.stop(), 20)
+
+
+def _hung_process() -> MagicMock:
+    """A process that ignores every signal, never reaps, and never closes stderr."""
+
+    async def never_reaped() -> int:
+        await asyncio.Event().wait()
+        return 0
+
+    process = MagicMock(pid=12345, returncode=None)
+    process.wait = AsyncMock(side_effect=never_reaped)
+    process.stderr = asyncio.StreamReader()
+    return process
+
+
+@pytest.mark.parametrize("backend", [BACKEND_LLAMA, BACKEND_ASR, BACKEND_TTS])
+async def test_stop_finishes_when_wait_never_resolves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    backend: str,
+) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    inst = _ModelInstance("stuck", _hung_process(), 9999, make_model(config), (0.0, 0.0), backend)
+    inst.start_stderr_reader()
+    manager._instances["stuck"] = inst
+    monkeypatch.setattr("drove.server_manager.STOP_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(manager, "_save_prompt_cache", AsyncMock())
+
+    with patch("drove.server_manager.os.killpg"), caplog.at_level(logging.WARNING):
+        await asyncio.wait_for(manager.stop_model("stuck"), 2)
+
+    assert "stuck" not in manager._instances
+    assert "did not exit" in caplog.text
+    await asyncio.wait_for(manager._lock.acquire(), 1)
+    manager._lock.release()
+    # Whatever still holds stderr keeps being drained until it closes.
+    stderr = inst.process.stderr
+    assert stderr is not None and inst._stderr_task is not None
+    stderr.feed_data(b"late output")
+    await asyncio.sleep(0.05)
+    assert inst.stderr_text == "late output"
+    stderr.feed_eof()
+    await asyncio.wait_for(asyncio.wait({inst._stderr_task}), 1)
+    assert not inst._stderr_task.cancelled()
+
+
+async def test_stop_finishes_for_child_holding_pipes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The backend ignores SIGTERM and its own child keeps stderr open, so even
+    # after SIGKILL asyncio never sees the pipes close.
+    script = """
+import os, signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if os.fork() == 0:
+    flood = b"e" * (1024 * 1024) + b"\\nSENTINEL\\n"
+    signal.signal(signal.SIGUSR1, lambda *_: os.write(2, flood))
+    os.write(2, b"%d\\n" % os.getpid())
+time.sleep(60)
+"""
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        script,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stderr is not None
+    holder_pid = int(await asyncio.wait_for(process.stderr.readline(), 5))
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    inst = _ModelInstance("stubborn", process, 9999, make_model(config), (0.0, 0.0))
+    inst.start_stderr_reader()
+    manager._instances["stubborn"] = inst
+    monkeypatch.setattr("drove.server_manager.STOP_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(manager, "_save_prompt_cache", AsyncMock())
+    try:
+        await asyncio.wait_for(manager.stop(), 5)
+        assert not manager._instances
+        assert process.returncode == -signal.SIGKILL
+        # The surviving holder's output is still drained, so it cannot block...
+        os.kill(holder_pid, signal.SIGUSR1)
+        for _ in range(150):
+            if inst.stderr_text.endswith("SENTINEL"):
+                break
+            await asyncio.sleep(0.02)
+        assert inst.stderr_text.endswith("SENTINEL")
+        # ...and once it exits the reader reaches EOF and the pipe is released.
+        os.kill(holder_pid, signal.SIGKILL)
+        await asyncio.wait_for(process.wait(), 5)
+        assert inst._stderr_task is not None
+        await asyncio.wait_for(asyncio.wait({inst._stderr_task}), 1)
+        assert not inst._stderr_task.cancelled()
+    finally:
+        for pid in (holder_pid, process.pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        await asyncio.wait_for(process.wait(), 5)
+
+
+async def test_cancelled_stop_kills_backend_and_keeps_draining(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = """
+import signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+sys.stderr.write("READY\\n")
+sys.stderr.flush()
+time.sleep(60)
+"""
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        script,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stderr is not None
+    assert await asyncio.wait_for(process.stderr.readline(), 5) == b"READY\n"
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    inst = _ModelInstance("stubborn", process, 9999, make_model(config), (0.0, 0.0))
+    inst.start_stderr_reader()
+    manager._instances["stubborn"] = inst
+    monkeypatch.setattr(manager, "_save_prompt_cache", AsyncMock())
+    try:
+        stop = asyncio.create_task(manager.stop_model("stubborn"))
+        await asyncio.sleep(0.2)  # inside the SIGTERM grace wait
+        stop.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stop
+        assert not manager._instances
+        # The untracked backend must not survive with an unread pipe.
+        assert await asyncio.wait_for(process.wait(), 5) == -signal.SIGKILL
+        assert inst._stderr_task is not None
+        await asyncio.wait_for(asyncio.wait({inst._stderr_task}), 1)
+        assert not inst._stderr_task.cancelled()
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await asyncio.wait_for(process.wait(), 5)

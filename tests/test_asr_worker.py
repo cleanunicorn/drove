@@ -186,6 +186,7 @@ def test_main_wires_arguments_through(tmp_path: Path, monkeypatch: pytest.Monkey
     assert engine_args["init"] == ("nemo-parakeet-tdt-0.6b-v3", tmp_path, "int8")
     assert runs["port"] == 9123
     assert runs["host"] == "127.0.0.1"
+    assert runs["access_log"] is False
 
 
 def test_read_wav_returns_none_for_corrupt_input() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import time
 import uuid
 from concurrent.futures import CancelledError
@@ -389,24 +390,45 @@ def save_record(observe_dir: Path, record: ObserveRecord) -> Path:
     """Write an observe record to disk. Returns the file path.
 
     Raises ValueError, writing nothing, when the record's model is not a
-    valid model name or its directory would resolve outside *observe_dir*.
+    valid model name, its id is not a plain file name, or its directory would
+    resolve outside *observe_dir*. Directories below *observe_dir* are
+    opened without following symlinks, so a directory swapped for a link
+    mid-write raises OSError instead of writing elsewhere.
     """
-    if record.model is None:
-        model_dir = observe_dir / "_unknown"
-    else:
-        model_dir = observe_dir / validate_model_name(record.model)
+    if not record.id or "/" in record.id or "\0" in record.id:
+        raise ValueError(f"Observe record id {record.id!r} is not a plain file name.")
+    parts = ["_unknown"] if record.model is None else validate_model_name(record.model).split("/")
+    model_dir = observe_dir.joinpath(*parts)
     if not is_within(observe_dir, model_dir):
         raise ValueError(f"Observe directory for '{record.model}' is outside {observe_dir}.")
     path = model_dir / f"{record.id}.json"
     if not is_within(observe_dir, path):
         raise ValueError(f"Observe record {record.id} would be written outside {observe_dir}.")
-    model_dir.mkdir(parents=True, exist_ok=True)
     data = _encode_record(record)
-    # O_EXCL never follows or reuses an existing file; 0600 applies from creation.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    observe_dir.mkdir(parents=True, exist_ok=True)
+    dir_fd = os.open(observe_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            try:
+                os.mkdir(part, dir_fd=dir_fd)
+            except FileExistsError:
+                pass
+            parent_fd, dir_fd = dir_fd, _open_subdir(dir_fd, part)
+            os.close(parent_fd)
+        # O_EXCL never follows or reuses an existing file; 0600 applies from creation.
+        fd = os.open(
+            path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd
+        )
+    finally:
+        os.close(dir_fd)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
     return path
+
+
+def _open_subdir(parent_fd: int, name: str) -> int:
+    """Open a child directory relative to parent_fd, refusing a symlink (ELOOP/ENOTDIR)."""
+    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
 
 
 def _encode_record(record: ObserveRecord) -> bytes:
@@ -604,51 +626,75 @@ def prune_records(observe_dir: Path, max_age_days: int, now: float | None = None
     """Delete record files last modified more than max_age_days ago.
 
     Age is the file's modification time, so no record is parsed. Only regular
-    ``*.json`` files in the record directories are considered: symlinks,
-    other files and directories are left alone, and a missing observe_dir is
-    not created. Zero (or less) disables pruning. Returns the number deleted.
+    ``*.json`` files in model directories (``<model>/`` and ``<org>/<repo>/``)
+    are considered: symlinks, other files and directories are left alone, and
+    a missing observe_dir is not created. Zero (or less) disables pruning.
+    Returns the number deleted.
+
+    Directories are walked by file descriptor without following symlinks, and
+    each file is checked and unlinked relative to its pinned directory, so a
+    directory swapped for a link mid-pass can never redirect a deletion
+    outside observe_dir.
     """
-    if max_age_days <= 0 or not observe_dir.is_dir():
+    if max_age_days <= 0:
         return 0
     cutoff = (time.time() if now is None else now) - max_age_days * 86400
+    try:
+        root_fd = os.open(observe_dir, os.O_RDONLY | os.O_DIRECTORY)
+    except FileNotFoundError, NotADirectoryError:
+        return 0
     removed = 0
-    for d in _retention_dirs(observe_dir):
-        try:
-            with os.scandir(d) as entries:
-                for entry in entries:
-                    if entry.name.endswith(".json") and _prune_entry(entry, cutoff):
-                        removed += 1
-        except OSError as e:
-            logger.warning("Observe retention could not read %s: %s", d, e)
+    try:
+        for name in _subdir_names(root_fd):
+            # A model dir may hold records and, as a namespace, model dirs of its own.
+            removed += _prune_tree(root_fd, name, cutoff, depth=2)
+    finally:
+        os.close(root_fd)
     return removed
 
 
-def _retention_dirs(observe_dir: Path) -> list[Path]:
-    """Every directory that can hold records: each model dir and each namespace child.
-
-    Unlike _record_dirs, a directory with records of its own is still searched
-    one level deeper, since ``org`` and ``org/repo`` can both be models.
-    """
-    dirs: list[Path] = []
-    for d in observe_dir.iterdir():
-        if d.is_symlink() or not d.is_dir():
-            continue
-        dirs.append(d)
-        dirs.extend(sub for sub in d.iterdir() if sub.is_dir() and not sub.is_symlink())
-    return dirs
-
-
-def _prune_entry(entry: os.DirEntry[str], cutoff: float) -> bool:
-    """Delete one expired regular record file; return whether it was deleted."""
+def _prune_tree(parent_fd: int, name: str, cutoff: float, depth: int) -> int:
     try:
-        if not entry.is_file(follow_symlinks=False):
-            return False
-        if entry.stat(follow_symlinks=False).st_mtime >= cutoff:
-            return False
-        os.unlink(entry.path)
-    except FileNotFoundError:
-        return False
+        dir_fd = _open_subdir(parent_fd, name)
+    except OSError:
+        return 0  # vanished, not a directory, or a symlink
+    try:
+        removed = _prune_dir(dir_fd, cutoff)
+        if depth > 1:
+            for sub in _subdir_names(dir_fd):
+                removed += _prune_tree(dir_fd, sub, cutoff, depth - 1)
+        return removed
+    finally:
+        os.close(dir_fd)
+
+
+def _subdir_names(dir_fd: int) -> list[str]:
+    try:
+        with os.scandir(dir_fd) as entries:
+            return [e.name for e in entries if e.is_dir(follow_symlinks=False)]
     except OSError as e:
-        logger.warning("Observe retention could not delete %s: %s", entry.path, e)
-        return False
-    return True
+        logger.warning("Observe retention could not read a directory: %s", e)
+        return []
+
+
+def _prune_dir(dir_fd: int, cutoff: float) -> int:
+    """Delete expired regular ``*.json`` files directly inside dir_fd."""
+    try:
+        with os.scandir(dir_fd) as entries:
+            names = [e.name for e in entries if e.name.endswith(".json")]
+    except OSError as e:
+        logger.warning("Observe retention could not read a directory: %s", e)
+        return 0
+    removed = 0
+    for name in names:
+        try:
+            st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if not stat.S_ISREG(st.st_mode) or st.st_mtime >= cutoff:
+                continue
+            os.unlink(name, dir_fd=dir_fd)
+            removed += 1
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            logger.warning("Observe retention could not delete %s: %s", name, e)
+    return removed

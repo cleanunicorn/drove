@@ -661,3 +661,99 @@ def test_prune_records_handles_flat_and_namespaced_records_under_one_parent(
     assert flat.exists() == (flat_age < 30)
     assert nested.exists() == (nested_age < 30)
     assert removed == (flat_age >= 30) + (nested_age >= 30)
+
+
+# ── directory swap races (#122 review) ───────────────────────────────────────
+
+
+def _swap_to_outward_link(directory: Path, outside: Path) -> None:
+    """Replace a validated directory with a symlink pointing outside observe_dir."""
+    directory.rename(directory.with_name(directory.name + "-moved"))
+    directory.symlink_to(outside, target_is_directory=True)
+
+
+def _outside_victim(tmp_path: Path, now: float) -> Path:
+    victim = tmp_path / "outside" / "old.json"
+    return _aged(victim, now, 365 * 86400)
+
+
+def test_prune_never_follows_a_directory_swapped_before_it_is_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = time.time()
+    observe_dir = tmp_path / "observe"
+    _aged(observe_dir / "m" / "old.json", now, 365 * 86400)
+    victim = _outside_victim(tmp_path, now)
+    real_open = os.open
+    swapped = False
+
+    def racing_open(path, flags, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        nonlocal swapped
+        if path == "m" and dir_fd is not None and not swapped:
+            swapped = True
+            _swap_to_outward_link(observe_dir / "m", victim.parent)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    prune_records(observe_dir, 30, now=now)
+
+    assert swapped
+    assert victim.exists()
+
+
+def test_prune_never_follows_a_directory_swapped_before_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = time.time()
+    observe_dir = tmp_path / "observe"
+    _aged(observe_dir / "m" / "old.json", now, 365 * 86400)
+    victim = _outside_victim(tmp_path, now)
+    real_unlink = os.unlink
+    swapped = False
+
+    def racing_unlink(path, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            _swap_to_outward_link(observe_dir / "m", victim.parent)
+        return real_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "unlink", racing_unlink)
+    removed = prune_records(observe_dir, 30, now=now)
+
+    assert swapped
+    assert victim.exists()
+    # The pinned directory (now moved) lost its expired record instead.
+    assert removed == 1
+    assert not (observe_dir / "m-moved" / "old.json").exists()
+
+
+def test_save_record_never_writes_through_a_swapped_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observe_dir = tmp_path / "observe"
+    (observe_dir / "testmodel").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_open = os.open
+    swapped = False
+
+    def racing_open(path, flags, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        nonlocal swapped
+        if path == "testmodel" and dir_fd is not None and not swapped:
+            swapped = True
+            _swap_to_outward_link(observe_dir / "testmodel", outside)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    with pytest.raises(OSError):
+        save_record(observe_dir, _make_record())
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("record_id", ["sub/x", "../x", ""])
+def test_save_record_rejects_ids_that_are_not_plain_names(tmp_path: Path, record_id: str) -> None:
+    with pytest.raises(ValueError):
+        save_record(tmp_path, _make_record(record_id=record_id))

@@ -199,7 +199,7 @@ def _is_binary(data: bytes, content_type: str) -> bool:
     even when its bytes happen to decode, since uploads can carry whole files.
     Text, or an undeclared type, is binary only when it is not valid UTF-8.
     """
-    if content_type and not _is_text_type(content_type):
+    if is_binary_content_type(content_type):
         return True
     prefix = data[:MAX_BODY_BYTES]
     try:
@@ -208,6 +208,11 @@ def _is_binary(data: bytes, content_type: str) -> bool:
         # A capture cut inside a multi-byte character is still text.
         return not (e.reason == "unexpected end of data" and e.start >= len(prefix) - 3)
     return False
+
+
+def is_binary_content_type(content_type: str) -> bool:
+    """Whether a declared content type is stored as a placeholder, never as text."""
+    return bool(content_type) and not _is_text_type(content_type)
 
 
 def render_body(data: bytes, total_bytes: int, content_type: str) -> str:

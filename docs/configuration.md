@@ -54,7 +54,7 @@ not the example budget in the next section.
 | `prompt_cache_dir` | `~/.local/share/drove/prompt-cache` | KV cache storage |
 | `prompt_cache_ttl_seconds` | `3600` | Cache expiry (`0` = never) |
 | `prompt_cache_timeout_seconds` | `60` | Timeout per cache save/restore |
-| `allowed_tools` | `[]` | Chat tool grants saved by "Allow Always" (one directory or host each; bare tool names are ignored) — see [Chat controls](cli.md#chat-controls) |
+| `allowed_tools` | `[]` | Chat tool grants saved by "Allow Always" (one directory or fetch origin each; bare tool names are ignored) — see [Chat controls](cli.md#chat-controls) |
 | `tui_theme` | `textual-dark` | TUI theme |
 | `tui_completed_hints` | `[]` | Learned/dismissed chat tips; `/tips` resets them |
 | `llama_server.n_gpu_layers` | `-1` | Default GPU layer offload |

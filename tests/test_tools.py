@@ -626,21 +626,30 @@ def test_a_public_nat64_answer_is_fetched_at_that_address(fake_net) -> None:
     assert fake_net.requests[0].url.host == "64:ff9b::5db8:d822"
 
 
-def test_internal_access_needs_approval_for_that_host(fake_net) -> None:
+def test_internal_access_needs_approval_for_that_origin(fake_net) -> None:
     fake_net.dns["intranet.example"] = ["10.0.0.7"]
     asked: list[tuple[str, bool]] = []
 
-    def approve(host: str, internal: bool) -> bool:
-        asked.append((host, internal))
-        return host == "intranet.example"
+    def approve(origin: str, internal: bool) -> bool:
+        asked.append((origin, internal))
+        return origin == "http://intranet.example:80"
 
-    context = ToolContext(cwd=Path("/"), approved_hosts={"intranet.example"}, approve_host=approve)
-    granted = ToolContext(cwd=Path("/"), approved_hosts={"10.0.0.8"}, internal_hosts={"10.0.0.8"})
+    context = ToolContext(
+        cwd=Path("/"), approved_origins={"http://intranet.example:80"}, approve_origin=approve
+    )
+    granted = ToolContext(
+        cwd=Path("/"),
+        approved_origins={"http://10.0.0.8:80"},
+        internal_origins={"http://10.0.0.8:80"},
+    )
 
     assert _fetch("http://intranet.example/", context) == "hello"
-    assert asked == [("intranet.example", True)]
+    assert asked == [("http://intranet.example:80", True)]
     assert fake_net.requests[-1].url.host == "10.0.0.7"
     assert _fetch("http://10.0.0.8/", granted) == "hello"
+    # Internal access to one port is not internal access to another.
+    other_port = _fetch("http://10.0.0.8:6379/", granted)
+    assert isinstance(other_port, ToolFailure) and "internal" in other_port
 
 
 def test_a_redirect_to_another_host_needs_its_own_approval(fake_net) -> None:
@@ -648,18 +657,68 @@ def test_a_redirect_to_another_host_needs_its_own_approval(fake_net) -> None:
     fake_net.routes["example.com/"] = _redirect("https://other.org/landing")
     asked: list[tuple[str, bool]] = []
 
-    def deny(host: str, internal: bool) -> bool:
-        asked.append((host, internal))
+    def deny(origin: str, internal: bool) -> bool:
+        asked.append((origin, internal))
         return False
 
-    context = ToolContext(cwd=Path("/"), approved_hosts={"example.com"}, approve_host=deny)
-    no_prompt = ToolContext(cwd=Path("/"), approved_hosts={"example.com"})
+    approved = {"https://example.com:443"}
+    context = ToolContext(cwd=Path("/"), approved_origins=approved, approve_origin=deny)
+    no_prompt = ToolContext(cwd=Path("/"), approved_origins=approved)
 
     denied = _fetch("https://example.com/", context)
-    assert isinstance(denied, ToolFailure) and "other.org" in denied
-    assert asked == [("other.org", False)]
+    assert isinstance(denied, ToolFailure) and "https://other.org:443" in denied
+    assert asked == [("https://other.org:443", False)]
     assert isinstance(_fetch("https://example.com/", no_prompt), ToolFailure)
     assert len(fake_net.requests) == 2  # never the redirect target
+
+
+@pytest.mark.parametrize(
+    ("location", "origin"),
+    [
+        ("http://example.com/plain", "http://example.com:80"),  # https -> http
+        ("https://example.com:8443/admin", "https://example.com:8443"),  # another port
+    ],
+)
+def test_a_redirect_to_another_scheme_or_port_needs_approval(fake_net, location, origin) -> None:
+    fake_net.routes["example.com/"] = _redirect(location)
+    asked: list[str] = []
+
+    def deny(origin: str, internal: bool) -> bool:
+        asked.append(origin)
+        return False
+
+    context = ToolContext(
+        cwd=Path("/"), approved_origins={"https://example.com:443"}, approve_origin=deny
+    )
+
+    result = _fetch("https://example.com/", context)
+
+    assert isinstance(result, ToolFailure) and "not approved" in result
+    assert asked == [origin]
+    assert len(fake_net.requests) == 1
+
+
+@pytest.mark.parametrize("url", ["http://example.com/", "https://example.com:8443/"])
+def test_an_origin_approval_does_not_cover_another_scheme_or_port(fake_net, url) -> None:
+    asked: list[str] = []
+
+    def deny(origin: str, internal: bool) -> bool:
+        asked.append(origin)
+        return False
+
+    context = ToolContext(
+        cwd=Path("/"), approved_origins={"https://example.com:443"}, approve_origin=deny
+    )
+
+    assert isinstance(_fetch(url, context), ToolFailure)
+    assert len(asked) == 1
+    assert fake_net.requests == []
+
+
+def test_an_explicit_default_port_is_the_same_origin(fake_net) -> None:
+    context = ToolContext(cwd=Path("/"), approved_origins={"https://example.com:443"})
+
+    assert _fetch("https://example.com:443/x", context) == "hello"
 
 
 @pytest.mark.parametrize(

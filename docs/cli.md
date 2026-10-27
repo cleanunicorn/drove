@@ -153,14 +153,17 @@ What asks for approval:
   `localhost`/a loopback address), every read asks, once per call.
 - `shell_execute` and `write_file` ask on every call; the dialog offers only allow once
   or deny.
-- `fetch_url` asks once per host. It fetches only `http`/`https` URLs, follows up to
-  five redirects (a redirect to another host asks again), and refuses hosts that are or
-  resolve to a loopback, private, link-local or otherwise internal address unless you
-  approve that host in a dialog that says so.
+- `fetch_url` asks once per origin: scheme, host and port, so `https://example.com`
+  does not cover `http://example.com` or `https://example.com:8443`. It fetches only
+  `http`/`https` URLs, follows up to five redirects (a redirect to another origin asks
+  again), and refuses hosts that are or resolve to a loopback, private, link-local or
+  otherwise internal address (IPv6 forms that embed an IPv4 address, such as NAT64
+  `64:ff9b::/96` or 6to4, count as that IPv4 address) unless you approve that origin in a
+  dialog that says so. Site-specific NAT64 prefixes are not recognised.
 
 **s** and **a** grant only the scope the dialog names: a directory and everything
 below it, for that one read tool (the file's directory for `read_file`), or one exact
-host for `fetch_url`. **a** saves the grant in `allowed_tools`; bare tool names there
+origin for `fetch_url`. **a** saves the grant in `allowed_tools`; bare tool names there
 are ignored.
 
 Limits: every tool result is cut to 64 KiB with an `… [output truncated]` notice before

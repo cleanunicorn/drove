@@ -50,13 +50,13 @@ from drove.tool_policy import (
     cap_output,
     cap_tool_messages,
     decide,
-    fetch_hosts,
-    host_decision,
+    fetch_origins,
     is_local_endpoint,
+    origin_decision,
     parse_grants,
     read_roots,
 )
-from drove.tools import TOOL_DEFINITIONS, HostApproval, ToolContext, ToolFailure, execute_tool
+from drove.tools import TOOL_DEFINITIONS, OriginApproval, ToolContext, ToolFailure, execute_tool
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -1462,13 +1462,13 @@ class ChatApp(App[None]):
         on_output = turn.tool_output.append if turn.tool_output is not None else None
         grant, self._call_grant = self._call_grant, None
         policy = self._policy_context()
-        hosts, internal_hosts = fetch_hosts(policy, grant)
+        origins, internal_origins = fetch_origins(policy, grant)
         context = ToolContext(
             cwd=self._cwd,
             read_roots=read_roots(name, policy, grant),
-            approved_hosts=hosts,
-            internal_hosts=internal_hosts,
-            approve_host=self._host_approver(turn),
+            approved_origins=origins,
+            internal_origins=internal_origins,
+            approve_origin=self._origin_approver(turn),
         )
         task = asyncio.create_task(
             asyncio.to_thread(execute_tool, name, arguments, on_output=on_output, context=context)
@@ -1527,15 +1527,15 @@ class ChatApp(App[None]):
                     pass
         return True
 
-    def _host_approver(self, turn: ChatTurn) -> HostApproval:
-        """Let fetch_url ask, from its worker thread, about a host it meets mid-fetch."""
+    def _origin_approver(self, turn: ChatTurn) -> OriginApproval:
+        """Let fetch_url ask, from its worker thread, about an origin it meets mid-fetch."""
         loop = asyncio.get_running_loop()
 
-        def approve(host: str, internal: bool) -> bool:
+        def approve(origin: str, internal: bool) -> bool:
             if turn.stop_requested:
                 return False
             future = asyncio.run_coroutine_threadsafe(
-                self._approve_host(turn, host, internal), loop
+                self._approve_origin(turn, origin, internal), loop
             )
             # Poll, so the worker never outlives a loop that closed with the dialog open.
             while True:
@@ -1550,11 +1550,11 @@ class ChatApp(App[None]):
 
         return approve
 
-    async def _approve_host(self, turn: ChatTurn, host: str, internal: bool) -> bool:
+    async def _approve_origin(self, turn: ChatTurn, origin: str, internal: bool) -> bool:
         if turn.stop_requested:
             return False
-        arguments = json.dumps({"host": host})
-        allowed = await self._confirm("fetch_url", arguments, host_decision(host, internal))
+        arguments = json.dumps({"origin": origin})
+        allowed = await self._confirm("fetch_url", arguments, origin_decision(origin, internal))
         return allowed and not turn.stop_requested
 
     async def _send_message(self, turn: ChatTurn) -> None:

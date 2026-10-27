@@ -12,6 +12,7 @@ from drove.tool_policy import (
     TRUNCATION_NOTICE,
     Grant,
     PolicyContext,
+    canonical_origin,
     cap_output,
     cap_tool_messages,
     decide,
@@ -178,8 +179,8 @@ def test_directory_grant_covers_children_but_not_siblings_or_other_tools(tree) -
     assert asks("search_files", tree["outside"])
 
 
-def test_host_grant_is_exact(tree) -> None:
-    grants = frozenset({Grant("fetch_url", host="example.com")})
+def test_origin_grant_is_exact_on_scheme_host_and_port(tree) -> None:
+    grants = frozenset({Grant("fetch_url", origin="https://example.com:443")})
     ctx = context(tree["cwd"], grants=grants)
 
     def asks(url: str) -> bool:
@@ -187,46 +188,85 @@ def test_host_grant_is_exact(tree) -> None:
 
     assert not asks("https://example.com/page")
     assert not asks("https://EXAMPLE.com./other")
+    assert not asks("https://example.com:443/explicit-default-port")
+    assert asks("http://example.com/")  # another scheme
+    assert asks("https://example.com:8443/")  # another port
+    assert asks("http://example.com:443/")
     assert asks("https://bücher.example/")
-    bucher = frozenset({Grant("fetch_url", host="xn--bcher-kva.example")})
+    assert asks("https://evil.example.com/")
+    assert asks("https://example.com.evil.net/")
+    assert asks("https://other.org/")
+    bucher = frozenset({Grant("fetch_url", origin="https://xn--bcher-kva.example:443")})
     assert not decide(
         "fetch_url",
         json.dumps({"url": "https://BÜCHER.example/"}),
         context(tree["cwd"], grants=bucher),
     ).prompt
-    assert asks("https://evil.example.com/")
-    assert asks("https://example.com.evil.net/")
-    assert asks("https://other.org/")
 
 
-def test_fetch_prompt_offers_a_host_scope_and_flags_literal_internal_addresses(tree) -> None:
+@pytest.mark.parametrize(
+    ("url", "origin"),
+    [
+        ("https://example.com", "https://example.com:443"),
+        ("http://example.com/x", "http://example.com:80"),
+        ("http://example.com:80/x", "http://example.com:80"),
+        ("https://Example.COM.:8443/", "https://example.com:8443"),
+        ("http://[::1]:8080/", "http://[::1]:8080"),
+        ("http://[0:0::1]/", "http://[::1]:80"),
+    ],
+)
+def test_canonical_origin_spells_out_the_effective_port(url: str, origin: str) -> None:
+    parsed = canonical_origin(url)
+    assert parsed is not None and parsed[0] == origin
+
+
+def test_fetch_prompt_offers_an_origin_scope_and_flags_literal_internal_addresses(tree) -> None:
     ctx = context(tree["cwd"])
 
     public = decide("fetch_url", json.dumps({"url": "https://example.com/x"}), ctx)
     internal = decide("fetch_url", json.dumps({"url": "http://169.254.169.254/latest"}), ctx)
 
     assert public.prompt and public.scoped_choices
-    assert public.grant == Grant("fetch_url", host="example.com")
+    assert public.grant == Grant("fetch_url", origin="https://example.com:443")
     assert internal.prompt and internal.grant == Grant(
-        "fetch_url", host="169.254.169.254", internal=True
+        "fetch_url", origin="http://169.254.169.254:80", internal=True
     )
     assert "internal" in internal.reason
 
 
-def test_a_public_host_grant_does_not_cover_internal_access(tree) -> None:
-    grants = frozenset({Grant("fetch_url", host="10.0.0.5")})
+def test_a_public_origin_grant_does_not_cover_internal_access(tree) -> None:
+    grants = frozenset({Grant("fetch_url", origin="http://10.0.0.5:80")})
     ctx = context(tree["cwd"], grants=grants)
 
     assert decide("fetch_url", json.dumps({"url": "http://10.0.0.5/"}), ctx).prompt
-    internal = frozenset({Grant("fetch_url", host="10.0.0.5", internal=True)})
+    internal = frozenset({Grant("fetch_url", origin="http://10.0.0.5:80", internal=True)})
     ctx = context(tree["cwd"], grants=internal)
     assert not decide("fetch_url", json.dumps({"url": "http://10.0.0.5/"}), ctx).prompt
+    assert decide("fetch_url", json.dumps({"url": "http://10.0.0.5:8080/"}), ctx).prompt
+    assert decide("fetch_url", json.dumps({"url": "https://10.0.0.5/"}), ctx).prompt
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        # Host-only grants (an earlier shape) would cover every scheme and port.
+        '{"host":"example.com","tool":"fetch_url","v":1}',
+        '{"host":"example.com","origin":"https://example.com:443","tool":"fetch_url","v":1}',
+        # Origins must be canonical, with an explicit port.
+        '{"origin":"https://example.com","tool":"fetch_url","v":1}',
+        '{"origin":"https://EXAMPLE.com:443","tool":"fetch_url","v":1}',
+        '{"origin":"https://example.com:443/path","tool":"fetch_url","v":1}',
+        '{"origin":"ftp://example.com:21","tool":"fetch_url","v":1}',
+    ],
+)
+def test_non_canonical_or_host_only_fetch_grants_are_ignored(token: str) -> None:
+    assert parse_grant(token) is None
 
 
 @pytest.mark.parametrize("name", ["shell_execute", "write_file"])
 def test_shell_and_write_always_ask_per_call(tree, name: str) -> None:
     every_grant = frozenset(
-        {Grant(name, directory=str(tree["cwd"])), Grant(name, host="example.com")}
+        {Grant(name, directory=str(tree["cwd"])), Grant(name, origin="https://example.com:443")}
     )
     args = json.dumps({"command": "ls", "path": "a.txt", "content": "x"})
 
@@ -247,8 +287,8 @@ def test_bare_names_and_unknown_tokens_are_not_grants(token: str) -> None:
 def test_grant_tokens_round_trip_canonically() -> None:
     for grant in [
         Grant("read_file", directory='/srv/data, with "quotes"'),
-        Grant("fetch_url", host="::1", internal=True),
-        Grant("fetch_url", host="example.com"),
+        Grant("fetch_url", origin="http://[::1]:8080", internal=True),
+        Grant("fetch_url", origin="https://example.com:443"),
     ]:
         token = grant.token()
         assert json.loads(token)["v"] == 1

@@ -2,9 +2,9 @@
 
 The chat asks before a tool reads outside its working directory, before any read
 when the model runs on a remote endpoint, before each shell command or file write,
-and before fetching from a host it has not been allowed to reach. "Allow for
-session" and "Allow always" record a :class:`Grant` scoped to one directory or
-host, never a bare tool name.
+and before fetching from an origin (scheme, host and port) it has not been allowed
+to reach. "Allow for session" and "Allow always" record a :class:`Grant` scoped to
+one directory or one origin, never a bare tool name.
 """
 
 from __future__ import annotations
@@ -108,6 +108,21 @@ def canonical_host(url: str) -> str | None:
         return host or None
 
 
+def canonical_origin(url: str) -> tuple[str, str] | None:
+    """The ``scheme://host:port`` origin of an http(s) *url* and its host, or None.
+
+    The port is always explicit (80 or 443 by default), so ``https://example.com``
+    and ``https://example.com:443`` are one origin while another port is not.
+    """
+    host = canonical_host(url)
+    if host is None:
+        return None
+    parsed = httpx.URL(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    shown = f"[{host}]" if ":" in host else host
+    return f"{parsed.scheme}://{shown}:{port}", host
+
+
 def is_local_endpoint(base_url: str) -> bool:
     """True when the chat endpoint is this machine: ``localhost`` or a loopback IP."""
     host = canonical_host(base_url)
@@ -123,11 +138,11 @@ def is_local_endpoint(base_url: str) -> bool:
 
 @dataclass(frozen=True)
 class Grant:
-    """Permission for one tool on one directory (and below) or one exact host."""
+    """Permission for one tool on one directory (and below) or one exact origin."""
 
     tool: str
     directory: str | None = None
-    host: str | None = None
+    origin: str | None = None  # fetch only: scheme://host:port, see canonical_origin
     internal: bool = False  # fetch only: the host may resolve to an internal address
 
     def token(self) -> str:
@@ -135,8 +150,8 @@ class Grant:
         data: dict[str, Any] = {"v": _GRANT_VERSION, "tool": self.tool}
         if self.directory is not None:
             data["dir"] = self.directory
-        if self.host is not None:
-            data["host"] = self.host
+        if self.origin is not None:
+            data["origin"] = self.origin
         if self.internal:
             data["internal"] = True
         return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -145,24 +160,31 @@ class Grant:
         if self.directory is not None:
             return f"{self.tool} in {self.directory}"
         suffix = ", including internal addresses" if self.internal else ""
-        return f"{self.tool} from {self.host}{suffix}"
+        return f"{self.tool} from {self.origin}{suffix}"
 
 
 def parse_grant(token: str) -> Grant | None:
-    """Parse an ``allowed_tools`` entry; bare tool names and unknown shapes give None."""
+    """Parse an ``allowed_tools`` entry; bare tool names and unknown shapes give None.
+
+    That includes host-only fetch grants (``"host"``, no ``"origin"``): they would cover
+    every scheme and port, so they are dropped and the user is asked again.
+    """
     try:
         data = json.loads(token)
     except ValueError:
         return None
     if not isinstance(data, dict) or data.get("v") != _GRANT_VERSION:
         return None
-    tool, directory, host = data.get("tool"), data.get("dir"), data.get("host")
-    if not isinstance(tool, str) or tool in PER_CALL_TOOLS:
+    tool, directory, origin = data.get("tool"), data.get("dir"), data.get("origin")
+    if not isinstance(tool, str) or tool in PER_CALL_TOOLS or "host" in data:
         return None
-    if tool in READ_TOOLS and isinstance(directory, str) and host is None:
+    if tool in READ_TOOLS and isinstance(directory, str) and origin is None:
         return Grant(tool, directory=directory)
-    if tool == "fetch_url" and isinstance(host, str) and directory is None:
-        return Grant(tool, host=host, internal=data.get("internal") is True)
+    if tool == "fetch_url" and isinstance(origin, str) and directory is None:
+        # Only a canonical origin matches anything; re-derive it to reject odd spellings.
+        if (parsed := canonical_origin(origin)) is None or parsed[0] != origin:
+            return None
+        return Grant(tool, origin=origin, internal=data.get("internal") is True)
     return None
 
 
@@ -247,36 +269,39 @@ def _decide_read(name: str, args: dict[str, Any], ctx: PolicyContext) -> Decisio
 
 def _decide_fetch(args: dict[str, Any], ctx: PolicyContext) -> Decision:
     url = args.get("url")
-    host = canonical_host(url) if isinstance(url, str) else None
-    if host is None:
+    parsed = canonical_origin(url) if isinstance(url, str) else None
+    if parsed is None:
         return _NO_PROMPT
+    origin, host = parsed
     try:
         internal = is_blocked_address(host)
     except ValueError:
         internal = False  # a name: checked against its DNS answers when fetched
     for granted in ctx.grants:
-        if granted.tool == "fetch_url" and granted.host == host:
+        if granted.tool == "fetch_url" and granted.origin == origin:
             if granted.internal or not internal:
                 return _NO_PROMPT
-    return host_decision(host, internal)
+    return origin_decision(origin, internal)
 
 
-def host_decision(host: str, internal: bool) -> Decision:
-    """The prompt for fetching from *host*, also asked about a host met mid-fetch."""
-    reason = f"Fetch from {host}."
+def origin_decision(origin: str, internal: bool) -> Decision:
+    """The prompt for fetching from *origin*, also asked about one met mid-fetch."""
+    reason = f"Fetch from {origin}."
     if internal:
-        reason = f"{host} is or resolves to an internal (private, loopback or link-local) address."
-    grant = Grant("fetch_url", host=host, internal=internal)
+        reason = (
+            f"{origin} is or resolves to an internal (private, loopback or link-local) address."
+        )
+    grant = Grant("fetch_url", origin=origin, internal=internal)
     return Decision(prompt=True, grant=grant, scoped_choices=True, reason=reason)
 
 
-def fetch_hosts(ctx: PolicyContext, approved: Grant | None) -> tuple[set[str], set[str]]:
-    """Hosts fetch_url may reach, and those of them it may reach at internal addresses."""
-    grants = [g for g in ctx.grants if g.tool == "fetch_url" and g.host is not None]
-    if approved is not None and approved.tool == "fetch_url" and approved.host is not None:
+def fetch_origins(ctx: PolicyContext, approved: Grant | None) -> tuple[set[str], set[str]]:
+    """Origins fetch_url may reach, and those it may reach at internal addresses."""
+    grants = [g for g in ctx.grants if g.tool == "fetch_url" and g.origin is not None]
+    if approved is not None and approved.tool == "fetch_url" and approved.origin is not None:
         grants.append(approved)
-    hosts = {g.host for g in grants if g.host is not None}
-    return hosts, {g.host for g in grants if g.host is not None and g.internal}
+    origins = {g.origin for g in grants if g.origin is not None}
+    return origins, {g.origin for g in grants if g.origin is not None and g.internal}
 
 
 def read_roots(name: str, ctx: PolicyContext, approved: Grant | None) -> tuple[Path, ...]:

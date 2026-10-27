@@ -444,16 +444,25 @@ async def test_shell_and_write_ask_every_call_and_ignore_bare_grants(tmp_path, m
     assert app._session_allowed_tools == set()
 
 
-async def test_fetch_grants_are_per_host_and_bare_names_are_ignored(tmp_path, monkeypatch):
+async def test_fetch_grants_are_per_origin_and_wider_grants_are_ignored(tmp_path, monkeypatch):
     app, _, config = policy_app(tmp_path, monkeypatch)
-    config.write_text('allowed_tools = ["fetch_url"]\n')
-    shown = answering(app, monkeypatch, "allow-session", "deny-once")
+    host_only = json.dumps({"host": "example.com", "tool": "fetch_url", "v": 1})
+    config.write_text(f'allowed_tools = ["fetch_url", {json.dumps(host_only)}]\n')
+    shown = answering(app, monkeypatch, "allow-session", "deny-once", "deny-once", "deny-once")
 
-    assert await app._tool_allowed("fetch_url", json.dumps({"url": "https://example.com/a"}))
-    assert await app._tool_allowed("fetch_url", json.dumps({"url": "https://example.com/b"}))
-    assert not await app._tool_allowed("fetch_url", json.dumps({"url": "https://other.org/"}))
-    assert len(shown) == 2
-    assert app._session_allowed_tools == {Grant("fetch_url", host="example.com").token()}
+    def fetch(url: str):
+        return app._tool_allowed("fetch_url", json.dumps({"url": url}))
+
+    assert await fetch("https://example.com/a")
+    assert await fetch("https://example.com:443/b")
+    assert not await fetch("http://example.com/")
+    assert not await fetch("https://example.com:8443/")
+    assert not await fetch("https://other.org/")
+    assert len(shown) == 4
+    assert shown[0]._scope == "fetch_url from https://example.com:443"
+    assert app._session_allowed_tools == {
+        Grant("fetch_url", origin="https://example.com:443").token()
+    }
 
 
 async def test_per_call_dialog_offers_only_allow_once_or_deny(tmp_path):
@@ -525,8 +534,9 @@ async def test_fetch_asks_again_mid_fetch_for_an_internal_address(tmp_path, monk
 
     assert requests[1][-1]["content"] == "intranet page"
     assert [modal._reason for modal in shown] == [
-        "Fetch from intranet.example.",
-        "intranet.example is or resolves to an internal (private, loopback or link-local) address.",
+        "Fetch from http://intranet.example:80.",
+        "http://intranet.example:80 is or resolves to an internal (private, loopback or"
+        " link-local) address.",
     ]
     assert [request.url.host for request in sent] == ["10.0.0.7"]
 

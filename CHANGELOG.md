@@ -9,9 +9,9 @@
   when `--endpoint` (or `--host`) pointed at a server other than this machine. Searches and
   listings inside the working directory skipped symlinks leading out of it.
 - `fetch_url` refused loopback, private, link-local, unique-local and unspecified addresses
-  (IPv4 and IPv6) unless the user approved that host, checked every DNS answer of every
-  redirect hop, connected only to the address it had checked, and ignored proxy
-  environment variables.
+  (IPv4 and IPv6, including NAT64, 6to4 and other IPv6 forms of an internal IPv4 address)
+  unless the user approved that origin, checked every DNS answer of every redirect hop,
+  connected only to the address it had checked, and ignored proxy environment variables.
 - Shell commands ran in their own process group, killed on timeout and after the command
   ended, so no child or grandchild outlived it. Timeouts were clamped to 1–600 seconds
   (a missing, `null` or invalid value meant 30), at most four background tasks ran at once
@@ -25,15 +25,16 @@
 ### Changed
 
 - "Allow for Session" and "Allow Always" applied to one directory (and below) for a read
-  tool, or to one exact host for `fetch_url`, instead of the whole tool. `shell_execute` and
+  tool, or to one exact origin (scheme, host and port) for `fetch_url`, instead of the whole
+  tool. `shell_execute` and
   `write_file` asked on every call and no longer offered these choices. Bare tool names
   already in `allowed_tools` (such as `"shell_execute"` or `"fetch_url"`) were no longer
-  honoured; approve the directory or host again when asked.
+  honoured; approve the directory or origin again when asked.
 
 ### Fixed
 
-- `fetch_url` followed up to five redirects (each new host asked for approval) instead of
-  reporting every redirect as an error.
+- `fetch_url` followed up to five redirects (a redirect to a new origin asked for approval)
+  instead of reporting every redirect as an error.
 
 ## v0.13.1 (2026-10-27)
 

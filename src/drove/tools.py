@@ -25,7 +25,7 @@ import httpx
 from drove.tool_policy import (
     TOOL_OUTPUT_LIMIT,
     TRUNCATION_NOTICE,
-    canonical_host,
+    canonical_origin,
     cap_output,
     is_blocked_address,
 )
@@ -194,9 +194,9 @@ TOOL_DEFINITIONS = [
 
 #: Receives decoded output while a foreground shell command runs (on its worker thread).
 OutputCallback = Callable[[str], None]
-#: Asks the user, from the tool's worker thread, whether fetch_url may reach a host;
-#: the flag is set when the host resolves to an internal address.
-HostApproval = Callable[[str, bool], bool]
+#: Asks the user, from the tool's worker thread, whether fetch_url may reach an origin
+#: (scheme://host:port); the flag is set when the host resolves to an internal address.
+OriginApproval = Callable[[str, bool], bool]
 
 _READ_CHUNK = 4096
 _READ_DEFAULT_LINES = 200
@@ -226,16 +226,16 @@ class ToolContext:
     """What the chat approved for one call. Direct callers may leave it out.
 
     *read_roots* limits the directories read tools open (None: no limit).
-    *approved_hosts* are the hosts fetch_url may reach (None: any public host), and
-    *internal_hosts* those that may also resolve to internal addresses.
-    *approve_host* asks the user about any other host met on the way.
+    *approved_origins* are the scheme://host:port origins fetch_url may reach (None:
+    any public one), and *internal_origins* those that may also resolve to internal
+    addresses. *approve_origin* asks the user about any other origin met on the way.
     """
 
     cwd: Path = field(default_factory=Path.cwd)
     read_roots: tuple[Path, ...] | None = None
-    approved_hosts: set[str] | None = None
-    internal_hosts: set[str] = field(default_factory=set)
-    approve_host: HostApproval | None = None
+    approved_origins: set[str] | None = None
+    internal_origins: set[str] = field(default_factory=set)
+    approve_origin: OriginApproval | None = None
 
 
 class _Refused(Exception):
@@ -605,8 +605,8 @@ def _fetch_url(args: dict[str, Any], context: ToolContext) -> str:
     except httpx.InvalidURL as e:
         return ToolFailure(f"Error: invalid URL: {e}")
 
-    approved = None if context.approved_hosts is None else set(context.approved_hosts)
-    internal = set(context.internal_hosts)
+    approved = None if context.approved_origins is None else set(context.approved_origins)
+    internal = set(context.internal_origins)
     try:
         # trust_env=False: an environment proxy would connect on our behalf, unchecked.
         with httpx.Client(
@@ -638,16 +638,18 @@ def _vet_hop(
 ) -> tuple[str, str]:
     """Check one hop and return its host and the vetted address to connect to.
 
-    Every DNS answer must be public unless the user allowed internal access to that host,
-    and a host not yet approved (a redirect target) must be approved now.
+    Every DNS answer must be public unless the user allowed internal access to that
+    origin, and an origin not yet approved (a redirect to another host, scheme or port)
+    must be approved now.
     """
     if url.scheme not in {"http", "https"}:
         raise _Refused(f"Error: fetch_url supports http and https URLs only, not {str(url)!r}")
     if url.userinfo:
         raise _Refused("Error: fetch_url does not accept credentials in the URL")
-    host = canonical_host(str(url))
-    if host is None:
+    parsed = canonical_origin(str(url))
+    if parsed is None:
         raise _Refused(f"Error: invalid URL: {url}")
+    origin, host = parsed
     try:
         addresses = [host] if _is_ip(host) else _resolve(host, url.port or _default_port(url))
     except OSError as e:
@@ -656,21 +658,21 @@ def _vet_hop(
         raise _Refused(f"Error fetching URL: cannot resolve {host}")
 
     blocked = [address for address in addresses if is_blocked_address(address)]
-    needs_host = approved is not None and host not in approved
-    needs_internal = bool(blocked) and host not in internal
-    if needs_host or needs_internal:
-        if context.approve_host is None or not context.approve_host(host, bool(blocked)):
+    needs_origin = approved is not None and origin not in approved
+    needs_internal = bool(blocked) and origin not in internal
+    if needs_origin or needs_internal:
+        if context.approve_origin is None or not context.approve_origin(origin, bool(blocked)):
             if blocked:
                 raise _Refused(
                     f"Error: {host} resolves to an internal address ({blocked[0]});"
                     " fetch_url refuses private, loopback and link-local addresses"
-                    " unless the user approves that host"
+                    " unless the user approves that origin"
                 )
-            raise _Refused(f"Error: fetching from {host} (a redirect target) was not approved")
+            raise _Refused(f"Error: fetching from {origin} (a redirect target) was not approved")
         if approved is not None:
-            approved.add(host)
+            approved.add(origin)
         if blocked:
-            internal.add(host)
+            internal.add(origin)
     return host, addresses[0]
 
 

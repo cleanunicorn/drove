@@ -13,7 +13,7 @@ from textual.widgets import OptionList
 
 from drove.chat_models import CatalogError, ChatModel
 from drove.model_picker import ModelPicker
-from drove.sessions import list_sessions, new_session, save_session
+from drove.sessions import latest_session, list_sessions, new_session, save_session
 from drove.tui import ChatApp, ChatInput, SessionPicker
 
 
@@ -265,3 +265,23 @@ async def test_sessions_picker_skips_corrupt_file_without_printing(
             assert app._session.id == saved.id
     # Root logging writes to the terminal Textual owns; diagnostics go to app.log.
     assert [r for r in caplog.records if r.name == "drove.sessions"] == []
+
+
+async def test_resume_skips_session_with_unreplayable_tool_message(tmp_path: Path) -> None:
+    saved = new_session("a")
+    saved.messages += [
+        {"role": "user", "content": "keep me"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "function": {}}]},
+        {"role": "tool", "tool_call_id": "1", "content": "ok"},
+    ]
+    save_session(tmp_path, saved)
+    broken = {"role": "tool", "content": "no call id"}
+    (tmp_path / "a" / "20990101-000000.json").write_text(
+        json.dumps({"id": "20990101-000000", "model": "a", "messages": [broken]})
+    )
+    resumed = latest_session(tmp_path, "a", warn=lambda _: None)
+    assert resumed is not None and resumed.id == saved.id
+    app = ChatApp("https://example.test", "a", tmp_path, None, resume_session=resumed)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._session.id == saved.id

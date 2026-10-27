@@ -137,6 +137,29 @@ def _optional_str(data: dict[str, Any], key: str) -> str | None:
     return value
 
 
+def _check_message(message: Any) -> None:
+    """Reject a message the chat TUI could not replay (see ``ChatApp._replay_history``)."""
+    if not isinstance(message, dict) or not isinstance(message.get("role"), str):
+        raise ValueError("each message needs a string 'role'")
+    role = message["role"]
+    if role == "user" and not isinstance(message.get("content"), str):
+        raise ValueError("user messages need text 'content'")
+    if role == "tool" and not isinstance(message.get("tool_call_id"), str):
+        raise ValueError("tool messages need a string 'tool_call_id'")
+    _optional_str(message, "content")
+    _optional_str(message, "thinking")
+    tool_calls = message.get("tool_calls", [])
+    if not isinstance(tool_calls, list):
+        raise ValueError("'tool_calls' must be a list")
+    for call in tool_calls:
+        function = call.get("function", {}) if isinstance(call, dict) else None
+        if not isinstance(function, dict):
+            raise ValueError("each tool call must be an object with an object 'function'")
+        _optional_str(call, "id")
+        _optional_str(function, "name")
+        _optional_str(function, "arguments")
+
+
 def load_session(path: Path) -> Session:
     """Load one session file; raise ``ValueError`` or ``OSError`` if it is unusable."""
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -149,10 +172,7 @@ def load_session(path: Path) -> Session:
     if not isinstance(messages, list):
         raise ValueError("'messages' must be a list")
     for message in messages:
-        if not isinstance(message, dict) or not isinstance(message.get("role"), str):
-            raise ValueError("each message needs a string 'role'")
-        if message["role"] == "user" and not isinstance(message.get("content"), str):
-            raise ValueError("user messages need text 'content'")
+        _check_message(message)
     return Session(
         model=model,
         session_id=session_id,

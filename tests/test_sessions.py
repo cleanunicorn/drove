@@ -180,6 +180,30 @@ BAD_FILES: dict[str, bytes] = {
     ).encode(),
     "traversal-id": json.dumps({"id": "../../evil", "model": "m", "messages": []}).encode(),
 }
+# Message shapes chat replay reads (drove.tui.ChatApp._replay_history).
+BAD_MESSAGES: dict[str, dict[str, object]] = {
+    "tool-without-call-id": {"role": "tool", "content": "result"},
+    "tool-content-not-text": {"role": "tool", "tool_call_id": "1", "content": 5},
+    "assistant-content-not-text": {"role": "assistant", "content": ["x"]},
+    "thinking-not-text": {"role": "assistant", "content": "", "thinking": 5},
+    "tool-calls-not-list": {"role": "assistant", "content": "", "tool_calls": {"id": "1"}},
+    "tool-call-not-object": {"role": "assistant", "content": "", "tool_calls": ["x"]},
+    "tool-call-id-not-text": {"role": "assistant", "content": "", "tool_calls": [{"id": 1}]},
+    "tool-call-function-not-object": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "1", "function": "f"}],
+    },
+    "tool-call-name-not-text": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "1", "function": {"name": 1, "arguments": "{}"}}],
+    },
+}
+for _kind, _message in BAD_MESSAGES.items():
+    BAD_FILES[_kind] = json.dumps(
+        {"id": "x", "model": "m", "messages": [{"role": "user", "content": "hi"}, _message]}
+    ).encode()
 
 
 def _write_bad(directory: Path, name: str, content: bytes) -> Path:
@@ -252,6 +276,28 @@ def test_direct_load_of_bad_file_raises(tmp_path: Path) -> None:
     bad = _write_bad(tmp_path, "a.json", BAD_FILES["missing-messages"])
     with pytest.raises(ValueError):
         load_session(bad)
+
+
+def test_replayable_message_shapes_still_load(tmp_path: Path) -> None:
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None, "thinking": "hm", "stopped": True},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+                {"id": "2"},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "1", "content": "ok"},
+        {"role": "tool", "tool_call_id": "2"},
+    ]
+    path = _write_bad(
+        tmp_path, "a.json", json.dumps({"id": "a", "model": "m", "messages": messages}).encode()
+    )
+    assert load_session(path).messages == messages
 
 
 def test_legacy_session_ids_still_load(tmp_path: Path) -> None:

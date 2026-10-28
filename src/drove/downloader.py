@@ -341,6 +341,8 @@ class DownloadPlan:
         or write, not even from behind a link that itself stays inside.
         """
         dest = self.destination(models_dir)
+        # Called for its check: raises ValueError for colliding flattened paths
+        # before any I/O. The result is computed again in download().
         self._expected_files(models_dir)
         targets = [dest / ".cache", dest / MANIFEST_NAME, dest / MANIFEST_TEMP_NAME]
         for repo_file in self._all_remote_files():

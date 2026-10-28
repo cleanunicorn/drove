@@ -656,3 +656,38 @@ async def test_sessions_loaded_from_the_picker_cap_old_oversized_tool_results(
     [tool_message] = [m for m in requests[0] if m["role"] == "tool"]
     assert len(tool_message["content"].encode("utf-8")) <= TOOL_OUTPUT_LIMIT
     assert tool_message["content"].endswith(TRUNCATION_NOTICE)
+
+
+@pytest.mark.parametrize("how", ["stop", "quit"])
+async def test_stop_or_quit_settles_a_pending_mid_fetch_approval(tmp_path, monkeypatch, how):
+    app = chat_app(tmp_path)
+    sent: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, content=b"page")
+
+    monkeypatch.setattr(tools, "_resolve", lambda host, port: ["93.184.216.34"])
+    monkeypatch.setattr(tools, "_fetch_transport", httpx.MockTransport(handle))
+    # Skip the first prompt, so the origin is unapproved and asked about mid-fetch.
+    monkeypatch.setattr(app, "_tool_allowed", lambda *args: asyncio.sleep(0, True))
+    requests: list = []
+    call = json.dumps({"url": "https://example.com/"})
+    monkeypatch.setattr(app, "_stream_chat", tool_then_reply(requests, "fetch_url", call))
+
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: isinstance(app.screen, ToolConfirmationModal))
+        if how == "stop":
+            app.action_stop_generation()
+        else:
+            await app.action_quit()
+        async with asyncio.timeout(5):
+            while app.is_generating:
+                await pilot.pause(0.05)
+        assert not isinstance(app.screen, ToolConfirmationModal)
+
+    assert sent == []
+    if how == "stop":
+        [tool_message] = [m for m in app._history if m["role"] == "tool"]
+        assert "not approved" in tool_message["content"]

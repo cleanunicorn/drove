@@ -1537,12 +1537,13 @@ class ChatApp(App[None]):
             future = asyncio.run_coroutine_threadsafe(
                 self._approve_origin(turn, origin, internal), loop
             )
-            # Poll, so the worker never outlives a loop that closed with the dialog open.
+            # Poll, so a stop, quit or closed loop ends the wait: cancelling the approval
+            # dismisses its dialog (push_screen_wait cleans up), and the fetch is refused.
             while True:
                 try:
-                    return future.result(timeout=0.5)
+                    return future.result(timeout=0.2)
                 except TimeoutError:
-                    if loop.is_closed():
+                    if turn.stop_requested or loop.is_closed():
                         future.cancel()
                         return False
                 except Exception:

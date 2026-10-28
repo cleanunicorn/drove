@@ -13,7 +13,7 @@ from typing import Literal
 from huggingface_hub import HfApi, hf_hub_download
 
 from drove.backend import infer_tts_engine
-from drove.download_state import MANIFEST_NAME, write_state
+from drove.download_state import MANIFEST_NAME, MANIFEST_TEMP_NAME, write_state
 from drove.model_store import MMPROJ_RE, is_within, validate_model_name
 
 type ProgressCallback = Callable[[int, int, str], None]
@@ -342,7 +342,7 @@ class DownloadPlan:
         """
         dest = self.destination(models_dir)
         self._expected_files(models_dir)
-        targets = [dest / ".cache", dest / MANIFEST_NAME, dest / f"{MANIFEST_NAME}.tmp"]
+        targets = [dest / ".cache", dest / MANIFEST_NAME, dest / MANIFEST_TEMP_NAME]
         for repo_file in self._all_remote_files():
             targets += [self._local_path(repo_file, models_dir), dest / repo_file]
         if self.is_tts or self.file_names:

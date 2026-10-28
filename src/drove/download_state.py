@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 MANIFEST_NAME = ".drove-download.json"
+MANIFEST_TEMP_NAME = f"{MANIFEST_NAME}.tmp"  # write_state's sibling, renamed into place
 _VERSION = 1
 
 type State = Literal["incomplete", "complete"]
@@ -63,7 +64,7 @@ def read_state(root: Path) -> DownloadState | None:
 def write_state(root: Path, state: State, files: dict[str, int]) -> None:
     """Atomically replace the record under *root* (temporary sibling, then rename)."""
     target = root / MANIFEST_NAME
-    temp = root / f"{MANIFEST_NAME}.tmp"
+    temp = root / MANIFEST_TEMP_NAME
     payload = {"version": _VERSION, "state": state, "files": dict(sorted(files.items()))}
     temp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     os.replace(temp, target)

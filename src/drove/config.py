@@ -162,8 +162,8 @@ class Config(BaseSettings):
         return parse_size(self.max_memory)
 
 
-class _FileLlamaServerDefaults(LlamaServerDefaults):
-    """``LlamaServerDefaults`` validated from explicit values only (no ``DROVE_LLAMA_*``)."""
+class _InitOnlySources(BaseSettings):
+    """Mixin: validate explicit (init) values only, never env vars or files."""
 
     @classmethod
     def settings_customise_sources(
@@ -177,7 +177,11 @@ class _FileLlamaServerDefaults(LlamaServerDefaults):
         return (init_settings,)
 
 
-class _FileConfig(Config):
+class _FileLlamaServerDefaults(_InitOnlySources, LlamaServerDefaults):
+    """``LlamaServerDefaults`` validated from explicit values only (no ``DROVE_LLAMA_*``)."""
+
+
+class _FileConfig(_InitOnlySources, Config):
     """``Config`` validated from explicit values only: no env vars, no TOML source.
 
     Used to check what is (or would be) in the file, and for true defaults.
@@ -186,17 +190,6 @@ class _FileConfig(Config):
     model_config = SettingsConfigDict(toml_file=None)
 
     llama_server: _FileLlamaServerDefaults = Field(default_factory=_FileLlamaServerDefaults)
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (init_settings,)
 
 
 class ConfigError(ValueError):

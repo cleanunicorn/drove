@@ -143,15 +143,49 @@ queue without restarting it. Pending messages are not saved until sent.
 Each tool call appears in the reply as soon as the model requests it, with its
 name and shortened arguments, marked **pending** until it is approved and
 **running** with elapsed seconds while it executes. `shell_execute` streams the last
-few lines of its output into the entry as it runs; the model still receives the
-full output. When the tool ends, the same entry shows its result and outcome:
+few lines of its output into the entry as it runs; the model receives the full
+output up to the tool output limit below. When the tool ends, the same entry shows its result and outcome:
 **✓** done, **✗ failed** (an error, timeout, or nonzero exit code), **⊘ denied**,
 or **⊘ not run** after a stop. Resumed sessions show earlier calls without an
 outcome mark, except denials.
 
 Tool confirmation shortcuts are **y** (allow once), **n** or **Esc** (deny once),
 **s** (allow for this session), and **a** (allow always). Esc in this dialog denies
-the call rather than stopping the whole turn. A tool that has already started
+the call rather than stopping the whole turn.
+
+What asks for approval:
+
+- `read_file`, `list_files` and `search_files` run without asking inside the
+  directory `drove chat` was started in, and ask for anything outside it. Paths are
+  resolved first, so `..`, `~` and symlinks that lead out ask too; a recursive search or
+  listing never follows a symlink out of the approved directories. When the chat
+  talks to a server that is not this machine (`--endpoint`, or `--host` other than
+  `localhost`/a loopback address), every read asks, once per call.
+- `shell_execute` and `write_file` ask on every call; the dialog offers only allow once
+  or deny.
+- `fetch_url` asks once per origin: scheme, host and port, so `https://example.com`
+  does not cover `http://example.com` or `https://example.com:8443`. It fetches only
+  `http`/`https` URLs, follows up to five redirects (a redirect to another origin asks
+  again), and refuses hosts that are or resolve to a loopback, private, link-local or
+  otherwise internal address (IPv6 forms that embed an IPv4 address, such as NAT64
+  `64:ff9b::/96` or 6to4, count as that IPv4 address, and local-use NAT64 `64:ff9b:1::/48`
+  always counts as internal) unless you approve that origin in a dialog that says so.
+  Site-specific NAT64 prefixes are not recognised.
+
+**s** and **a** grant only the scope the dialog names: a directory and everything
+below it, for that one read tool (the file's directory for `read_file`), or one exact
+origin for `fetch_url`. **a** saves the grant in `allowed_tools`; bare tool names there
+are ignored.
+
+Limits: every tool result is cut to 64 KiB with an `… [output truncated]` notice before
+it reaches the model or a saved session. `read_file` returns 200 lines unless `limit`
+says otherwise and ends with the `offset` to continue from. `search_files` matches the
+file name first and skips content in files over 1 MiB, binary or non-UTF-8 files. Shell
+timeouts are 1–600 seconds (default 30). A command runs in its own process group, and
+anything still running in it when the command ends or times out is killed: use
+`"background": true` for long-running jobs. At most four background tasks run at once
+under the same timeout; their results stay available to `check_background_task` for ten
+minutes. A tool that has already started
 cannot be undone: stopping shows a waiting status, retains its actual result,
 and prevents any remaining calls or follow-up model request. New turns, session
 changes, and an explicit quit wait until that tool finishes. Closing the client

@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from drove.model_store import is_within, validate_model_name
+from drove.tool_policy import cap_tool_messages
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,8 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "system_prompt": self.system_prompt,
-            "messages": self.messages,
+            # Tool results are capped here too, so a saved session never holds a larger one.
+            "messages": cap_tool_messages(self.messages),
         }
 
 

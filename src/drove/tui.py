@@ -42,7 +42,20 @@ from drove.chat_models import CatalogError, fetch_context_length, fetch_models_a
 from drove.config import ChatHint, load_config, save_tui_completed_hints
 from drove.model_picker import ModelPicker
 from drove.sessions import Session, list_sessions, new_session, save_session
-from drove.tools import TOOL_DEFINITIONS, ToolFailure, execute_tool
+from drove.tool_policy import (
+    Decision,
+    Grant,
+    PolicyContext,
+    cap_output,
+    cap_tool_messages,
+    decide,
+    fetch_origins,
+    is_local_endpoint,
+    origin_decision,
+    parse_grants,
+    read_roots,
+)
+from drove.tools import TOOL_DEFINITIONS, OriginApproval, ToolContext, ToolFailure, execute_tool
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -590,12 +603,26 @@ class ToolConfirmationModal(ModalScreen[str]):
     ]
 
     def action_choose(self, choice: str) -> None:
+        if self._per_call and choice in {"allow-session", "allow-always"}:
+            return
         self.dismiss(choice)
 
-    def __init__(self, tool_name: str, arguments: str) -> None:
+    def __init__(
+        self,
+        tool_name: str,
+        arguments: str,
+        *,
+        reason: str = "",
+        scope: str = "",
+        per_call: bool = False,
+    ) -> None:
+        """*per_call* hides the session/always choices; *scope* says what they allow."""
         super().__init__()
         self._tool_name = tool_name
         self._arguments = arguments
+        self._reason = reason
+        self._scope = scope
+        self._per_call = per_call
 
     def compose(self) -> ComposeResult:
         with Vertical(id="tool-dialog"):
@@ -606,14 +633,21 @@ class ToolConfirmationModal(ModalScreen[str]):
                     classes="message",
                     markup=False,
                 )
+                if self._reason:
+                    yield Label(self._reason, classes="message", id="tool-reason", markup=False)
+                if self._scope and not self._per_call:
+                    yield Label(
+                        f"Session and Always allow {self._scope}.", id="tool-scope", markup=False
+                    )
                 yield Label("Arguments:")
                 yield Label(self._arguments, id="tool-arguments", markup=False)
             with Horizontal(classes="buttons"):
                 yield Button("Allow Once (y)", variant="primary", id="allow-once")
                 yield Button("Deny Once (n / Esc)", variant="error", id="deny-once")
-            with Horizontal(classes="buttons"):
-                yield Button("Allow for Session (s)", variant="default", id="allow-session")
-                yield Button("Allow Always (a)", variant="default", id="allow-always")
+            if not self._per_call:
+                with Horizontal(classes="buttons"):
+                    yield Button("Allow for Session (s)", variant="default", id="allow-session")
+                    yield Button("Allow Always (a)", variant="default", id="allow-always")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id)
@@ -821,11 +855,15 @@ class ChatApp(App[None]):
             except OSError, ValueError:
                 pass
         self.theme = theme
+        # Grant tokens (see drove.tool_policy) allowed for this session only.
         self._session_allowed_tools: set[str] = set()
+        self._cwd = Path.cwd().resolve()  # reads inside it need no approval
+        self._remote_endpoint = not is_local_endpoint(self._base_url)
+        self._call_grant: Grant | None = None  # the scope approved for the next tool run
 
         if resume_session:
             self._session = resume_session
-            self._history = list(resume_session.messages)
+            self._history = cap_tool_messages(resume_session.messages)
         else:
             self._session = new_session(model, system_prompt)
             self._history = list(self._session.messages)
@@ -1087,7 +1125,7 @@ class ChatApp(App[None]):
             await self._show_note("Stop the reply before changing sessions.")
             return
         self._session = session
-        self._history = list(session.messages)
+        self._history = cap_tool_messages(session.messages)
         self._last_speed = self._last_ttft = None
         self._last_usage = {}
         await self.query_one("#messages").remove_children()
@@ -1416,8 +1454,18 @@ class ChatApp(App[None]):
 
     async def _run_tool(self, turn: ChatTurn, name: str, arguments: str) -> str:
         on_output = turn.tool_output.append if turn.tool_output is not None else None
+        grant, self._call_grant = self._call_grant, None
+        policy = self._policy_context()
+        origins, internal_origins = fetch_origins(policy, grant)
+        context = ToolContext(
+            cwd=self._cwd,
+            read_roots=read_roots(name, policy, grant),
+            approved_origins=origins,
+            internal_origins=internal_origins,
+            approve_origin=self._origin_approver(turn),
+        )
         task = asyncio.create_task(
-            asyncio.to_thread(execute_tool, name, arguments, on_output=on_output)
+            asyncio.to_thread(execute_tool, name, arguments, on_output=on_output, context=context)
         )
         turn.tool_task = task
         try:
@@ -1433,31 +1481,76 @@ class ChatApp(App[None]):
         finally:
             turn.tool_task = None
 
-    async def _tool_allowed(self, name: str, arguments: str) -> bool:
-        if name not in {"write_file", "shell_execute", "fetch_url"}:
-            return True
-        if name in self._session_allowed_tools:
-            return True
+    def _policy_context(self) -> PolicyContext:
+        tokens = set(self._session_allowed_tools)
         try:
             from drove.config import load_config
 
-            if name in load_config(self._config_path).allowed_tools:
-                return True
+            tokens.update(load_config(self._config_path).allowed_tools)
         except Exception:
             pass
-        choice = await self.push_screen_wait(ToolConfirmationModal(name, arguments))
+        return PolicyContext(self._cwd, self._remote_endpoint, parse_grants(tokens))
+
+    async def _tool_allowed(self, name: str, arguments: str) -> bool:
+        decision = decide(name, arguments, self._policy_context())
+        allowed = not decision.prompt or await self._confirm(name, arguments, decision)
+        self._call_grant = decision.grant if allowed else None
+        return allowed
+
+    async def _confirm(self, name: str, arguments: str, decision: Decision) -> bool:
+        """Ask about one call; a session/always choice records only the decision's scope."""
+        grant = decision.grant if decision.scoped_choices else None
+        modal = ToolConfirmationModal(
+            name,
+            arguments,
+            reason=decision.reason,
+            scope=grant.describe() if grant is not None else "",
+            per_call=grant is None,
+        )
+        choice = await self.push_screen_wait(modal)
         if choice not in {"allow-once", "allow-session", "allow-always"}:
             return False
-        if choice in {"allow-session", "allow-always"}:
-            self._session_allowed_tools.add(name)
-        if choice == "allow-always" and self._config_path is not None:
-            try:
-                from drove.config import add_allowed_tool
+        if grant is not None and choice in {"allow-session", "allow-always"}:
+            self._session_allowed_tools.add(grant.token())
+            if choice == "allow-always" and self._config_path is not None:
+                try:
+                    from drove.config import add_allowed_tool
 
-                add_allowed_tool(name, self._config_path)
-            except Exception:
-                pass
+                    add_allowed_tool(grant.token(), self._config_path)
+                except Exception:
+                    pass
         return True
+
+    def _origin_approver(self, turn: ChatTurn) -> OriginApproval:
+        """Let fetch_url ask, from its worker thread, about an origin it meets mid-fetch."""
+        loop = asyncio.get_running_loop()
+
+        def approve(origin: str, internal: bool) -> bool:
+            if turn.stop_requested:
+                return False
+            future = asyncio.run_coroutine_threadsafe(
+                self._approve_origin(turn, origin, internal), loop
+            )
+            # Poll, so a stop, quit or closed loop ends the wait: cancelling the approval
+            # dismisses its dialog (push_screen_wait cleans up), and the fetch is refused.
+            while True:
+                try:
+                    return future.result(timeout=0.2)
+                except TimeoutError:
+                    if turn.stop_requested or loop.is_closed():
+                        future.cancel()
+                        return False
+                except Exception:
+                    return False
+
+        return approve
+
+    async def _approve_origin(self, turn: ChatTurn, origin: str, internal: bool) -> bool:
+        if turn.stop_requested:
+            return False
+        arguments = json.dumps({"origin": origin})
+        allowed = await self._confirm("fetch_url", arguments, origin_decision(origin, internal))
+        return allowed and not turn.stop_requested
 
     async def _send_message(self, turn: ChatTurn) -> None:
         turn.started = True
@@ -1537,7 +1630,7 @@ class ChatApp(App[None]):
                         {
                             "role": "tool",
                             "tool_call_id": tc["id"],
-                            "content": result,
+                            "content": cap_output(result),
                         }
                     )
                     self._scroll_to_bottom()

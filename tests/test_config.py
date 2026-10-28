@@ -336,3 +336,36 @@ def test_observe_max_age_days_rejects_negative(tmp_path: Path) -> None:
 def test_observe_max_age_days_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DROVE_OBSERVE_MAX_AGE_DAYS", "3")
     assert load_config(tmp_path / "nonexistent.toml").observe_max_age_days == 3
+
+
+def test_add_allowed_tool_appends_once_without_copying_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+
+    from drove.config import add_allowed_tool
+
+    path = tmp_path / "config.toml"
+    path.write_text('listen_port = 7000\nallowed_tools = ["old"]\n')
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    monkeypatch.setenv("DROVE_ALLOWED_TOOLS", '["from-env"]')
+    token = '{"dir":"/srv/a, b","tool":"read_file","v":1}'
+
+    add_allowed_tool(token, path)
+    add_allowed_tool(token, path)
+
+    assert tomllib.loads(path.read_text()) == {
+        "listen_port": 7000,
+        "allowed_tools": ["old", token],
+    }
+
+
+def test_add_allowed_tool_creates_a_missing_file(tmp_path: Path) -> None:
+    import tomllib
+
+    from drove.config import add_allowed_tool
+
+    path = tmp_path / "new" / "config.toml"
+    add_allowed_tool("entry", path)
+
+    assert tomllib.loads(path.read_text()) == {"allowed_tools": ["entry"]}

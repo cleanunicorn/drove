@@ -7,6 +7,15 @@
 - Added the `observe_max_age_days` setting (default 30): observe records older than that are
   deleted at startup and hourly while serving; `0` keeps them forever.
 
+### Changed
+
+- "Allow for Session" and "Allow Always" applied to one directory (and below) for a read
+  tool, or to one exact origin (scheme, host and port) for `fetch_url`, instead of the whole
+  tool. `shell_execute` and
+  `write_file` asked on every call and no longer offered these choices. Bare tool names
+  already in `allowed_tools` (such as `"shell_execute"` or `"fetch_url"`) were no longer
+  honoured; approve the directory or origin again when asked.
+
 ### Removed
 
 - Removed the unused Hugging Face to GGUF conversion module and every mention suggesting drove
@@ -52,6 +61,8 @@
 - Saving an observe record no longer blocks request handling on the event loop.
 - Proxy speed and time-to-first-token statistics no longer grow with every request, so
   `/status` stays cheap on long-running servers.
+- `fetch_url` followed up to five redirects (a redirect to a new origin asked for approval)
+  instead of reporting every redirect as an error.
 
 ### Security
 
@@ -59,6 +70,23 @@
 - Observe records no longer store `Authorization`, `Proxy-Authorization`, `Cookie`,
   `Set-Cookie` or `X-Api-Key` header values; they are saved as `[REDACTED]`.
 - Observe record files are created readable by their owner only (mode 0600).
+- `drove chat` asked before `read_file`, `list_files` or `search_files` touched anything
+  outside the directory the chat was started in (symlinks followed), and before every read
+  when `--endpoint` (or `--host`) pointed at a server other than this machine. Searches and
+  listings inside the working directory skipped symlinks leading out of it.
+- `fetch_url` refused loopback, private, link-local, unique-local and unspecified addresses
+  (IPv4 and IPv6, including NAT64, 6to4 and other IPv6 forms of an internal IPv4 address)
+  unless the user approved that origin, checked every DNS answer of every redirect hop,
+  connected only to the address it had checked, and ignored proxy environment variables.
+- Shell commands ran in their own process group, killed on timeout and after the command
+  ended, so no child or grandchild outlived it. Timeouts were clamped to 1–600 seconds
+  (a missing, `null` or invalid value meant 30), at most four background tasks ran at once
+  under the same timeout, and finished ones were forgotten after ten minutes (sixteen kept).
+- Every tool result was capped at 64 KiB with a truncation notice before it reached the
+  model, the chat history or a saved session, and resumed sessions were capped when loaded.
+  `read_file` returned 200 lines by default and said where to continue; `search_files`
+  matched the file name before reading content and skipped files over 1 MiB, binary files
+  and non-UTF-8 files.
 
 ## [Unreleased]
 

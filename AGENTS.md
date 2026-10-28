@@ -332,7 +332,8 @@ src/drove/
   cli/                 Typer CLI: main.py (config, chat, observe, init),
                        models.py (list, download, add-tts, delete, info, config),
                        server.py (serve — default, status), integrate.py
-                       (agent registration), completions.py
+                       (agent registration), completions.py, tui_logging.py
+                       (logging rerouted while a Textual app runs)
 tests/                 pytest suite, one file per module
 docs/                  architecture.md, configuration.md, deploy.md (release
                        process), getting-started.md, cli.md, speech-to-text.md,

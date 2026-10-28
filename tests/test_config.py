@@ -236,6 +236,16 @@ def test_set_config_value_none_removes_key(tmp_path: Path) -> None:
     assert cfg_file.read_text() == "listen_port = 1\n"
 
 
+def test_set_config_value_refuses_a_non_table_llama_server(tmp_path: Path) -> None:
+    from drove.config import set_config_value
+
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('llama_server = "fast"\n')
+    with pytest.raises(ConfigError, match="'llama_server' must be a table"):
+        set_config_value("llama_server.threads", 4, cfg_file)
+    assert cfg_file.read_text() == 'llama_server = "fast"\n'
+
+
 def test_set_config_value_rejects_unknown_key(tmp_path: Path) -> None:
     from drove.config import set_config_value
 

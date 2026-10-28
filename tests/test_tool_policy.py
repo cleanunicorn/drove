@@ -406,3 +406,22 @@ def test_url_port_matches_the_origin_port(url: str, port: int) -> None:
     assert url_port(httpx.URL(url)) == port
     origin = canonical_origin(url)
     assert origin is not None and origin[0].endswith(f":{port}")
+
+
+@pytest.mark.parametrize("error", [OSError(40, "Too many levels of symbolic links"), RuntimeError])
+@pytest.mark.parametrize("name", ["read_file", "list_files", "search_files"])
+def test_unresolvable_read_path_asks_without_a_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: BaseException, name: str
+) -> None:
+    """A path that cannot be resolved is never assumed inside cwd: it asks, per call."""
+    import drove.tool_policy as tool_policy
+
+    def unresolvable(value: str, cwd: Path) -> Path:
+        raise error
+
+    monkeypatch.setattr(tool_policy, "resolve_path", unresolvable)
+    decision = decide(name, json.dumps({"path": "loop"}), context(tmp_path.resolve()))
+
+    assert decision.prompt
+    assert decision.grant is None and not decision.scoped_choices
+    assert decision.reason == "Could not resolve 'loop'."

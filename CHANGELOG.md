@@ -15,8 +15,18 @@
   `write_file` asked on every call and no longer offered these choices. Bare tool names
   already in `allowed_tools` (such as `"shell_execute"` or `"fetch_url"`) were no longer
   honoured; approve the directory or origin again when asked.
-- `drove models list` now names the incomplete downloads it hides and says how to finish or
-  delete them.
+- `drove models list` named the incomplete downloads it hid, including ones interrupted before
+  any weights arrived, and said how to finish or delete them.
+- Logic that this release's changes had written twice was shared instead: the response
+  content-type lookup, the observe body-size rule, the file-only config sources, the flat-GGUF
+  primary check, the default port and tool path join for chat tools, the download record's
+  temporary name, the config-error exit and the tool dialog choices. Proxy statistics kept only
+  the newest speed and time-to-first-token sample. No behaviour changed.
+- Documented the grant-token format of `allowed_tools` and `add_allowed_tool`,
+  `latest_session` and `parse_grants`, why the downloader pre-checks expected files, and
+  `cli/tui_logging.py` in the agent guide's project map. Added tests covering download records,
+  observe capture limits, retention failures, unresolvable read paths and `drove init`
+  completeness, and pinned the exact reasons for incomplete downloads.
 
 ### Removed
 
@@ -65,20 +75,20 @@
   `/status` stays cheap on long-running servers.
 - `fetch_url` followed up to five redirects (a redirect to a new origin asked for approval)
   instead of reporting every redirect as an error.
-- A request for a model whose download is incomplete now returns a 404 saying so and how to
+- A request for a model whose download was incomplete returned a 404 saying so and how to
   finish it, instead of reporting the model as not found.
 - Chat sessions are now saved atomically, so a crash or full disk mid-save keeps the previous copy of the conversation instead of leaving a truncated file.
 - An unreadable or malformed session file no longer breaks `drove chat --resume` or `/sessions`; it is skipped with a warning and left on disk for repair.
 - New conversations started within the same second (with `/new`, `/clear`, or in two windows) now get their own session files instead of overwriting each other.
-- The observe viewers (web and TUI) no longer fail with an error when the retention pass deletes
-  an old record while it is being listed, searched or opened; the record is just skipped.
-- In `drove chat`, choosing "Allow always" now warns when the approval cannot be saved to the
-  config file (for example, because another value in it is invalid); it still applies for the
+- The observe viewers (web and TUI) no longer failed with an error when the retention pass
+  deleted an old record while it was being listed, searched or opened; the record was skipped.
+- In `drove chat`, choosing "Allow always" warned when the approval could not be saved to the
+  config file (for example, because another value in it was invalid); it still applied for the
   session.
-- In the `drove chat` tool approval dialog, the line that says what "Allow for Session" and
-  "Allow Always" grant now lines up with the text above it, and the reason for asking is
-  marked with a warning-coloured rule.
-- A backend that fails to start now has its stderr written to the server log once instead of
+- In the `drove chat` tool approval dialog, the line saying what "Allow for Session" and
+  "Allow Always" grant lined up with the text above it, and the reason for asking was marked
+  with a warning-coloured rule.
+- A backend that failed to start had its stderr written to the server log once instead of
   twice.
 
 ### Security
@@ -105,8 +115,8 @@
   matched the file name before reading content and skipped files over 1 MiB, binary files
   and non-UTF-8 files.
 - A session id read from a stored session file can no longer direct a save outside the sessions directory.
-- `read_file`, `list_files` and `search_files` refuse a path outside the approved directories
-  before checking whether it exists, so a model can no longer probe which paths exist there.
+- `read_file`, `list_files` and `search_files` refused a path outside the approved directories
+  before checking whether it existed, so a model could no longer probe which paths exist there.
 
 ## v0.13.1 (2026-10-27)
 

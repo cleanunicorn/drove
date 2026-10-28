@@ -226,10 +226,19 @@ class Decision:
 _NO_PROMPT = Decision(prompt=False)
 
 
+def join_tool_path(value: str, cwd: Path) -> Path:
+    """A tool's *value* path against *cwd*, with ``~`` expanded but symlinks not followed.
+
+    The policy (resolve_path) and the tools (which show the path as the model wrote
+    it) both build on this, so they always start from the same path.
+    """
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else cwd / path
+
+
 def resolve_path(value: str, cwd: Path) -> Path:
     """Resolve a tool's *value* path against *cwd*, expanding ``~`` and following symlinks."""
-    path = Path(value).expanduser()
-    return (path if path.is_absolute() else cwd / path).resolve()
+    return join_tool_path(value, cwd).resolve()
 
 
 def decide(name: str, arguments: str, ctx: PolicyContext) -> Decision:

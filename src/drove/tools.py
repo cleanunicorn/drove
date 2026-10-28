@@ -28,6 +28,7 @@ from drove.tool_policy import (
     canonical_origin,
     cap_output,
     is_blocked_address,
+    join_tool_path,
     url_port,
 )
 
@@ -302,8 +303,7 @@ def _path_arg(args: dict[str, Any], context: ToolContext, default: str) -> Path:
     value = args.get("path", default)
     if not isinstance(value, str):
         raise _Refused("Error: path must be a string")
-    path = Path(value).expanduser()
-    return path if path.is_absolute() else context.cwd / path
+    return join_tool_path(value, context.cwd)
 
 
 def _count_arg(args: dict[str, Any], key: str, default: int) -> int:

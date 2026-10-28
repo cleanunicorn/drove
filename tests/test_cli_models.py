@@ -1133,6 +1133,7 @@ def test_info_reports_incomplete_download(tmp_path, monkeypatch):
     assert result.exit_code == 1
     assert "Model 'big' is incomplete: 2 of 3 shards are missing" in output
     assert "drove models download" in output
+    assert "Finish it, or remove it: drove models delete big" in output
 
 
 def test_retry_after_all_gguf_variants_keeps_the_picker() -> None:

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
-from drove.model_store import ModelStore, validate_model_name
+from drove.model_store import IncompleteModelError, ModelStore, validate_model_name
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -655,14 +656,16 @@ def test_first_shard_without_the_rest_is_incomplete(tmp_path: Path, layout: str)
     store = ModelStore(tmp_path)
     assert store.list() == []
     assert store.complete("big") == []
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = "2 of 3 shards are missing"
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         store.resolve(name)
 
 
 def test_missing_middle_shard_is_incomplete(tmp_path: Path) -> None:
     _make_gguf(tmp_path, "big", "big-00001-of-00003.gguf")
     _make_gguf(tmp_path, "big", "big-00003-of-00003.gguf")
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = "1 of 3 shards are missing"
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         ModelStore(tmp_path).resolve("big")
     assert ModelStore(tmp_path).list() == []
 
@@ -690,7 +693,8 @@ def test_incomplete_manifest_hides_model(tmp_path: Path) -> None:
 
     store = ModelStore(tmp_path)
     assert store.list() == []
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = "the download did not finish"
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         store.resolve("org/asr")
     # Still found for management (delete) purposes.
     assert store.find_root("org/asr") == root
@@ -717,7 +721,12 @@ def test_complete_manifest_with_damaged_file_is_incomplete(tmp_path: Path, damag
         (root / "mmproj.gguf").write_bytes(b"p")
     else:
         (root / "mmproj.gguf").unlink()
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = (
+        "mmproj.gguf does not have its expected size"
+        if damage == "truncate"
+        else "mmproj.gguf is missing"
+    )
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         ModelStore(tmp_path).resolve("m")
     assert ModelStore(tmp_path).list() == []
 
@@ -736,7 +745,8 @@ def test_unreadable_or_unsafe_manifest_fails_closed(tmp_path: Path, content: str
     _make_gguf(tmp_path, "escape.gguf")
     (tmp_path / "m" / ".drove-download.json").write_text(content)
     assert [e.name for e in ModelStore(tmp_path).list()] == ["escape"]
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = "its download record is unreadable"
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         ModelStore(tmp_path).resolve("m")
 
 
@@ -746,7 +756,8 @@ def test_incomplete_exact_root_does_not_fall_back_to_alias(tmp_path: Path) -> No
     _write_manifest(root, "incomplete", {"model.gguf": 0})
     _make_gguf(tmp_path, "other", "other.gguf")
     (tmp_path / "other" / "other.toml").write_text('[download]\nrepo_id = "org/repo"\n')
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = "the download did not finish"
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         ModelStore(tmp_path).resolve("org/repo")
 
 
@@ -786,7 +797,8 @@ def test_incomplete_record_holds_for_every_spelling_of_the_model(
     root.mkdir(parents=True)
     (root / "model.onnx").write_bytes(b"onnx")
     _write_manifest(root, "incomplete", {"model.onnx": 4, "vocab.txt": 1})
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = "the download did not finish"
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         ModelStore(tmp_path).resolve(request_name)
 
 
@@ -796,7 +808,8 @@ def test_record_above_the_listed_directory_still_applies(tmp_path: Path) -> None
     _write_manifest(root, "incomplete", {"weights/old.gguf": 0})
     store = ModelStore(tmp_path)
     assert store.list() == []
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = "the download did not finish"
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         store.resolve("old/weights")
 
 
@@ -849,7 +862,12 @@ def test_symlink_alias_cannot_bypass_its_target_record(
 
     store = ModelStore(tmp_path)
     assert store.list() == []
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = (
+        "the download did not finish"
+        if state == "incomplete"
+        else "model.gguf is not part of its download record"
+    )
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         store.resolve("alias")
 
 
@@ -874,7 +892,8 @@ def test_symlink_alias_to_complete_or_legacy_target_resolves(tmp_path: Path, lay
 def test_split_shard_alias_needs_every_target_shard(tmp_path: Path) -> None:
     _make_gguf(tmp_path, "real", "big-00001-of-00002.gguf")
     (tmp_path / "alias.gguf").symlink_to(tmp_path / "real" / "big-00001-of-00002.gguf")
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = "1 of 2 shards are missing"
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         ModelStore(tmp_path).resolve("alias")
 
 
@@ -887,7 +906,8 @@ def test_record_applies_under_a_symlinked_models_dir(tmp_path: Path) -> None:
     (tmp_path / "models").symlink_to(real)
     store = ModelStore(tmp_path / "models")
     assert [e.name for e in store.list()] == ["legacy"]
-    with pytest.raises(FileNotFoundError, match="incomplete"):
+    reason = "the download did not finish"
+    with pytest.raises(IncompleteModelError, match=re.escape(f"is incomplete: {reason}.")):
         store.resolve("m")
 
 

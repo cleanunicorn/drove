@@ -176,7 +176,8 @@ def _truncate_text(text: str, max_bytes: int, original_bytes: int) -> str:
     return cut + _truncation_marker(original_bytes)
 
 
-def _content_type(headers: dict[str, str]) -> str:
+def content_type(headers: dict[str, str]) -> str:
+    """Return the Content-Type value from *headers* (any case), or ""."""
     for name, value in headers.items():
         if name.lower() == "content-type":
             return value
@@ -272,7 +273,7 @@ class ObserveContext:
             len(self.request_body) if self.request_body_size is None else (self.request_body_size)
         )
         req_body = (
-            render_body(self.request_body, req_size, _content_type(self.request_headers))
+            render_body(self.request_body, req_size, content_type(self.request_headers))
             if req_size
             else None
         )
@@ -282,7 +283,7 @@ class ObserveContext:
             if self.response_body_size is None
             else (self.response_body_size)
         )
-        resp_type = _content_type(self.response_headers)
+        resp_type = content_type(self.response_headers)
         resp_body_raw = render_body(self.response_body, resp_size, resp_type)
         if _is_binary(self.response_body, resp_type):
             resp_body = resp_body_raw

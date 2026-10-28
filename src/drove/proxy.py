@@ -24,6 +24,7 @@ from drove.model_store import IncompleteModelError, validate_model_name
 from drove.observe import (
     MAX_BODY_BYTES,
     ObserveContext,
+    content_type,
     is_binary_content_type,
     prune_records,
     save_record,
@@ -542,14 +543,14 @@ async def _extract_model(request: Request) -> object:
     the raw value, unvalidated (JSON null included), or ``_ABSENT`` when there
     is no such field or the body cannot be parsed.
     """
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
+    request_type = request.headers.get("content-type", "")
+    if "application/json" in request_type:
         try:
             body = await request.json()
         except Exception:
             return _ABSENT
         return body["model"] if isinstance(body, dict) and "model" in body else _ABSENT
-    if "multipart/form-data" in content_type:
+    if "multipart/form-data" in request_type:
         try:
             # Cache the raw body first so the multipart parser consumes the
             # cached copy and the proxy can still forward the original bytes.
@@ -633,10 +634,7 @@ async def _counting_stream(
     try:
         is_audio = endpoint in {"v1/audio/transcriptions", "v1/audio/speech"}
         capture = obs_ctx is not None and not is_binary_content_type(
-            next(
-                (v for k, v in obs_ctx.response_headers.items() if k.lower() == "content-type"),
-                "",
-            )
+            content_type(obs_ctx.response_headers)
         )
         captured = bytearray()
         tail = bytearray()

@@ -595,6 +595,11 @@ class CodePicker(ModalScreen[str | None]):
 # ── Session picker modal ────────────────────────────────────────────────────────
 
 
+# Tool dialog choices that grant beyond one call, and every choice that allows it.
+_SCOPED_CHOICES = frozenset({"allow-session", "allow-always"})
+_ALLOW_CHOICES = _SCOPED_CHOICES | {"allow-once"}
+
+
 class ToolConfirmationModal(ModalScreen[str]):
     """Modal to confirm tool execution."""
 
@@ -607,7 +612,7 @@ class ToolConfirmationModal(ModalScreen[str]):
     ]
 
     def action_choose(self, choice: str) -> None:
-        if self._per_call and choice in {"allow-session", "allow-always"}:
+        if self._per_call and choice in _SCOPED_CHOICES:
             return
         self.dismiss(choice)
 
@@ -1515,9 +1520,9 @@ class ChatApp(App[None]):
             per_call=grant is None,
         )
         choice = await self.push_screen_wait(modal)
-        if choice not in {"allow-once", "allow-session", "allow-always"}:
+        if choice not in _ALLOW_CHOICES:
             return False
-        if grant is not None and choice in {"allow-session", "allow-always"}:
+        if grant is not None and choice in _SCOPED_CHOICES:
             self._session_allowed_tools.add(grant.token())
             if choice == "allow-always" and self._config_path is not None:
                 try:

@@ -176,6 +176,11 @@ def _truncate_text(text: str, max_bytes: int, original_bytes: int) -> str:
     return cut + _truncation_marker(original_bytes)
 
 
+def _original_size(body: bytes, size: int | None) -> int:
+    """A body's original length: *size* when it was truncated, else ``len(body)``."""
+    return len(body) if size is None else size
+
+
 def content_type(headers: dict[str, str]) -> str:
     """Return the Content-Type value from *headers* (any case), or ""."""
     for name, value in headers.items():
@@ -269,20 +274,14 @@ class ObserveContext:
         ts = self.timestamp.replace(":", "").replace("-", "").replace("T", "-")[:15]
         record_id = f"{ts}-{uuid.uuid4().hex[:8]}"
 
-        req_size = (
-            len(self.request_body) if self.request_body_size is None else (self.request_body_size)
-        )
+        req_size = _original_size(self.request_body, self.request_body_size)
         req_body = (
             render_body(self.request_body, req_size, content_type(self.request_headers))
             if req_size
             else None
         )
 
-        resp_size = (
-            len(self.response_body)
-            if self.response_body_size is None
-            else (self.response_body_size)
-        )
+        resp_size = _original_size(self.response_body, self.response_body_size)
         resp_type = content_type(self.response_headers)
         resp_body_raw = render_body(self.response_body, resp_size, resp_type)
         if _is_binary(self.response_body, resp_type):

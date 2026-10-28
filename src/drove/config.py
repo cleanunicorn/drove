@@ -99,7 +99,7 @@ class Config(BaseSettings):
     observe_max_age_days: int = Field(default=30, ge=0)
     listen_host: str = "0.0.0.0"
     listen_port: int = 8080
-    allowed_tools: list[str] = []
+    allowed_tools: list[str] = []  # chat tool grants (tool_policy.Grant tokens); bare names ignored
     llama_server_bin: str = "llama-server"
     startup_timeout_seconds: int = 300  # max wait for llama-server to become healthy
     speech_timeout_seconds: int = Field(default=600, gt=0)  # read timeout for buffered speech

@@ -999,7 +999,7 @@ def test_health_failure_returns_503_without_stderr_but_logs_it(
     assert resp.status_code == 503
     assert resp.json() == {"detail": "model failed to start; see server logs"}
     assert _SENTINEL not in resp.text
-    assert _SENTINEL in caplog.text
+    assert caplog.text.count(_SENTINEL) == 1  # logged once, not by both layers
     _assert_clean_failure(app, requests)
 
 

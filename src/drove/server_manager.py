@@ -572,14 +572,9 @@ class ServerManager:
             await self._stop_instance(model_name)
             raise
         except Exception as e:
-            # stderr rides on the exception's notes: log it here, where an
-            # operator can see it, and keep it out of anything a client gets.
-            logger.error(
-                "Backend failed to start for model=%s: %s%s",
-                model_name,
-                e,
-                "".join(f"\n{note}" for note in getattr(e, "__notes__", ())),
-            )
+            # stderr rides on the exception's notes; the proxy logs them once with
+            # the traceback and keeps them out of anything a client gets.
+            logger.error("Backend failed to start for model=%s: %s", model_name, e)
             await self._stop_instance(model_name)
             raise
 

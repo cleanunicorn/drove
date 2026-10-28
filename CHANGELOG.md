@@ -78,6 +78,8 @@
 - In the `drove chat` tool approval dialog, the line that says what "Allow for Session" and
   "Allow Always" grant now lines up with the text above it, and the reason for asking is
   marked with a warning-coloured rule.
+- A backend that fails to start now has its stderr written to the server log once instead of
+  twice.
 
 ### Security
 

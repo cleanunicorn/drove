@@ -437,13 +437,8 @@ def _startup_error(model_name: str, error: Exception) -> HTTPException:
     The detail is fixed text: exception messages and notes (backend stderr,
     paths, parser output) go to the server log only, never to the client.
     """
-    logger.error(
-        "Startup failed for model=%s: %s%s",
-        model_name,
-        error,
-        "".join(f"\n{note}" for note in getattr(error, "__notes__", ())),
-        exc_info=error,
-    )
+    # The traceback carries the exception's notes (backend stderr) exactly once.
+    logger.error("Startup failed for model=%s: %s", model_name, error, exc_info=error)
     if isinstance(error, BackendUnavailableError):
         return HTTPException(status_code=503, detail="backend unavailable; see server logs")
     if isinstance(error, IncompleteModelError):

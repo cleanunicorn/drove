@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from drove.config import Config, load_config
 from drove.model_store import validate_model_name
 from drove.observe import ObserveContext, save_record
-from drove.server_manager import ServerManager
+from drove.server_manager import BackendUnavailableError, ServerManager
 from drove.stats import ProxyStats
 
 logger = logging.getLogger(__name__)
@@ -207,14 +207,12 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 # the manager lock, so a concurrent ensure_running for another
                 # model cannot evict this one while we're mid-request.
                 slot = await manager.ensure_running(model_name, claim=True)
-            except FileNotFoundError as e:
+            except Exception as e:
+                # Whatever failed, no slot was claimed (the manager claims only
+                # on return), so only the global counters need settling.
                 stats.request_finished()
                 stats.request_error()
-                raise HTTPException(status_code=404, detail=str(e)) from e
-            except (TimeoutError, RuntimeError) as e:
-                stats.request_finished()
-                stats.request_error()
-                raise HTTPException(status_code=503, detail=str(e)) from e
+                raise _startup_error(model_name, e) from e
 
         # For the "no model_name in body" fallback path, we still need to
         # claim a slot — but without the lock since ensure_running was skipped.
@@ -328,6 +326,35 @@ async def _config_watcher(app: FastAPI, config_path: Path) -> None:
         if new_mtime != mtime:
             mtime = new_mtime
             _reload_config(app, config_path)
+
+
+def _startup_error(model_name: str, error: Exception) -> HTTPException:
+    """Map an ``ensure_running`` failure to a deliberate response.
+
+    The detail is fixed text: exception messages and notes (backend stderr,
+    paths, parser output) go to the server log only, never to the client.
+    """
+    logger.error(
+        "Startup failed for model=%s: %s%s",
+        model_name,
+        error,
+        "".join(f"\n{note}" for note in getattr(error, "__notes__", ())),
+        exc_info=error,
+    )
+    if isinstance(error, BackendUnavailableError):
+        return HTTPException(status_code=503, detail="backend unavailable; see server logs")
+    if isinstance(error, FileNotFoundError):
+        return HTTPException(
+            status_code=404,
+            detail=(
+                f"Model {model_name!r} not found. Run 'drove models list' to see available models."
+            ),
+        )
+    if isinstance(error, ValueError):  # includes TOMLDecodeError and ValidationError
+        return HTTPException(status_code=500, detail=f"invalid model config for {model_name!r}")
+    if isinstance(error, RuntimeError | OSError):  # OSError includes TimeoutError
+        return HTTPException(status_code=503, detail="model failed to start; see server logs")
+    return HTTPException(status_code=500, detail="model startup failed; see server logs")
 
 
 def _reload_config(app: FastAPI, config_path: Path) -> None:

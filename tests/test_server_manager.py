@@ -543,7 +543,9 @@ async def test_wait_for_health_unexpected_exit(tmp_path: Path) -> None:
         await manager._wait_for_health(inst)
 
     assert "Model server exited unexpectedly during startup" in str(excinfo.value)
-    assert "error: failed to load model" in str(excinfo.value)
+    # stderr is kept for the operator, never in the message that can reach a client
+    assert "error: failed to load model" not in str(excinfo.value)
+    assert any("error: failed to load model" in n for n in excinfo.value.__notes__)
 
 
 async def test_wait_for_health_timeout(tmp_path: Path) -> None:
@@ -571,7 +573,8 @@ async def test_wait_for_health_timeout(tmp_path: Path) -> None:
             await manager._wait_for_health(inst)
 
     assert "did not become healthy within 1.0s" in str(excinfo.value)
-    assert "some warning on stderr" in str(excinfo.value)
+    assert "some warning on stderr" not in str(excinfo.value)
+    assert any("some warning on stderr" in n for n in excinfo.value.__notes__)
 
 
 # ── ASR backend ──────────────────────────────────────────────────────────────
@@ -1200,3 +1203,116 @@ async def test_ensure_running_rejects_noncanonical_names_before_lookup(
             await manager.ensure_running(name)
     start.assert_not_awaited()
     assert manager._instances == {}
+
+
+async def test_invalid_backend_is_detected_before_eviction(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    config.max_loaded_models = 1
+    manager = ServerManager(config)
+    other = make_model(config, "other")
+    manager._instances["other"] = make_fake_instance("other", other, (0.0, 0.0))
+    model_path = make_model(config, "bad")
+    model_path.with_suffix(".toml").write_text('backend = "nope"\n')
+
+    with (
+        patch_stop_instance(manager) as stop,
+        pytest.raises(ValueError, match="Unknown backend"),
+    ):
+        await manager.ensure_running("bad")
+
+    stop.assert_not_awaited()
+    assert list(manager._instances) == ["other"]
+
+
+async def test_broken_sidecar_does_not_stop_idle_instance_with_changed_config(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config, "m")
+    inst = make_fake_instance("m", model_path, (-1.0, -1.0))  # mtimes differ: config "changed"
+    manager._instances["m"] = inst
+    model_path.with_suffix(".toml").write_text("ctx_size = = 1\n")
+
+    with patch_stop_instance(manager) as stop, pytest.raises(ValueError):
+        await manager.ensure_running("m")
+
+    stop.assert_not_awaited()
+    assert manager._instances["m"] is inst
+
+
+async def test_missing_binary_raises_backend_unavailable(tmp_path: Path) -> None:
+    from drove.server_manager import BackendUnavailableError
+
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    make_model(config, "m")
+    with patch("drove.server_manager.shutil.which", return_value=None):
+        with pytest.raises(BackendUnavailableError, match="llama-server"):
+            await manager.ensure_running("m")
+
+
+async def test_exec_oserror_raises_backend_unavailable_with_cause(tmp_path: Path) -> None:
+    from drove.server_manager import BackendUnavailableError
+
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    make_model(config, "m")
+    boom = OSError(8, "Exec format error")
+    with (
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        patch(
+            "drove.server_manager.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=boom),
+        ),
+        pytest.raises(BackendUnavailableError) as excinfo,
+    ):
+        await manager.ensure_running("m")
+    assert excinfo.value.__cause__ is boom
+
+
+async def test_sidecar_edited_during_eviction_drain_is_what_launches(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config, "m")
+    sidecar = model_path.with_suffix(".toml")
+    sidecar.write_text("ctx_size = 4096\n")
+    spawn = AsyncMock(return_value=make_fake_process())
+
+    async def edit_while_draining(*_: Any, **__: Any) -> None:
+        sidecar.write_text("ctx_size = 8192\n")
+
+    with (
+        patch.object(manager, "_evict_if_needed", side_effect=edit_while_draining),
+        patch("drove.server_manager.asyncio.create_subprocess_exec", spawn),
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        patch.object(manager, "_wait_for_health", new=AsyncMock()),
+        patch.object(manager, "_start_idle_watcher"),
+    ):
+        await manager.ensure_running("m")
+
+    cmd = list(spawn.await_args.args)
+    assert cmd[cmd.index("--ctx-size") + 1] == "8192"
+
+
+async def test_sidecar_broken_during_eviction_drain_is_rejected(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    manager = ServerManager(config)
+    model_path = make_model(config, "m")
+    sidecar = model_path.with_suffix(".toml")
+    sidecar.write_text("ctx_size = 4096\n")
+    spawn = AsyncMock(return_value=make_fake_process())
+
+    async def break_while_draining(*_: Any, **__: Any) -> None:
+        sidecar.write_text("ctx_size = = 1\n")
+
+    with (
+        patch.object(manager, "_evict_if_needed", side_effect=break_while_draining),
+        patch("drove.server_manager.asyncio.create_subprocess_exec", spawn),
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        pytest.raises(ValueError),
+    ):
+        await manager.ensure_running("m")
+
+    spawn.assert_not_awaited()
+    assert not manager._instances

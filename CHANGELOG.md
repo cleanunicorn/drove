@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Startup failures now return deliberate statuses with short messages instead of bare 500s: 503 for
+  a missing or unlaunchable backend, 500 for an invalid model config, 503 for a backend that exits
+  or never becomes healthy.
+- Failed startups no longer leak the active-request count, whatever the error.
+- A broken model config is detected before any loaded model is stopped or evicted.
+
+### Security
+
+- Backend stderr is no longer returned to clients on startup failure; it stays in the server log. The 404 for an unknown model no longer reveals the server's models directory.
 
 ## v0.13.1 (2026-10-27)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import httpx
@@ -654,7 +655,9 @@ def _forbid_disk_walk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "glob", forbidden)
 
 
-@pytest.mark.parametrize("model", [*_INVALID_JSON_MODELS, None, 1, 1.5, True, ["m"], {"name": "m"}])
+@pytest.mark.parametrize(
+    "model", [*_INVALID_JSON_MODELS, None, 1, 123, 1.5, True, [], ["m"], {"name": "m"}]
+)
 @pytest.mark.parametrize("default", [None, "preferred"])
 def test_proxy_rejects_invalid_json_model_with_400(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: object, default: str | None
@@ -752,3 +755,243 @@ def test_models_endpoint_hides_names_the_api_would_reject(tmp_path: Path) -> Non
     with TestClient(create_app(config)) as client:
         ids = [m["id"] for m in client.get("/v1/models").json()["data"]]
     assert ids == ["good"]
+
+
+# ── Startup failures: deliberate statuses, balanced accounting, private stderr ─────
+
+_LIST_HINT = "Run 'drove models list' to see available models."
+_SENTINEL = "SECRET-STDERR-/home/user/.cache/model.gguf"
+
+
+def _toml_error() -> Exception:
+    import tomllib
+
+    try:
+        tomllib.loads("ctx_size = = 1")
+    except tomllib.TOMLDecodeError as e:
+        return e
+    raise AssertionError("expected a TOML error")
+
+
+def _validation_error() -> Exception:
+    from pydantic import ValidationError
+
+    from drove.model_config import ModelConfig
+
+    try:
+        ModelConfig(ctx_size="bad")  # type: ignore[arg-type]
+    except ValidationError as e:
+        return e
+    raise AssertionError("expected a validation error")
+
+
+class _OddError(Exception):
+    pass
+
+
+def _startup_cases() -> list[Any]:
+    from drove.server_manager import BackendUnavailableError
+
+    config_detail = "invalid model config for 'm'"
+    failed = "model failed to start; see server logs"
+    return [
+        (FileNotFoundError(_SENTINEL), 404, "Model 'm' not found. " + _LIST_HINT),
+        (TypeError(_SENTINEL), 500, "model startup failed; see server logs"),
+        (ValueError(_SENTINEL), 500, config_detail),
+        (_toml_error(), 500, config_detail),
+        (_validation_error(), 500, config_detail),
+        (OSError(8, _SENTINEL), 503, failed),
+        (RuntimeError(_SENTINEL), 503, failed),
+        (TimeoutError(_SENTINEL), 503, failed),
+        (BackendUnavailableError(_SENTINEL), 503, "backend unavailable; see server logs"),
+        (_OddError(_SENTINEL), 500, "model startup failed; see server logs"),
+    ]
+
+
+@pytest.mark.parametrize(("error", "status", "detail"), _startup_cases())
+@pytest.mark.parametrize("baseline", [0, 2])
+def test_startup_failure_maps_to_deliberate_status_and_balances_stats(
+    tmp_path: Path, error: Exception, status: int, detail: str, baseline: int
+) -> None:
+    app = create_app(make_config(tmp_path))
+    stats = app.state.stats
+    for _ in range(baseline):
+        stats.request_started()
+    errors_before = stats.error_count
+    with (
+        patch.object(app.state.manager, "ensure_running", side_effect=error),
+        patch.object(app.state.client, "send", new_callable=AsyncMock) as send,
+        TestClient(app) as client,
+    ):
+        resp = client.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        reported = client.get("/status").json()["requests"]
+    assert resp.status_code == status
+    assert resp.json() == {"detail": detail}
+    assert _SENTINEL not in resp.text
+    send.assert_not_awaited()
+    assert reported["active"] == baseline
+    assert stats.error_count == errors_before + 1
+
+
+def test_startup_failure_leaves_other_models_claims_alone(tmp_path: Path) -> None:
+    app = create_app(make_config(tmp_path))
+    manager = app.state.manager
+    other = _live_instance(tmp_path, "other")
+    other.active_requests = 1
+    manager._instances["other"] = other
+    with (
+        patch.object(manager, "ensure_running", side_effect=_OddError("boom")),
+        TestClient(app) as client,
+    ):
+        resp = client.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        assert resp.status_code == 500
+        assert other.active_requests == 1
+        manager._instances.clear()  # keep the lifespan shutdown away from the fake process
+
+
+def test_unknown_model_still_returns_404_with_balanced_stats(tmp_path: Path) -> None:
+    app = create_app(make_config(tmp_path))
+    with TestClient(app) as client:
+        resp = client.post("/v1/chat/completions", json={"model": "ghost", "messages": []})
+        reported = client.get("/status").json()["requests"]
+    assert resp.status_code == 404
+    assert reported["active"] == 0
+    assert reported["errors"] == 1
+    # The store's own message names models_dir; clients get only the model name.
+    assert resp.json() == {"detail": "Model 'ghost' not found. " + _LIST_HINT}
+    assert str(app.state.config.models_dir) not in resp.text
+
+
+def _real_manager_app(tmp_path: Path, **updates: Any) -> tuple[Any, Path]:
+    config = make_config(tmp_path).model_copy(update=updates)
+    model_dir = config.models_dir / "m"
+    model_dir.mkdir()
+    model_path = model_dir / "m.gguf"
+    model_path.write_bytes(b"")
+    return create_app(config), model_path
+
+
+def _post_chat(app: Any) -> tuple[Any, dict[str, int]]:
+    with TestClient(app) as client:
+        resp = client.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        return resp, client.get("/status").json()["requests"]
+
+
+def _assert_clean_failure(app: Any, requests: dict[str, int], errors_before: int = 0) -> None:
+    assert requests["active"] == 0
+    assert requests["errors"] == errors_before + 1
+    assert not app.state.manager._instances
+    assert not app.state.manager._idle_tasks
+
+
+def test_missing_llama_server_binary_returns_503(tmp_path: Path) -> None:
+    app, _ = _real_manager_app(tmp_path)
+    with patch("drove.server_manager.shutil.which", return_value=None):
+        resp, requests = _post_chat(app)
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "backend unavailable; see server logs"}
+    _assert_clean_failure(app, requests)
+
+
+@pytest.mark.parametrize("error", [OSError(8, "Exec format error"), FileNotFoundError("gone")])
+def test_exec_failure_returns_503(tmp_path: Path, error: OSError) -> None:
+    app, _ = _real_manager_app(tmp_path)
+    with (
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        patch(
+            "drove.server_manager.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=error),
+        ),
+    ):
+        resp, requests = _post_chat(app)
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "backend unavailable; see server logs"}
+    _assert_clean_failure(app, requests)
+
+
+def _live_instance(tmp_path: Path, name: str) -> Any:
+    from drove.server_manager import _ModelInstance
+
+    process = MagicMock()
+    process.returncode = None
+    process.pid = 4242
+    return _ModelInstance(name, process, 9999, tmp_path / f"{name}.gguf", (0.0, 0.0))
+
+
+def _healthy_loaded_instance(app: Any, tmp_path: Path) -> Any:
+    healthy = _live_instance(tmp_path, "healthy")
+    app.state.manager._instances["healthy"] = healthy
+    return healthy
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    ['backend = "nope"\n', "ctx_size = = 1\n", 'ctx_size = "bad"\n'],
+    ids=["unknown-backend", "malformed-toml", "wrong-type"],
+)
+def test_broken_sidecar_returns_500_without_evicting_loaded_model(
+    tmp_path: Path, sidecar: str
+) -> None:
+    app, model_path = _real_manager_app(tmp_path, max_loaded_models=1)
+    model_path.with_suffix(".toml").write_text(sidecar)
+    manager = app.state.manager
+    healthy = _healthy_loaded_instance(app, tmp_path)
+    with (
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as stop,
+        patch(
+            "drove.server_manager.asyncio.create_subprocess_exec", new_callable=AsyncMock
+        ) as spawn,
+        TestClient(app) as client,
+    ):
+        resp = client.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        requests = client.get("/status").json()["requests"]
+        stop.assert_not_awaited()  # checked before the lifespan shutdown stops everything
+        spawn.assert_not_awaited()
+        assert manager._instances == {"healthy": healthy}
+        manager._instances.clear()
+    assert resp.status_code == 500
+    assert resp.json() == {"detail": "invalid model config for 'm'"}
+    assert requests["active"] == 0
+    assert requests["errors"] == 1
+
+
+def _fake_backend(returncode: int | None, stderr: bytes) -> MagicMock:
+    process = MagicMock()
+    process.returncode = returncode
+    process.pid = 4242
+    process.wait = AsyncMock(return_value=0)
+    process.stderr.read = AsyncMock(side_effect=[stderr, b""])
+
+    def exit_on_signal(_sig: int) -> None:
+        process.returncode = 0
+
+    process.send_signal.side_effect = exit_on_signal
+    return process
+
+
+@pytest.mark.parametrize("mode", ["exit", "timeout"])
+def test_health_failure_returns_503_without_stderr_but_logs_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, mode: str
+) -> None:
+    app, _ = _real_manager_app(tmp_path, startup_timeout_seconds=0.3)
+    process = _fake_backend(1 if mode == "exit" else None, _SENTINEL.encode())
+    with (
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        patch(
+            "drove.server_manager.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ),
+        patch(
+            "httpx.AsyncClient.get",
+            new_callable=AsyncMock,
+            side_effect=httpx.ConnectError("refused"),
+        ),
+        caplog.at_level("ERROR", logger="drove"),
+    ):
+        resp, requests = _post_chat(app)
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "model failed to start; see server logs"}
+    assert _SENTINEL not in resp.text
+    assert _SENTINEL in caplog.text
+    _assert_clean_failure(app, requests)

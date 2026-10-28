@@ -103,6 +103,14 @@ def _estimate_model_memory(model_path: Path, model_cfg: ModelConfig | None = Non
         return 0
 
 
+class BackendUnavailableError(RuntimeError):
+    """The backend executable is missing or cannot be launched.
+
+    Distinct from ``FileNotFoundError``, which the proxy reads as "unknown
+    model" (404); this one is a server-side problem (503).
+    """
+
+
 class _ModelInstance:
     """State for a single running llama-server process."""
 
@@ -349,6 +357,9 @@ class ServerManager:
                 current_mtimes = self._get_config_mtimes(inst.model_path)
                 if current_mtimes != inst.config_mtimes:
                     if inst.active_requests == 0:
+                        # A broken replacement config must not cost us the
+                        # healthy instance we are about to stop.
+                        self._prepare_start(model_name)
                         logger.info(
                             "Config changed for model=%s, restarting with new config",
                             model_name,
@@ -369,10 +380,10 @@ class ServerManager:
                 # Clean up stale instance if process died
                 await self._stop_instance(model_name)
             # Resolve before evicting so an unknown model cannot evict anything.
-            model_path = self._resolve_model(model_name)
-            incoming_bytes = _estimate_model_memory(
-                model_path, self._effective_model_config(model_path)
-            )
+            # Validate the config (and backend choice) first too, so a broken
+            # sidecar cannot evict healthy models for a start that must fail.
+            model_path, model_cfg, _ = self._prepare_start(model_name)
+            incoming_bytes = _estimate_model_memory(model_path, model_cfg)
             await self._evict_if_needed(incoming_bytes, model_name=model_name)
             # Eviction may have released the lock to drain a busy model, and a
             # concurrent request for this model may have started it meanwhile.
@@ -381,8 +392,20 @@ class ServerManager:
                 return self._claim_slot(model_name) if claim else None
             if inst is not None:
                 await self._stop_instance(model_name)
+            # _start re-reads the config: a sidecar edited while eviction waited
+            # must be what launches (and what the recorded mtimes describe).
             await self._start(model_name)
             return self._claim_slot(model_name) if claim else None
+
+    def _prepare_start(self, model_name: str) -> tuple[Path, ModelConfig, str]:
+        """Resolve the model and validate its config and backend, touching nothing.
+
+        Raises FileNotFoundError for an unknown model and ValueError (which
+        includes TOML and pydantic validation errors) for a broken config.
+        """
+        model_path = self._resolve_model(model_name)
+        model_cfg = self._effective_model_config(model_path)
+        return model_path, model_cfg, detect_backend(model_path, model_cfg)
 
     def _claim_slot(self, model_name: str) -> _ModelInstance | None:
         """Increment active_requests for a model (caller must hold the lock).
@@ -498,9 +521,7 @@ class ServerManager:
         """
         if model_name in self._instances or model_name in self._idle_tasks:
             raise RuntimeError(f"Model {model_name!r} is already registered; not starting it again")
-        model_path = self._resolve_model(model_name)
-        model_cfg = self._effective_model_config(model_path)
-        backend = detect_backend(model_path, model_cfg)
+        model_path, model_cfg, backend = self._prepare_start(model_name)
 
         port = _find_free_port()
         slot_save_path: Path | None = None
@@ -511,7 +532,7 @@ class ServerManager:
         else:
             binary = self._config.llama_server_bin
             if not shutil.which(binary):
-                raise FileNotFoundError(
+                raise BackendUnavailableError(
                     f"llama-server binary '{binary}' not found on PATH. "
                     "Install llama.cpp or set 'llama_server_bin' in config."
                 )
@@ -525,14 +546,17 @@ class ServerManager:
             ]
 
         logger.info("Starting %s backend: %s", backend, " ".join(cmd))
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            # Nothing reads backend stdout; an unread pipe would block the
-            # backend once it fills. stderr is drained for diagnostics.
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=backend == BACKEND_TTS,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                # Nothing reads backend stdout; an unread pipe would block the
+                # backend once it fills. stderr is drained for diagnostics.
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=backend == BACKEND_TTS,
+            )
+        except OSError as e:
+            raise BackendUnavailableError(f"Could not launch {cmd[0]!r}: {e}") from e
 
         config_mtimes = self._get_config_mtimes(model_path)
         inst = _ModelInstance(model_name, process, port, model_path, config_mtimes, backend)
@@ -547,8 +571,15 @@ class ServerManager:
             # leave its model process running indefinitely.
             await self._stop_instance(model_name)
             raise
-        except (RuntimeError, TimeoutError) as e:
-            logger.error("Backend failed to start for model=%s: %s", model_name, e)
+        except Exception as e:
+            # stderr rides on the exception's notes: log it here, where an
+            # operator can see it, and keep it out of anything a client gets.
+            logger.error(
+                "Backend failed to start for model=%s: %s%s",
+                model_name,
+                e,
+                "".join(f"\n{note}" for note in getattr(e, "__notes__", ())),
+            )
             await self._stop_instance(model_name)
             raise
 
@@ -627,11 +658,10 @@ class ServerManager:
                 if not inst.is_running:
                     # Give the stderr reader a moment to finish draining
                     await asyncio.sleep(0.2)
-                    msg = "Model server exited unexpectedly during startup"
-                    stderr = inst.stderr_text
-                    if stderr:
-                        msg += f"\nstderr: {stderr}"
-                    raise RuntimeError(msg)
+                    exited = RuntimeError("Model server exited unexpectedly during startup")
+                    if stderr := inst.stderr_text:
+                        exited.add_note(f"stderr: {stderr}")
+                    raise exited
                 try:
                     resp = await client.get(url, timeout=2.0)
                     if resp.status_code == 200:
@@ -639,11 +669,10 @@ class ServerManager:
                 except httpx.TransportError:
                     pass
                 await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-        stderr = inst.stderr_text
-        msg = f"Model server did not become healthy within {timeout}s"
-        if stderr:
-            msg += f"\nstderr (last lines):\n{_tail(stderr, 30)}"
-        raise TimeoutError(msg)
+        timed_out = TimeoutError(f"Model server did not become healthy within {timeout}s")
+        if stderr := inst.stderr_text:
+            timed_out.add_note(f"stderr (last lines):\n{_tail(stderr, 30)}")
+        raise timed_out
 
     def _build_args(
         self,
@@ -707,7 +736,9 @@ class ServerManager:
         )
         uv = shutil.which("uv")
         if uv is None:
-            raise RuntimeError("Text-to-speech requires uv on PATH to manage Python 3.12 engines.")
+            raise BackendUnavailableError(
+                "Text-to-speech requires uv on PATH to manage Python 3.12 engines."
+            )
         runtime = Path(__file__).parent / "workers" / "tts_runtime"
         engine = model_cfg.tts_engine or "kokoro"
         # Cache environments outside the installed package; Drove's Python 3.14

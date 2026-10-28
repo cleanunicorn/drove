@@ -103,7 +103,10 @@ drove observe web
 The web browser UI listens at `http://127.0.0.1:8877` by default; use
 `drove observe web --port 9090` to change it. Logs are stored under
 `~/.local/share/drove/observe/` unless `observe_dir` is set. They contain
-request and response content; enable logging when you want that content saved.
+request and response content (credential headers redacted, bodies capped,
+binary payloads omitted); enable logging when you want that content saved.
+Records older than 30 days are deleted automatically — see
+[request log retention](configuration.md#request-log-retention).
 Disable future logging with `drove config observe false`.
 
 In the web UI, **MD** previews `content` and `reasoning_content` as sanitized

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from drove.observe import ObserveRecord, save_record
 from drove.observe_web import create_observe_app
+from tests.observe_helpers import legacy_record
 
 
 def _make_record(
@@ -126,6 +128,25 @@ def test_api_record_detail(tmp_path: Path) -> None:
     assert data["response_body_raw"] is not None
 
 
+def test_api_record_pruned_before_open_is_not_found(tmp_path: Path, monkeypatch) -> None:
+    import drove.observe_web as observe_web
+
+    record = _make_record()
+    path = save_record(tmp_path, record)
+    real_load = observe_web.load_record
+
+    def load_after_prune(target: Path) -> ObserveRecord:
+        target.unlink()  # retention deleted it between lookup and open
+        return real_load(target)
+
+    monkeypatch.setattr(observe_web, "load_record", load_after_prune)
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        resp = client.get(f"/api/records/{record.id}")
+    assert resp.status_code == 404
+    assert not path.exists()
+
+
 def test_api_record_not_found(tmp_path: Path) -> None:
     app = create_observe_app(tmp_path)
     with TestClient(app) as client:
@@ -219,3 +240,18 @@ def test_browser_assets_are_served(tmp_path: Path) -> None:
             assert response.status_code == 200
             assert content_type in response.headers["content-type"]
             assert response.content
+
+
+def test_api_record_detail_loads_legacy_record(tmp_path: Path) -> None:
+    """Records written before #122 (no raw body, hex request body) still open."""
+    legacy = legacy_record(request_headers={"content-type": "multipart/form-data"})
+    path = tmp_path / "testmodel" / f"{legacy['id']}.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(legacy))
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        resp = client.get(f"/api/records/{legacy['id']}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["request_body"] == "fffe00"
+    assert data["response_body_raw"] == ""

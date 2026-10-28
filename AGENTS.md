@@ -294,7 +294,10 @@ src/drove/
   model_config.py      Per-model sidecar TOMLs → llama-server args (ctx_size,
                        n_gpu_layers, cache_*, extra_args passthrough, backend,
                        asr_model, asr_quantization, tts_*)
-  model_store.py       The single authority for resolving/listing models on disk
+  model_store.py       The single authority for resolving/listing models on disk;
+                       lists and serves only complete downloads
+  download_state.py    Per-model .drove-download.json record (incomplete/complete,
+                       expected files and sizes)
   backend.py           Picks the backend per model: .gguf → llama-server,
                        .onnx → built-in ASR worker, .tts → TTS worker
                        (overridable via `backend`); known TTS repos → engine
@@ -314,7 +317,6 @@ src/drove/
                        observe logs when enabled
   downloader.py        HuggingFace downloads (GGUF + ONNX + TTS repos, quantization
                        prompts)
-  converter.py         HF → GGUF conversion
   integrations.py      Registers models with pi, opencode, and Kilo Code; merges
                        a drove provider into each agent's JSON config, inferring
                        capabilities from model config and GGUF metadata
@@ -324,10 +326,14 @@ src/drove/
   observe_web.py (+ observe_web_static/)   Small web UI for observe logs
   sessions.py, tui.py, tools.py, stats.py Chat TUI app, session persistence,
                        tool execution, token/process metrics
+  tool_policy.py       Chat tool approvals (cwd/remote reads, scoped grants,
+                       per-call shell/write) and the 64 KiB tool output cap,
+                       testable without the TUI
   cli/                 Typer CLI: main.py (config, chat, observe, init),
                        models.py (list, download, add-tts, delete, info, config),
                        server.py (serve — default, status), integrate.py
-                       (agent registration), completions.py
+                       (agent registration), completions.py, tui_logging.py
+                       (logging rerouted while a Textual app runs)
 tests/                 pytest suite, one file per module
 docs/                  architecture.md, configuration.md, deploy.md (release
                        process), getting-started.md, cli.md, speech-to-text.md,
@@ -405,8 +411,9 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   `asyncio_mode = "auto"` — no markers needed.
 - **Registering new components:** a new llama-server flag becomes a
   `ModelConfig` field (mapped to its CLI arg); a new CLI command is a Typer
-  command in `src/drove/cli/`; new config keys go through `Config` and its
-  `save()`.
+  command in `src/drove/cli/`; new config keys are `Config` fields listed in
+  `write_default_config()`, and are saved with `set_config_value()` (one key,
+  never the env-loaded config).
 
 ## Testing
 

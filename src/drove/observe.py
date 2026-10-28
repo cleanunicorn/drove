@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import stat
+import time
 import uuid
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, field
@@ -11,6 +15,30 @@ from threading import Event
 from typing import Any
 
 from drove.model_store import is_within, validate_model_name
+
+logger = logging.getLogger(__name__)
+
+# Credential headers are never written to disk, in either direction.
+CREDENTIAL_HEADERS = frozenset(
+    ["authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key"]
+)
+REDACTED = "[REDACTED]"
+
+# Each captured body keeps at most this many bytes; a saved record is at most
+# MAX_RECORD_BYTES of encoded JSON, whatever the traffic looked like.
+MAX_BODY_BYTES = 256 * 1024
+MAX_RECORD_BYTES = 1024 * 1024
+_MAX_HEADERS = 64
+_MAX_HEADER_CHARS = 1024
+
+_TEXT_TYPES = frozenset(
+    [
+        "application/json",
+        "application/x-ndjson",
+        "application/x-www-form-urlencoded",
+        "application/xml",
+    ]
+)
 
 
 @dataclass
@@ -135,6 +163,90 @@ def _assemble_response(raw: str) -> str:
     return json.dumps(assembled, indent=2, ensure_ascii=False)
 
 
+def _truncation_marker(original_bytes: int) -> str:
+    return f"\n[TRUNCATED; original_bytes={original_bytes}]"
+
+
+def _truncate_text(text: str, max_bytes: int, original_bytes: int) -> str:
+    """Cut text to at most max_bytes of UTF-8 (on a character boundary) plus a marker."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes and original_bytes <= len(encoded):
+        return text
+    cut = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return cut + _truncation_marker(original_bytes)
+
+
+def _original_size(body: bytes, size: int | None) -> int:
+    """A body's original length: *size* when it was truncated, else ``len(body)``."""
+    return len(body) if size is None else size
+
+
+def content_type(headers: dict[str, str]) -> str:
+    """Return the Content-Type value from *headers* (any case), or ""."""
+    for name, value in headers.items():
+        if name.lower() == "content-type":
+            return value
+    return ""
+
+
+def _is_text_type(content_type: str) -> bool:
+    mime = content_type.split(";", 1)[0].strip().lower()
+    return mime.startswith("text/") or mime.endswith("+json") or mime in _TEXT_TYPES
+
+
+def _decode_prefix(data: bytes) -> str:
+    """Decode a captured prefix whose last character may have been cut mid-sequence."""
+    return data[:MAX_BODY_BYTES].decode("utf-8", errors="ignore")
+
+
+def _is_binary(data: bytes, content_type: str) -> bool:
+    """Whether a body must be stored as a placeholder rather than as text.
+
+    A declared non-text type (multipart, audio, image, octet-stream…) is binary
+    even when its bytes happen to decode, since uploads can carry whole files.
+    Text, or an undeclared type, is binary only when it is not valid UTF-8.
+    """
+    if is_binary_content_type(content_type):
+        return True
+    prefix = data[:MAX_BODY_BYTES]
+    try:
+        prefix.decode("utf-8")
+    except UnicodeDecodeError as e:
+        # A capture cut inside a multi-byte character is still text.
+        return not (e.reason == "unexpected end of data" and e.start >= len(prefix) - 3)
+    return False
+
+
+def is_binary_content_type(content_type: str) -> bool:
+    """Whether a declared content type is stored as a placeholder, never as text."""
+    return bool(content_type) and not _is_text_type(content_type)
+
+
+def render_body(data: bytes, total_bytes: int, content_type: str) -> str:
+    """Render a captured body for storage: bounded text, or a binary placeholder."""
+    if _is_binary(data, content_type):
+        kind = content_type or "unknown"
+        return f"[binary body omitted: {total_bytes} bytes, content-type: {kind}]"
+    return _truncate_text(_decode_prefix(data), MAX_BODY_BYTES, total_bytes)
+
+
+def sanitize_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Copy headers for storage: credentials redacted, sizes bounded."""
+    out: dict[str, str] = {}
+    for name, value in headers.items():
+        if len(out) >= _MAX_HEADERS:
+            out["[TRUNCATED]"] = f"{len(headers) - _MAX_HEADERS} more headers omitted"
+            break
+        name = name[:_MAX_HEADER_CHARS]
+        if name.lower() in CREDENTIAL_HEADERS:
+            out[name] = REDACTED
+        elif len(value) > _MAX_HEADER_CHARS:
+            out[name] = value[:_MAX_HEADER_CHARS] + _truncation_marker(len(value.encode()))
+        else:
+            out[name] = value
+    return out
+
+
 @dataclass
 class ObserveContext:
     """Accumulates data through a request lifecycle for observe logging."""
@@ -144,12 +256,14 @@ class ObserveContext:
     endpoint: str
     method: str
     request_headers: dict[str, str]
-    request_body: bytes
+    request_body: bytes  # at most MAX_BODY_BYTES are rendered
+    request_body_size: int | None = None  # original length; None = len(request_body)
 
     # Populated after response completes
     response_status: int = 0
     response_headers: dict[str, str] = field(default_factory=dict)
-    response_body: bytes = b""
+    response_body: bytes = b""  # at most MAX_BODY_BYTES are rendered
+    response_body_size: int | None = None  # original length; None = len(response_body)
     ttft_seconds: float | None = None
     duration_seconds: float = 0.0
     tokens_prompt: int = 0
@@ -160,19 +274,23 @@ class ObserveContext:
         ts = self.timestamp.replace(":", "").replace("-", "").replace("T", "-")[:15]
         record_id = f"{ts}-{uuid.uuid4().hex[:8]}"
 
-        # Decode bodies to strings
-        try:
-            req_body = self.request_body.decode("utf-8") if self.request_body else None
-        except UnicodeDecodeError:
-            req_body = self.request_body.hex() if self.request_body else None
+        req_size = _original_size(self.request_body, self.request_body_size)
+        req_body = (
+            render_body(self.request_body, req_size, content_type(self.request_headers))
+            if req_size
+            else None
+        )
 
-        try:
-            resp_body_raw = self.response_body.decode("utf-8", errors="replace")
-        except Exception:
-            resp_body_raw = self.response_body.hex()
-
-        # Assemble a readable version from the raw response
-        resp_body = _assemble_response(resp_body_raw)
+        resp_size = _original_size(self.response_body, self.response_body_size)
+        resp_type = content_type(self.response_headers)
+        resp_body_raw = render_body(self.response_body, resp_size, resp_type)
+        if _is_binary(self.response_body, resp_type):
+            resp_body = resp_body_raw
+        else:
+            # Assemble a readable version from the (possibly truncated) raw response
+            resp_body = _assemble_response(_decode_prefix(self.response_body))
+            if resp_size > len(self.response_body) or len(self.response_body) > MAX_BODY_BYTES:
+                resp_body = _truncate_text(resp_body, MAX_BODY_BYTES, resp_size)
 
         return ObserveRecord(
             id=record_id,
@@ -180,10 +298,10 @@ class ObserveContext:
             model=self.model,
             endpoint=self.endpoint,
             method=self.method,
-            request_headers=self.request_headers,
+            request_headers=sanitize_headers(self.request_headers),
             request_body=req_body,
             response_status=self.response_status,
-            response_headers=self.response_headers,
+            response_headers=sanitize_headers(self.response_headers),
             response_body=resp_body,
             response_body_raw=resp_body_raw,
             tokens_prompt=self.tokens_prompt,
@@ -272,20 +390,86 @@ def save_record(observe_dir: Path, record: ObserveRecord) -> Path:
     """Write an observe record to disk. Returns the file path.
 
     Raises ValueError, writing nothing, when the record's model is not a
-    valid model name or its directory would resolve outside *observe_dir*.
+    valid model name, its id is not a plain file name, or its directory would
+    resolve outside *observe_dir*. Directories below *observe_dir* are
+    opened without following symlinks, so a directory swapped for a link
+    mid-write raises OSError instead of writing elsewhere.
     """
-    if record.model is None:
-        model_dir = observe_dir / "_unknown"
-    else:
-        model_dir = observe_dir / validate_model_name(record.model)
+    if not record.id or "/" in record.id or "\0" in record.id:
+        raise ValueError(f"Observe record id {record.id!r} is not a plain file name.")
+    parts = ["_unknown"] if record.model is None else validate_model_name(record.model).split("/")
+    model_dir = observe_dir.joinpath(*parts)
     if not is_within(observe_dir, model_dir):
         raise ValueError(f"Observe directory for '{record.model}' is outside {observe_dir}.")
     path = model_dir / f"{record.id}.json"
     if not is_within(observe_dir, path):
         raise ValueError(f"Observe record {record.id} would be written outside {observe_dir}.")
-    model_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_record_to_dict(record), indent=2, ensure_ascii=False))
+    data = _encode_record(record)
+    observe_dir.mkdir(parents=True, exist_ok=True)
+    dir_fd = os.open(observe_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            try:
+                os.mkdir(part, dir_fd=dir_fd)
+            except FileExistsError:
+                pass
+            parent_fd, dir_fd = dir_fd, _open_subdir(dir_fd, part)
+            os.close(parent_fd)
+        # O_EXCL never follows or reuses an existing file; 0600 applies from creation.
+        fd = os.open(
+            path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd
+        )
+    finally:
+        os.close(dir_fd)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
     return path
+
+
+def _open_subdir(parent_fd: int, name: str) -> int:
+    """Open a child directory relative to parent_fd, refusing a symlink (ELOOP/ENOTDIR)."""
+    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+
+
+def _encode_record(record: ObserveRecord) -> bytes:
+    """Encode a record as JSON of at most MAX_RECORD_BYTES, credentials redacted.
+
+    Client-supplied metadata (endpoint, method, headers) is bounded first, then
+    bodies are shortened (with a truncation marker) until the encoded document
+    fits, so escaping and pretty-printing cannot push a record past the cap.
+    If even that is not enough, headers and bodies are dropped with a marker;
+    a record that still cannot fit raises ValueError and nothing is written.
+    """
+    data = _record_to_dict(record)
+    for name in ("endpoint", "method"):
+        text = str(data[name])
+        if len(text) > _MAX_HEADER_CHARS:
+            data[name] = text[:_MAX_HEADER_CHARS] + _truncation_marker(len(text.encode()))
+    data["request_headers"] = sanitize_headers(record.request_headers)
+    data["response_headers"] = sanitize_headers(record.response_headers)
+    body_fields = ("request_body", "response_body", "response_body_raw")
+    budget = MAX_BODY_BYTES
+    while True:
+        encoded = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+        if len(encoded) <= MAX_RECORD_BYTES:
+            return encoded
+        if budget < 64:
+            break
+        budget //= 2
+        for name in body_fields:
+            value = data[name]
+            if isinstance(value, str) and len(value.encode("utf-8")) > budget:
+                data[name] = _truncate_text(value, budget, len(value.encode("utf-8")))
+
+    omitted = f"[omitted: record exceeded {MAX_RECORD_BYTES} bytes]"
+    data["request_headers"] = {}
+    data["response_headers"] = {}
+    for name in body_fields:
+        data[name] = omitted
+    encoded = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    if len(encoded) > MAX_RECORD_BYTES:
+        raise ValueError(f"Observe record {record.id} cannot fit in {MAX_RECORD_BYTES} bytes.")
+    return encoded
 
 
 def load_record(path: Path) -> ObserveRecord:
@@ -376,7 +560,7 @@ def list_records(observe_dir: Path, model: str | None = None) -> list[tuple[Path
     for p in _record_paths(observe_dir, model):
         try:
             results.append((p, load_record(p)))
-        except json.JSONDecodeError, KeyError, ValueError:
+        except FileNotFoundError, json.JSONDecodeError, KeyError, ValueError:
             continue
     return results
 
@@ -393,8 +577,9 @@ def list_records_page(
 
     Only the files within the requested window are read from disk; the rest
     are ordered by filename alone, so large logs do not pay the cost of
-    parsing every record on each call.  Files that fail to load are skipped
-    in the page but still counted in the total. An optional stop event raises
+    parsing every record on each call.  Files that fail to load (or that a
+    retention pass deleted after they were listed) are skipped in the page
+    but still counted in the total. An optional stop event raises
     CancelledError between filesystem operations when the caller shuts down.
     """
     paths = _record_paths(observe_dir, model, stop)
@@ -404,7 +589,7 @@ def list_records_page(
         _check_cancelled(stop)
         try:
             page.append((p, load_record(p)))
-        except json.JSONDecodeError, KeyError, ValueError:
+        except FileNotFoundError, json.JSONDecodeError, KeyError, ValueError:
             continue
     return page, total
 
@@ -431,7 +616,7 @@ def search_records_page(
         _check_cancelled(stop)
         try:
             record = load_record(p)
-        except json.JSONDecodeError, KeyError, ValueError:
+        except FileNotFoundError, json.JSONDecodeError, KeyError, ValueError:
             continue
         if not record_matches(record, query):
             continue
@@ -455,3 +640,81 @@ def find_record_path(observe_dir: Path, record_id: str, model: str | None = None
         if candidate.is_file() and is_within(observe_dir, candidate):
             return candidate
     return None
+
+
+def prune_records(observe_dir: Path, max_age_days: int, now: float | None = None) -> int:
+    """Delete record files last modified more than max_age_days ago.
+
+    Age is the file's modification time, so no record is parsed. Only regular
+    ``*.json`` files in model directories (``<model>/`` and ``<org>/<repo>/``)
+    are considered: symlinks, other files and directories are left alone, and
+    a missing observe_dir is not created. Zero (or less) disables pruning.
+    Returns the number deleted.
+
+    Directories are walked by file descriptor without following symlinks, and
+    each file is checked and unlinked relative to its pinned directory, so a
+    directory swapped for a link mid-pass can never redirect a deletion
+    outside observe_dir.
+    """
+    if max_age_days <= 0:
+        return 0
+    cutoff = (time.time() if now is None else now) - max_age_days * 86400
+    try:
+        root_fd = os.open(observe_dir, os.O_RDONLY | os.O_DIRECTORY)
+    except FileNotFoundError, NotADirectoryError:
+        return 0
+    removed = 0
+    try:
+        for name in _subdir_names(root_fd):
+            # A model dir may hold records and, as a namespace, model dirs of its own.
+            removed += _prune_tree(root_fd, name, cutoff, depth=2)
+    finally:
+        os.close(root_fd)
+    return removed
+
+
+def _prune_tree(parent_fd: int, name: str, cutoff: float, depth: int) -> int:
+    try:
+        dir_fd = _open_subdir(parent_fd, name)
+    except OSError:
+        return 0  # vanished, not a directory, or a symlink
+    try:
+        removed = _prune_dir(dir_fd, cutoff)
+        if depth > 1:
+            for sub in _subdir_names(dir_fd):
+                removed += _prune_tree(dir_fd, sub, cutoff, depth - 1)
+        return removed
+    finally:
+        os.close(dir_fd)
+
+
+def _subdir_names(dir_fd: int) -> list[str]:
+    try:
+        with os.scandir(dir_fd) as entries:
+            return [e.name for e in entries if e.is_dir(follow_symlinks=False)]
+    except OSError as e:
+        logger.warning("Observe retention could not read a directory: %s", e)
+        return []
+
+
+def _prune_dir(dir_fd: int, cutoff: float) -> int:
+    """Delete expired regular ``*.json`` files directly inside dir_fd."""
+    try:
+        with os.scandir(dir_fd) as entries:
+            names = [e.name for e in entries if e.name.endswith(".json")]
+    except OSError as e:
+        logger.warning("Observe retention could not read a directory: %s", e)
+        return 0
+    removed = 0
+    for name in names:
+        try:
+            st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if not stat.S_ISREG(st.st_mode) or st.st_mtime >= cutoff:
+                continue
+            os.unlink(name, dir_fd=dir_fd)
+            removed += 1
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            logger.warning("Observe retention could not delete %s: %s", name, e)
+    return removed

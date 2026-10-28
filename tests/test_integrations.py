@@ -1045,3 +1045,20 @@ def test_cli_feedback_pruning_and_unchanged_dry_run(tmp_path: Path, cli_config: 
     unchanged = runner.invoke(app, [*prefix, "--remove", "--dry-run"])
     path = tmp_path / "xdg" / "opencode" / "opencode.json"
     assert unchanged.stdout == f"opencode is already up to date: {path}\n"
+
+
+def test_unservable_and_incomplete_downloads_are_never_registered(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _model(config.models_dir, "coder", ctx=4096, template=TOOL_THINK_TEMPLATE)
+    models = config.models_dir
+    (models / "org" / "partial" / ".cache" / "huggingface").mkdir(parents=True)
+    (models / "org" / "partial" / ".cache" / "huggingface" / "x.incomplete").write_bytes(b"")
+    (models / "raw").mkdir()
+    (models / "raw" / "model.safetensors").write_bytes(b"weights")
+    (models / "split").mkdir()
+    (models / "split" / "split-00001-of-00002.gguf").write_bytes(b"GGUF")
+
+    assert [spec.id for spec in collect_model_specs(config)] == ["coder"]
+    for name in ("org/partial", "raw", "split"):
+        with pytest.raises(FileNotFoundError):
+            collect_model_specs(config, [name])

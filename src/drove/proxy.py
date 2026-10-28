@@ -10,18 +10,26 @@ import signal
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.types import Receive
 
 from drove.config import Config, load_config
-from drove.model_store import validate_model_name
-from drove.observe import ObserveContext, save_record
-from drove.server_manager import ServerManager
+from drove.model_store import IncompleteModelError, validate_model_name
+from drove.observe import (
+    MAX_BODY_BYTES,
+    ObserveContext,
+    content_type,
+    is_binary_content_type,
+    prune_records,
+    save_record,
+)
+from drove.server_manager import BackendUnavailableError, ServerManager
 from drove.stats import ProxyStats
 
 logger = logging.getLogger(__name__)
@@ -34,6 +42,18 @@ _RESTART_REQUIRED = {"listen_host", "listen_port"}
 
 # Strong references to fire-and-forget tasks so they are not garbage-collected.
 _background_tasks: set[asyncio.Task[None]] = set()
+
+# Observe records are written by worker threads; at most this many may be
+# pending per app before new ones are dropped (with a warning) instead of
+# piling up in memory behind a slow disk.
+_OBSERVE_MAX_PENDING = 64
+
+# How often expired observe records are pruned while serving.
+_OBSERVE_PRUNE_SECONDS = 3600
+
+# Token usage is parsed from at most the last this-many response bytes, so the
+# proxy never holds a whole response in memory; usage sits at the end of a stream.
+_USAGE_TAIL_BYTES = 1024 * 1024
 
 # Header names to strip when forwarding (hop-by-hop)
 _HOP_BY_HOP = frozenset(
@@ -51,8 +71,30 @@ _HOP_BY_HOP = frozenset(
 )
 
 
+class _ObserveWriter:
+    """Writes observe records off the event loop, with a bounded backlog."""
+
+    def __init__(self, limit: int = _OBSERVE_MAX_PENDING) -> None:
+        self._limit = limit
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def submit(self, obs_ctx: ObserveContext, observe_dir: Path) -> None:
+        if len(self._tasks) >= self._limit:
+            logger.warning("Observe writer backlog full; dropping record for %s", obs_ctx.endpoint)
+            return
+        task = asyncio.create_task(asyncio.to_thread(_write_observe_record, obs_ctx, observe_dir))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def drain(self) -> None:
+        """Wait for every pending write (used at shutdown so no record is lost)."""
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
 def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     manager = ServerManager(config)
+    observe_writer = _ObserveWriter()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -70,11 +112,16 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         # Drop prompt caches that outlived their TTL while drove was not running.
         manager.prune_prompt_cache()
 
+        await _prune_observe_once(_app)
+        tasks.append(asyncio.create_task(_observe_retention(_app), name="observe-retention"))
+
         try:
             yield
         finally:
             for t in tasks:
                 t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await observe_writer.drain()
             await manager.stop()
             await client.aclose()
 
@@ -90,6 +137,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     app.state.manager = manager
     app.state.config = config
     app.state.stats = stats
+    app.state.observe_writer = observe_writer
 
     client = httpx.AsyncClient(timeout=300.0)
     app.state.client = client  # kept here so lifespan can close it
@@ -167,8 +215,22 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         "/{path:path}",
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
     )
-    async def proxy(request: Request, path: str) -> StreamingResponse:
+    async def proxy(request: Request, path: str) -> Response:
         stats.request_started()
+        claim = _Claim()
+        try:
+            return await _forward(request, path, claim)
+        except Exception:
+            raise  # _forward settled the accounting for its own failures
+        except BaseException:
+            # Cancellation (or another BaseException) skips _forward's Exception
+            # handlers: release the claimed instance, if any, and settle once.
+            if claim.model is not None:
+                manager.request_finished(claim.model, claim.slot)
+            stats.request_finished()
+            raise
+
+    async def _forward(request: Request, path: str, claim: _Claim) -> Response:
         requested = await _extract_model(request)
         current_config: Config = app.state.config
         used_default = requested is _ABSENT and current_config.default_model is not None
@@ -207,14 +269,12 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 # the manager lock, so a concurrent ensure_running for another
                 # model cannot evict this one while we're mid-request.
                 slot = await manager.ensure_running(model_name, claim=True)
-            except FileNotFoundError as e:
+            except Exception as e:
+                # Whatever failed, no slot was claimed (the manager claims only
+                # on return), so only the global counters need settling.
                 stats.request_finished()
                 stats.request_error()
-                raise HTTPException(status_code=404, detail=str(e)) from e
-            except (TimeoutError, RuntimeError) as e:
-                stats.request_finished()
-                stats.request_error()
-                raise HTTPException(status_code=503, detail=str(e)) from e
+                raise _startup_error(model_name, e) from e
 
         # For the "no model_name in body" fallback path, we still need to
         # claim a slot — but without the lock since ensure_running was skipped.
@@ -222,11 +282,23 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         # that was picked as the current fallback.
         if model_name is None:
             slot = manager.request_started(resolved_model)
+        claim.model, claim.slot = resolved_model, slot
+
+        def abandon() -> Response:
+            # The client left before the response started: release its slot and
+            # drop the request. Nobody reads the status, and it is not an error.
+            manager.request_finished(resolved_model, slot)
+            stats.request_finished()
+            return Response(status_code=_CLIENT_CLOSED_REQUEST)
+
         try:
             manager.record_request(resolved_model)
 
             headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
             body = await request.body()
+            if await request.is_disconnected():
+                # The client left while the model was starting: never forward.
+                return abandon()
             if (
                 used_default
                 and path == "v1/audio/speech"
@@ -254,7 +326,9 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     endpoint=path,
                     method=request.method,
                     request_headers=dict(headers),
-                    request_body=body,
+                    # Keep only what can be stored, not a copy of a large upload.
+                    request_body=body[:MAX_BODY_BYTES],
+                    request_body_size=len(body),
                 )
 
             try:
@@ -276,12 +350,14 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     timeout=timeout,
                 )
                 upstream_started = time.monotonic()
-                resp = await client.send(upstream, stream=True)
+                resp = await _send_unless_disconnected(client, upstream, request.receive)
             except httpx.TransportError as e:
                 # str(e) is empty for some httpx errors (e.g. ReadError);
                 # include the exception class name for diagnostics.
                 detail = f"Upstream error: {type(e).__name__}: {e}".rstrip(": ")
                 raise HTTPException(status_code=502, detail=detail) from e
+            if resp is None:
+                return abandon()
 
             response_headers = {
                 k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP
@@ -304,6 +380,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     audio_duration=resp.headers.get("x-drove-audio-seconds"),
                     upstream_started=upstream_started,
                     slot=slot,
+                    observe_writer=observe_writer,
                 ),
                 status_code=resp.status_code,
                 headers=response_headers,
@@ -319,6 +396,31 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     return app
 
 
+async def _prune_observe_once(app: FastAPI) -> None:
+    """Delete expired observe records in a worker thread, using the current config."""
+    config: Config = app.state.config
+    if not config.observe or config.observe_max_age_days <= 0:
+        return
+    try:
+        removed = await asyncio.to_thread(
+            prune_records, config.observe_dir, config.observe_max_age_days
+        )
+    except Exception as e:
+        logger.warning("Observe retention pass failed: %s", e)
+        return
+    if removed:
+        logger.info(
+            "Pruned %d observe records older than %d days", removed, config.observe_max_age_days
+        )
+
+
+async def _observe_retention(app: FastAPI) -> None:
+    """Background task: prune expired observe records periodically."""
+    while True:
+        await asyncio.sleep(_OBSERVE_PRUNE_SECONDS)
+        await _prune_observe_once(app)
+
+
 async def _config_watcher(app: FastAPI, config_path: Path) -> None:
     """Background task: reload config when the file's mtime changes."""
     mtime = _mtime(config_path)
@@ -328,6 +430,38 @@ async def _config_watcher(app: FastAPI, config_path: Path) -> None:
         if new_mtime != mtime:
             mtime = new_mtime
             _reload_config(app, config_path)
+
+
+def _startup_error(model_name: str, error: Exception) -> HTTPException:
+    """Map an ``ensure_running`` failure to a deliberate response.
+
+    The detail is fixed text: exception messages and notes (backend stderr,
+    paths, parser output) go to the server log only, never to the client.
+    """
+    # The traceback carries the exception's notes (backend stderr) exactly once.
+    logger.error("Startup failed for model=%s: %s", model_name, error, exc_info=error)
+    if isinstance(error, BackendUnavailableError):
+        return HTTPException(status_code=503, detail="backend unavailable; see server logs")
+    if isinstance(error, IncompleteModelError):
+        return HTTPException(
+            status_code=404,
+            detail=(
+                f"Model {model_name!r} is incomplete. Rerun 'drove models download' to finish "
+                f"it; 'drove models info {model_name}' shows what is missing."
+            ),
+        )
+    if isinstance(error, FileNotFoundError):
+        return HTTPException(
+            status_code=404,
+            detail=(
+                f"Model {model_name!r} not found. Run 'drove models list' to see available models."
+            ),
+        )
+    if isinstance(error, ValueError):  # includes TOMLDecodeError and ValidationError
+        return HTTPException(status_code=500, detail=f"invalid model config for {model_name!r}")
+    if isinstance(error, RuntimeError | OSError):  # OSError includes TimeoutError
+        return HTTPException(status_code=503, detail="model failed to start; see server logs")
+    return HTTPException(status_code=500, detail="model startup failed; see server logs")
 
 
 def _reload_config(app: FastAPI, config_path: Path) -> None:
@@ -390,6 +524,15 @@ def _mtime(path: Path) -> float:
 
 
 _ABSENT = object()  # the request body carries no 'model' field
+_CLIENT_CLOSED_REQUEST = 499  # nginx's status for a client that left before the response
+
+
+@dataclass
+class _Claim:
+    """The model slot a proxied request holds, once it has claimed one."""
+
+    model: str | None = None
+    slot: object | None = None
 
 
 async def _extract_model(request: Request) -> object:
@@ -400,14 +543,14 @@ async def _extract_model(request: Request) -> object:
     the raw value, unvalidated (JSON null included), or ``_ABSENT`` when there
     is no such field or the body cannot be parsed.
     """
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
+    request_type = request.headers.get("content-type", "")
+    if "application/json" in request_type:
         try:
             body = await request.json()
         except Exception:
             return _ABSENT
         return body["model"] if isinstance(body, dict) and "model" in body else _ABSENT
-    if "multipart/form-data" in content_type:
+    if "multipart/form-data" in request_type:
         try:
             # Cache the raw body first so the multipart parser consumes the
             # cached copy and the proxy can still forward the original bytes.
@@ -417,6 +560,54 @@ async def _extract_model(request: Request) -> object:
             return _ABSENT
         return form["model"] if "model" in form else _ABSENT
     return _ABSENT
+
+
+async def _send_unless_disconnected(
+    client: httpx.AsyncClient, upstream: httpx.Request, receive: Receive
+) -> httpx.Response | None:
+    """Send *upstream*, unless the client disconnects before the response arrives.
+
+    Races the send against the client's ``http.disconnect``; the disconnect
+    wins a tie. Returns None when the client left, after cancelling the send
+    and closing any response it already produced. Call only after the request
+    body has been read, so the watcher can consume nothing but the disconnect.
+    """
+    send = asyncio.ensure_future(client.send(upstream, stream=True))
+    watch = asyncio.ensure_future(_wait_for_disconnect(receive))
+    handed_over = False
+    try:
+        await asyncio.wait((send, watch), return_when=asyncio.FIRST_COMPLETED)
+        if watch.done():
+            watch.result()  # re-raise a failed watcher rather than report a disconnect
+            return None
+        watch.cancel()
+        await asyncio.gather(watch, return_exceptions=True)
+        response = send.result()
+        handed_over = True
+        return response
+    finally:
+        if not handed_over:
+            # Disconnected, failed or cancelled (possibly mid-handoff): stop both
+            # tasks and close any response nobody will read. Shielded, so a repeated
+            # cancellation cannot abandon the upstream connection half-closed.
+            cleanup = asyncio.ensure_future(_discard_send(send, watch))
+            _background_tasks.add(cleanup)
+            cleanup.add_done_callback(_background_tasks.discard)
+            await asyncio.shield(cleanup)
+
+
+async def _discard_send(send: asyncio.Future[httpx.Response], watch: asyncio.Future[None]) -> None:
+    """Cancel a send race and close the upstream response if one arrived anyway."""
+    send.cancel()
+    watch.cancel()
+    await asyncio.gather(send, watch, return_exceptions=True)
+    if not send.cancelled() and send.exception() is None:
+        await send.result().aclose()
+
+
+async def _wait_for_disconnect(receive: Receive) -> None:
+    while (await receive())["type"] != "http.disconnect":
+        pass
 
 
 async def _counting_stream(
@@ -432,21 +623,38 @@ async def _counting_stream(
     audio_duration: str | None = None,
     upstream_started: float | None = None,
     slot: object | None = None,
+    observe_writer: _ObserveWriter | None = None,
 ) -> AsyncIterator[bytes]:
-    """Wrap a response stream, collecting bytes to extract token usage afterwards."""
+    """Wrap a response stream, keeping bounded bytes for token usage and observe logging.
+
+    Only the last _USAGE_TAIL_BYTES (non-audio) and, when observing a text
+    response, the first MAX_BODY_BYTES are retained; everything else is
+    forwarded and forgotten.
+    """
     try:
-        chunks: list[bytes] = []
+        is_audio = endpoint in {"v1/audio/transcriptions", "v1/audio/speech"}
+        capture = obs_ctx is not None and not is_binary_content_type(
+            content_type(obs_ctx.response_headers)
+        )
+        captured = bytearray()
+        tail = bytearray()
+        total = 0
         t_start = time.monotonic()
         t_first_chunk: float | None = None
         async for chunk in raw_iter:
             if t_first_chunk is None:
                 t_first_chunk = time.monotonic()
-            chunks.append(chunk)
+            total += len(chunk)
+            if capture and len(captured) < MAX_BODY_BYTES:
+                captured += chunk[: MAX_BODY_BYTES - len(captured)]
+            if not is_audio:
+                tail += chunk
+                if len(tail) > 2 * _USAGE_TAIL_BYTES:
+                    del tail[:-_USAGE_TAIL_BYTES]
             yield chunk
         t_end = time.monotonic()
         duration = t_end - t_start
         ttft = (t_first_chunk - t_start) if t_first_chunk is not None else None
-        is_audio = endpoint in {"v1/audio/transcriptions", "v1/audio/speech"}
         if ttft is not None and not is_audio:
             stats.record_ttft(ttft)
         if is_audio and 200 <= response_status < 300:
@@ -461,25 +669,24 @@ async def _counting_stream(
                 seconds = 0.0
             if math.isfinite(seconds) and seconds >= 0:
                 audio.audio_seconds += seconds
-        full_body = b"".join(chunks)
+        del tail[:-_USAGE_TAIL_BYTES]
         tokens = (
             {"prompt": 0, "completion": 0, "speed": None}
             if is_audio
-            else _record_usage(full_body, stats, duration)
+            else _record_usage(bytes(tail), stats, duration)
         )
 
-        # Fire-and-forget observe logging
-        if obs_ctx is not None and observe_dir is not None:
-            obs_ctx.response_body = full_body
+        # Observe logging runs in a worker thread; the response is already sent.
+        if obs_ctx is not None and observe_dir is not None and observe_writer is not None:
+            obs_ctx.response_body = bytes(captured)
+            obs_ctx.response_body_size = total
             obs_ctx.duration_seconds = duration
             obs_ctx.ttft_seconds = ttft
             obs_ctx.tokens_prompt = int(tokens.get("prompt") or 0)
             obs_ctx.tokens_completion = int(tokens.get("completion") or 0)
             speed = tokens.get("speed")
             obs_ctx.tokens_per_second = float(speed) if speed is not None else None
-            task = asyncio.create_task(_save_observe_record(obs_ctx, observe_dir))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+            observe_writer.submit(obs_ctx, observe_dir)
     except Exception:
         stats.request_error()
         raise
@@ -488,8 +695,8 @@ async def _counting_stream(
         stats.request_finished()
 
 
-async def _save_observe_record(obs_ctx: ObserveContext, observe_dir: Path) -> None:
-    """Write an observe record to disk (runs as a fire-and-forget task)."""
+def _write_observe_record(obs_ctx: ObserveContext, observe_dir: Path) -> None:
+    """Build, encode and write an observe record (runs in a worker thread)."""
     try:
         record = obs_ctx.to_record()
         save_record(observe_dir, record)
@@ -515,6 +722,27 @@ def _extract_tokens_from_obj(data: dict[str, object], out: dict[str, int | float
             out["completion"] = timings.get("predicted_n", 0)
         if timings.get("predicted_per_second"):
             out["speed"] = timings["predicted_per_second"]
+
+
+def _extract_trailing_objects(text: str, out: dict[str, int | float | None]) -> None:
+    """Parse the last ``"usage"`` and ``"timings"`` objects found in a JSON fragment."""
+    decoder = json.JSONDecoder()
+    for key in ("usage", "timings"):
+        idx = text.rfind(f'"{key}"')
+        if idx < 0:
+            continue
+        colon = text.find(":", idx + len(key) + 2)
+        if colon < 0:
+            continue
+        start = colon + 1
+        while start < len(text) and text[start].isspace():
+            start += 1
+        try:
+            obj, _ = decoder.raw_decode(text, start)
+        except json.JSONDecodeError, ValueError:
+            continue
+        if isinstance(obj, dict):
+            _extract_tokens_from_obj({key: obj}, out)
 
 
 def _record_usage(
@@ -550,6 +778,11 @@ def _record_usage(
                     break
             except json.JSONDecodeError, ValueError:
                 continue
+
+    # A non-streaming JSON body longer than the usage tail arrives cut at the
+    # front; its trailing usage/timings objects are still whole, so parse them.
+    if not tokens_out["completion"]:
+        _extract_trailing_objects(text, tokens_out)
 
     prompt_tokens = int(tokens_out["prompt"] or 0)
     completion_tokens = int(tokens_out["completion"] or 0)

@@ -10,7 +10,6 @@ from textual.widgets import Label, Markdown
 from textual.widgets.markdown import MarkdownFence
 from textual.worker import Worker
 
-from drove.config import Config
 from drove.sessions import Session, load_session
 from drove.tui import ChatApp, ChatInput, CodePicker, Message, _http_error
 
@@ -329,9 +328,9 @@ async def test_speed_is_received_chunk_rate_not_tokens(app, monkeypatch, elapsed
 async def test_theme_feedback_matches_persistence(app, monkeypatch, tmp_path, failure):
     app._config_path = None if failure == "session" else tmp_path / "config.toml"
     if failure == "load":
-        monkeypatch.setattr("drove.config.load_config", Mock(side_effect=OSError("denied")))
+        monkeypatch.setattr("drove.config.read_config_file", Mock(side_effect=OSError("denied")))
     elif failure == "save":
-        monkeypatch.setattr(Config, "save", Mock(side_effect=OSError("denied")))
+        monkeypatch.setattr("drove.config._write_config_file", Mock(side_effect=OSError("denied")))
     async with app.run_test():
         await app._dispatch_command("/theme textual-light")
         note = plain(list(app.query(".system-note .message-body"))[-1])
@@ -449,3 +448,19 @@ async def test_paced_markdown_follows_only_until_user_scrolls(app, monkeypatch, 
         await worker.wait()
         await pilot.pause()
         assert container.scroll_y == (0 if manual_scroll else container.max_scroll_y)
+
+
+async def test_theme_save_writes_only_theme(app, monkeypatch, tmp_path):
+    import tomllib
+
+    app._config_path = tmp_path / "config.toml"
+    app._config_path.write_text('listen_port = 7000\nunknown = "kept"\n')
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    monkeypatch.setenv("DROVE_IDLE_TIMEOUT_SECONDS", "5")
+    async with app.run_test():
+        await app._dispatch_command("/theme textual-light")
+    assert tomllib.loads(app._config_path.read_text()) == {
+        "listen_port": 7000,
+        "unknown": "kept",
+        "tui_theme": "textual-light",
+    }

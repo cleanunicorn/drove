@@ -299,7 +299,7 @@ async def test_stop_waits_for_running_tool_and_pairs_remaining_calls(tmp_path, m
     loop = asyncio.get_running_loop()
     executed, requests = [], []
 
-    def execute(name, args, on_output=None):
+    def execute(name, args, on_output=None, **kwargs):
         executed.append(name)
         loop.call_soon_threadsafe(started.set)
         assert release.wait(3)

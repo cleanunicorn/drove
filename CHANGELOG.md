@@ -1,5 +1,122 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Added
+
+- Added the `observe_max_age_days` setting (default 30): observe records older than that are
+  deleted at startup and hourly while serving; `0` keeps them forever.
+
+### Changed
+
+- "Allow for Session" and "Allow Always" applied to one directory (and below) for a read
+  tool, or to one exact origin (scheme, host and port) for `fetch_url`, instead of the whole
+  tool. `shell_execute` and
+  `write_file` asked on every call and no longer offered these choices. Bare tool names
+  already in `allowed_tools` (such as `"shell_execute"` or `"fetch_url"`) were no longer
+  honoured; approve the directory or origin again when asked.
+- `drove models list` named the incomplete downloads it hid, including ones interrupted before
+  any weights arrived, and said how to finish or delete them.
+- Logic that this release's changes had written twice was shared instead: the response
+  content-type lookup, the observe body-size rule, the file-only config sources, the flat-GGUF
+  primary check, the default port and tool path join for chat tools, the download record's
+  temporary name, the config-error exit and the tool dialog choices. Proxy statistics kept only
+  the newest speed and time-to-first-token sample. No behaviour changed.
+- Documented the grant-token format of `allowed_tools` and `add_allowed_tool`,
+  `latest_session` and `parse_grants`, why the downloader pre-checks expected files, and
+  `cli/tui_logging.py` in the agent guide's project map. Added tests covering download records,
+  observe capture limits, retention failures, unresolvable read paths and `drove init`
+  completeness, and pinned the exact reasons for incomplete downloads.
+
+### Removed
+
+- Removed the unused Hugging Face to GGUF conversion module and every mention suggesting drove
+  converts models; drove serves GGUF and ONNX models as published.
+
+### Fixed
+
+- Startup failures now return deliberate statuses with short messages instead of bare 500s: 503 for
+  a missing or unlaunchable backend, 500 for an invalid model config, 503 for a backend that exits
+  or never becomes healthy.
+- Failed startups no longer leak the active-request count, whatever the error.
+- A broken model config is detected before any loaded model is stopped or evicted.
+- Fixed vision models being served from their `mmproj` projector instead of the model weights, so
+  their model settings are found again; a directory holding only projectors is no longer listed as
+  a model.
+- Saving configuration (`drove config <key> <value>`, `/theme` and "allow always" in
+  `drove chat`, chat tip progress) changed only that key in `config.toml`. `DROVE_*`
+  environment overrides stayed temporary and defaults were no longer frozen into the file;
+  `drove init` wrote the true defaults even when `DROVE_*` variables were set.
+- An invalid value in `config.toml`, broken TOML syntax, or an invalid `DROVE_*` value stopped
+  commands with a short message naming the file or variable and the key, instead of a traceback.
+  `drove config <key> <value>` could repair an invalid value in the file; broken TOML syntax had
+  to be fixed by hand or reset with `drove init --force`.
+- `drove chat`, its model picker, `drove observe` and the quantization picker no longer
+  print HTTP request log lines (and other log records) over the screen next to the input
+  box; while they run, records go to Textual's log, visible with `textual console`.
+  `drove server` and other commands still log to stderr.
+- Requests from clients that disconnect while their model is starting, or before the backend
+  answers, are no longer forwarded (or are cancelled in flight), so the model no longer stays busy
+  for nobody. A cancelled request no longer leaves the active-request counts raised.
+- Interrupted downloads, Hugging Face cache leftovers and raw safetensors/`.bin`/`.pt` weights are
+  no longer listed, advertised on `/v1/models`, offered by shell completion or registered with
+  agents, and they are never served. A split GGUF missing any shard counts as incomplete too, and
+  `drove models info` explains what is missing. Rerunning the download finishes it; models
+  downloaded before this change keep working.
+- Downloading a repository with no GGUF or ONNX weights is refused up front with a pointer to GGUF
+  builds, instead of downloading files no backend can serve.
+- `drove models download <repo> --yes` on a repository with several GGUF quantizations now stops
+  and asks for `<repo>:QUANT` instead of downloading every quantization.
+- Observe records stay below 1 MiB: text bodies are capped at 256 KiB with a truncation marker,
+  and binary uploads and audio are saved as a size and content-type placeholder instead of hex.
+- The proxy no longer keeps whole responses in memory to count tokens, and never buffers audio.
+- Saving an observe record no longer blocks request handling on the event loop.
+- Proxy speed and time-to-first-token statistics no longer grow with every request, so
+  `/status` stays cheap on long-running servers.
+- `fetch_url` followed up to five redirects (a redirect to a new origin asked for approval)
+  instead of reporting every redirect as an error.
+- A request for a model whose download was incomplete returned a 404 saying so and how to
+  finish it, instead of reporting the model as not found.
+- Chat sessions are now saved atomically, so a crash or full disk mid-save keeps the previous copy of the conversation instead of leaving a truncated file.
+- An unreadable or malformed session file no longer breaks `drove chat --resume` or `/sessions`; it is skipped with a warning and left on disk for repair.
+- New conversations started within the same second (with `/new`, `/clear`, or in two windows) now get their own session files instead of overwriting each other.
+- The observe viewers (web and TUI) no longer failed with an error when the retention pass
+  deleted an old record while it was being listed, searched or opened; the record was skipped.
+- In `drove chat`, choosing "Allow always" warned when the approval could not be saved to the
+  config file (for example, because another value in it was invalid); it still applied for the
+  session.
+- In the `drove chat` tool approval dialog, the line saying what "Allow for Session" and
+  "Allow Always" grant lined up with the text above it, and the reason for asking was marked
+  with a warning-coloured rule.
+- A backend that failed to start had its stderr written to the server log once instead of
+  twice.
+
+### Security
+
+- Backend stderr is no longer returned to clients on startup failure; it stays in the server log. The 404 for an unknown model no longer reveals the server's models directory.
+- Observe records no longer store `Authorization`, `Proxy-Authorization`, `Cookie`,
+  `Set-Cookie` or `X-Api-Key` header values; they are saved as `[REDACTED]`.
+- Observe record files are created readable by their owner only (mode 0600).
+- `drove chat` asked before `read_file`, `list_files` or `search_files` touched anything
+  outside the directory the chat was started in (symlinks followed), and before every read
+  when `--endpoint` (or `--host`) pointed at a server other than this machine. Searches and
+  listings inside the working directory skipped symlinks leading out of it.
+- `fetch_url` refused loopback, private, link-local, unique-local and unspecified addresses
+  (IPv4 and IPv6, including NAT64, 6to4 and other IPv6 forms of an internal IPv4 address)
+  unless the user approved that origin, checked every DNS answer of every redirect hop,
+  connected only to the address it had checked, and ignored proxy environment variables.
+- Shell commands ran in their own process group, killed on timeout and after the command
+  ended, so no child or grandchild outlived it. Timeouts were clamped to 1–600 seconds
+  (a missing, `null` or invalid value meant 30), at most four background tasks ran at once
+  under the same timeout, and finished ones were forgotten after ten minutes (sixteen kept).
+- Every tool result was capped at 64 KiB with a truncation notice before it reached the
+  model, the chat history or a saved session, and resumed sessions were capped when loaded.
+  `read_file` returned 200 lines by default and said where to continue; `search_files`
+  matched the file name before reading content and skipped files over 1 MiB, binary files
+  and non-UTF-8 files.
+- A session id read from a stored session file can no longer direct a save outside the sessions directory.
+- `read_file`, `list_files` and `search_files` refused a path outside the approved directories
+  before checking whether it existed, so a model could no longer probe which paths exist there.
 
 ## v0.13.1 (2026-10-27)
 

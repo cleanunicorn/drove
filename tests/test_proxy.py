@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import httpx
@@ -542,6 +543,12 @@ def test_default_model_multipart_preserves_body(tmp_path: Path) -> None:
         assert send.call_args.args[0].content == result.request.content
 
 
+def _write_config(config: Config, path: Path) -> None:
+    import tomli_w
+
+    path.write_text(tomli_w.dumps(config.model_dump(mode="json", exclude_none=True)))
+
+
 def test_default_model_reload_change_and_removal(tmp_path: Path) -> None:
     from drove.proxy import _reload_config
 
@@ -556,11 +563,11 @@ def test_default_model_reload_change_and_removal(tmp_path: Path) -> None:
     ):
         assert client.post("/v1/chat/completions", json={}).status_code == 404
         ensure.assert_awaited_with("first", claim=True)
-        config.model_copy(update={"default_model": "second"}).save(path)
+        _write_config(config.model_copy(update={"default_model": "second"}), path)
         _reload_config(app, path)
         assert client.post("/v1/chat/completions", json={}).status_code == 404
         ensure.assert_awaited_with("second", claim=True)
-        config.model_copy(update={"default_model": None}).save(path)
+        _write_config(config.model_copy(update={"default_model": None}), path)
         _reload_config(app, path)
         assert client.post("/v1/chat/completions", json={}).status_code == 400
         assert ensure.await_count == 2
@@ -654,7 +661,9 @@ def _forbid_disk_walk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "glob", forbidden)
 
 
-@pytest.mark.parametrize("model", [*_INVALID_JSON_MODELS, None, 1, 1.5, True, ["m"], {"name": "m"}])
+@pytest.mark.parametrize(
+    "model", [*_INVALID_JSON_MODELS, None, 1, 123, 1.5, True, [], ["m"], {"name": "m"}]
+)
 @pytest.mark.parametrize("default", [None, "preferred"])
 def test_proxy_rejects_invalid_json_model_with_400(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: object, default: str | None
@@ -752,3 +761,660 @@ def test_models_endpoint_hides_names_the_api_would_reject(tmp_path: Path) -> Non
     with TestClient(create_app(config)) as client:
         ids = [m["id"] for m in client.get("/v1/models").json()["data"]]
     assert ids == ["good"]
+
+
+# ── Startup failures: deliberate statuses, balanced accounting, private stderr ─────
+
+_LIST_HINT = "Run 'drove models list' to see available models."
+_SENTINEL = "SECRET-STDERR-/home/user/.cache/model.gguf"
+
+
+def _toml_error() -> Exception:
+    import tomllib
+
+    try:
+        tomllib.loads("ctx_size = = 1")
+    except tomllib.TOMLDecodeError as e:
+        return e
+    raise AssertionError("expected a TOML error")
+
+
+def _validation_error() -> Exception:
+    from pydantic import ValidationError
+
+    from drove.model_config import ModelConfig
+
+    try:
+        ModelConfig(ctx_size="bad")  # type: ignore[arg-type]
+    except ValidationError as e:
+        return e
+    raise AssertionError("expected a validation error")
+
+
+class _OddError(Exception):
+    pass
+
+
+def _startup_cases() -> list[Any]:
+    from drove.server_manager import BackendUnavailableError
+
+    config_detail = "invalid model config for 'm'"
+    failed = "model failed to start; see server logs"
+    return [
+        (FileNotFoundError(_SENTINEL), 404, "Model 'm' not found. " + _LIST_HINT),
+        (TypeError(_SENTINEL), 500, "model startup failed; see server logs"),
+        (ValueError(_SENTINEL), 500, config_detail),
+        (_toml_error(), 500, config_detail),
+        (_validation_error(), 500, config_detail),
+        (OSError(8, _SENTINEL), 503, failed),
+        (RuntimeError(_SENTINEL), 503, failed),
+        (TimeoutError(_SENTINEL), 503, failed),
+        (BackendUnavailableError(_SENTINEL), 503, "backend unavailable; see server logs"),
+        (_OddError(_SENTINEL), 500, "model startup failed; see server logs"),
+    ]
+
+
+@pytest.mark.parametrize(("error", "status", "detail"), _startup_cases())
+@pytest.mark.parametrize("baseline", [0, 2])
+def test_startup_failure_maps_to_deliberate_status_and_balances_stats(
+    tmp_path: Path, error: Exception, status: int, detail: str, baseline: int
+) -> None:
+    app = create_app(make_config(tmp_path))
+    stats = app.state.stats
+    for _ in range(baseline):
+        stats.request_started()
+    errors_before = stats.error_count
+    with (
+        patch.object(app.state.manager, "ensure_running", side_effect=error),
+        patch.object(app.state.client, "send", new_callable=AsyncMock) as send,
+        TestClient(app) as client,
+    ):
+        resp = client.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        reported = client.get("/status").json()["requests"]
+    assert resp.status_code == status
+    assert resp.json() == {"detail": detail}
+    assert _SENTINEL not in resp.text
+    send.assert_not_awaited()
+    assert reported["active"] == baseline
+    assert stats.error_count == errors_before + 1
+
+
+def test_startup_failure_leaves_other_models_claims_alone(tmp_path: Path) -> None:
+    app = create_app(make_config(tmp_path))
+    manager = app.state.manager
+    other = _live_instance(tmp_path, "other")
+    other.active_requests = 1
+    manager._instances["other"] = other
+    with (
+        patch.object(manager, "ensure_running", side_effect=_OddError("boom")),
+        TestClient(app) as client,
+    ):
+        resp = client.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        assert resp.status_code == 500
+        assert other.active_requests == 1
+        manager._instances.clear()  # keep the lifespan shutdown away from the fake process
+
+
+def test_unknown_model_still_returns_404_with_balanced_stats(tmp_path: Path) -> None:
+    app = create_app(make_config(tmp_path))
+    with TestClient(app) as client:
+        resp = client.post("/v1/chat/completions", json={"model": "ghost", "messages": []})
+        reported = client.get("/status").json()["requests"]
+    assert resp.status_code == 404
+    assert reported["active"] == 0
+    assert reported["errors"] == 1
+    # The store's own message names models_dir; clients get only the model name.
+    assert resp.json() == {"detail": "Model 'ghost' not found. " + _LIST_HINT}
+    assert str(app.state.config.models_dir) not in resp.text
+
+
+def _real_manager_app(tmp_path: Path, **updates: Any) -> tuple[Any, Path]:
+    config = make_config(tmp_path).model_copy(update=updates)
+    model_dir = config.models_dir / "m"
+    model_dir.mkdir()
+    model_path = model_dir / "m.gguf"
+    model_path.write_bytes(b"")
+    return create_app(config), model_path
+
+
+def _post_chat(app: Any) -> tuple[Any, dict[str, int]]:
+    with TestClient(app) as client:
+        resp = client.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        return resp, client.get("/status").json()["requests"]
+
+
+def _assert_clean_failure(app: Any, requests: dict[str, int], errors_before: int = 0) -> None:
+    assert requests["active"] == 0
+    assert requests["errors"] == errors_before + 1
+    assert not app.state.manager._instances
+    assert not app.state.manager._idle_tasks
+
+
+def test_missing_llama_server_binary_returns_503(tmp_path: Path) -> None:
+    app, _ = _real_manager_app(tmp_path)
+    with patch("drove.server_manager.shutil.which", return_value=None):
+        resp, requests = _post_chat(app)
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "backend unavailable; see server logs"}
+    _assert_clean_failure(app, requests)
+
+
+@pytest.mark.parametrize("error", [OSError(8, "Exec format error"), FileNotFoundError("gone")])
+def test_exec_failure_returns_503(tmp_path: Path, error: OSError) -> None:
+    app, _ = _real_manager_app(tmp_path)
+    with (
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        patch(
+            "drove.server_manager.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=error),
+        ),
+    ):
+        resp, requests = _post_chat(app)
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "backend unavailable; see server logs"}
+    _assert_clean_failure(app, requests)
+
+
+def _live_instance(tmp_path: Path, name: str) -> Any:
+    from drove.server_manager import _ModelInstance
+
+    process = MagicMock()
+    process.returncode = None
+    process.pid = 4242
+    return _ModelInstance(name, process, 9999, tmp_path / f"{name}.gguf", (0.0, 0.0))
+
+
+def _healthy_loaded_instance(app: Any, tmp_path: Path) -> Any:
+    healthy = _live_instance(tmp_path, "healthy")
+    app.state.manager._instances["healthy"] = healthy
+    return healthy
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    ['backend = "nope"\n', "ctx_size = = 1\n", 'ctx_size = "bad"\n'],
+    ids=["unknown-backend", "malformed-toml", "wrong-type"],
+)
+def test_broken_sidecar_returns_500_without_evicting_loaded_model(
+    tmp_path: Path, sidecar: str
+) -> None:
+    app, model_path = _real_manager_app(tmp_path, max_loaded_models=1)
+    model_path.with_suffix(".toml").write_text(sidecar)
+    manager = app.state.manager
+    healthy = _healthy_loaded_instance(app, tmp_path)
+    with (
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        patch.object(manager, "_stop_instance", new_callable=AsyncMock) as stop,
+        patch(
+            "drove.server_manager.asyncio.create_subprocess_exec", new_callable=AsyncMock
+        ) as spawn,
+        TestClient(app) as client,
+    ):
+        resp = client.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        requests = client.get("/status").json()["requests"]
+        stop.assert_not_awaited()  # checked before the lifespan shutdown stops everything
+        spawn.assert_not_awaited()
+        assert manager._instances == {"healthy": healthy}
+        manager._instances.clear()
+    assert resp.status_code == 500
+    assert resp.json() == {"detail": "invalid model config for 'm'"}
+    assert requests["active"] == 0
+    assert requests["errors"] == 1
+
+
+def _fake_backend(returncode: int | None, stderr: bytes) -> MagicMock:
+    process = MagicMock()
+    process.returncode = returncode
+    process.pid = 4242
+    process.wait = AsyncMock(return_value=0)
+    process.stderr.read = AsyncMock(side_effect=[stderr, b""])
+
+    def exit_on_signal(_sig: int) -> None:
+        process.returncode = 0
+
+    process.send_signal.side_effect = exit_on_signal
+    return process
+
+
+@pytest.mark.parametrize("mode", ["exit", "timeout"])
+def test_health_failure_returns_503_without_stderr_but_logs_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, mode: str
+) -> None:
+    app, _ = _real_manager_app(tmp_path, startup_timeout_seconds=0.3)
+    process = _fake_backend(1 if mode == "exit" else None, _SENTINEL.encode())
+    with (
+        patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+        patch(
+            "drove.server_manager.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ),
+        patch(
+            "httpx.AsyncClient.get",
+            new_callable=AsyncMock,
+            side_effect=httpx.ConnectError("refused"),
+        ),
+        caplog.at_level("ERROR", logger="drove"),
+    ):
+        resp, requests = _post_chat(app)
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "model failed to start; see server logs"}
+    assert _SENTINEL not in resp.text
+    assert caplog.text.count(_SENTINEL) == 1  # logged once, not by both layers
+    _assert_clean_failure(app, requests)
+
+
+# --- Client disconnects before the response starts (#112) -------------------
+
+
+class _Connection:
+    """A raw ASGI client: sends the whole body, then disconnects when told to."""
+
+    def __init__(self, body: bytes) -> None:
+        self._pending: list[dict[str, object]] = [
+            {"type": "http.request", "body": body, "more_body": False}
+        ]
+        self.gone = asyncio.Event()
+        self.body_sent = asyncio.Event()
+        self.status: int | None = None
+
+    async def receive(self) -> dict[str, object]:
+        if self._pending:
+            return self._pending.pop(0)
+        await self.gone.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(self, message: dict[str, object]) -> None:
+        if message["type"] == "http.response.start":
+            self.status = message["status"]  # type: ignore[assignment]
+        elif message["type"] == "http.response.body" and message.get("body"):
+            self.body_sent.set()
+
+
+def _scope(path: str, content_type: str, body: bytes) -> dict[str, object]:
+    return {
+        "type": "http",
+        # 2.3: StreamingResponse watches receive() for http.disconnect, as under uvicorn.
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": f"/{path}",
+        "raw_path": f"/{path}".encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", content_type.encode()),
+            (b"content-length", str(len(body)).encode()),
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", 8080),
+    }
+
+
+def _multipart_body() -> tuple[bytes, str]:
+    request = httpx.Request(
+        "POST",
+        "http://drove/v1/audio/transcriptions",
+        data={"model": "m"},
+        files={"file": ("a.wav", b"RIFF....WAVE", "audio/wav")},
+    )
+    request.read()
+    return request.content, request.headers["content-type"]
+
+
+_ENDPOINTS = {
+    "chat-stream": (
+        "v1/chat/completions",
+        "application/json",
+        b'{"model": "m", "stream": true, "messages": []}',
+    ),
+    "chat-buffered": (
+        "v1/chat/completions",
+        "application/json",
+        b'{"model": "m", "stream": false, "messages": []}',
+    ),
+    "asr": ("v1/audio/transcriptions", *reversed(_multipart_body())),
+    "tts": ("v1/audio/speech", "application/json", b'{"model": "m", "input": "hi"}'),
+}
+
+
+class _Abort(BaseException):
+    """A BaseException that is neither an Exception nor a cancellation."""
+
+
+class _Harness:
+    """A loaded model 'm' that already serves one other request, plus fakes.
+
+    The other request (instance count 1, global active count 1) is a sentinel:
+    a double release would drop it to 0 instead of hiding behind the floor at 0.
+    """
+
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from drove.server_manager import _ModelInstance
+
+        self.app = create_app(make_config(tmp_path))
+        self.manager = self.app.state.manager
+        self.stats = self.app.state.stats
+        self.instance = _ModelInstance(
+            "m", MagicMock(returncode=None), 9999, tmp_path / "m.gguf", (0.0, 0.0)
+        )
+        self.instance.active_requests = 1
+        self.manager._instances["m"] = self.instance
+        self.stats.request_started()
+
+        self.finished = MagicMock(wraps=self.manager.request_finished)
+        monkeypatch.setattr(self.manager, "request_finished", self.finished)
+
+        self.starting = asyncio.Event()
+        self.started = asyncio.Event()
+        self.started.set()
+
+        async def ensure_running(model_name: str, *, claim: bool = False) -> object | None:
+            self.starting.set()
+            await self.started.wait()
+            return self.manager._claim_slot(model_name)
+
+        monkeypatch.setattr(self.manager, "ensure_running", ensure_running)
+
+        self.sending = asyncio.Event()
+        self.send_cancelled = asyncio.Event()
+        self.answer = asyncio.Event()  # never set by the disconnect tests
+        self.send_error: BaseException | None = None
+        self.upstream: list[httpx.Request] = []
+        self.response = MagicMock(spec=httpx.Response)
+        self.response.status_code = 200
+        self.response.headers = httpx.Headers({"content-type": "application/json"})
+        self.response.aiter_raw = lambda: aiter([b'{"ok": true}'])
+        self.response.aclose = AsyncMock()
+
+        async def send(request: httpx.Request, *, stream: bool = False) -> httpx.Response:
+            self.upstream.append(request)
+            self.sending.set()
+            if self.send_error is not None:
+                raise self.send_error
+            try:
+                await self.answer.wait()
+            except asyncio.CancelledError:
+                self.send_cancelled.set()
+                raise
+            return self.response
+
+        self.send = AsyncMock(side_effect=send)
+        monkeypatch.setattr(self.app.state.client, "send", self.send)
+
+    def call(self, endpoint: str) -> tuple[asyncio.Task[None], _Connection]:
+        path, content_type, body = _ENDPOINTS[endpoint]
+        conn = _Connection(body)
+        task = asyncio.create_task(
+            self.app(_scope(path, content_type, body), conn.receive, conn.send)
+        )
+        return task, conn
+
+    def assert_released_once(self) -> None:
+        self.finished.assert_called_once_with("m", self.instance)
+        assert self.instance.active_requests == 1
+        assert self.stats.active_requests == 1
+
+
+@pytest.fixture
+async def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    h = _Harness(tmp_path, monkeypatch)
+    yield h
+    h.manager._instances.clear()
+    await h.app.state.client.aclose()
+
+
+@pytest.mark.parametrize("endpoint", list(_ENDPOINTS))
+async def test_disconnect_during_cold_start_is_never_forwarded(
+    harness: _Harness, endpoint: str
+) -> None:
+    harness.started.clear()
+    task, conn = harness.call(endpoint)
+    await asyncio.wait_for(harness.starting.wait(), 5)
+    conn.gone.set()
+    harness.started.set()
+    await asyncio.wait_for(task, 5)
+
+    harness.send.assert_not_awaited()
+    harness.assert_released_once()
+    assert harness.stats.error_count == 0
+    assert conn.status == 499
+
+
+@pytest.mark.parametrize("endpoint", list(_ENDPOINTS))
+async def test_disconnect_during_upstream_send_cancels_it(harness: _Harness, endpoint: str) -> None:
+    task, conn = harness.call(endpoint)
+    await asyncio.wait_for(harness.sending.wait(), 5)
+    conn.gone.set()
+    # The fake upstream never answers: the handler only finishes by cancelling it.
+    await asyncio.wait_for(task, 5)
+
+    assert harness.send_cancelled.is_set()
+    assert not harness.answer.is_set()
+    harness.assert_released_once()
+    assert harness.stats.error_count == 0
+    assert conn.status == 499
+
+
+async def test_mid_stream_disconnect_releases_once(harness: _Harness) -> None:
+    more = asyncio.Event()  # never set: the second chunk never arrives
+
+    async def chunks():  # type: ignore[no-untyped-def]
+        yield b'data: {"choices": []}\n\n'
+        await more.wait()
+        yield b"data: [DONE]\n\n"
+
+    harness.response.aiter_raw = chunks
+    harness.answer.set()
+    task, conn = harness.call("chat-stream")
+    await asyncio.wait_for(conn.body_sent.wait(), 5)
+    conn.gone.set()
+    await asyncio.wait_for(task, 5)
+
+    assert conn.status == 200
+    harness.assert_released_once()
+
+
+async def test_connected_client_still_gets_the_upstream_response(harness: _Harness) -> None:
+    harness.answer.set()
+    task, conn = harness.call("chat-buffered")
+    await asyncio.wait_for(task, 5)
+
+    assert conn.status == 200
+    assert conn.body_sent.is_set()
+    harness.assert_released_once()
+
+
+async def test_fallback_model_forwards_a_non_json_body_intact(harness: _Harness) -> None:
+    harness.answer.set()
+    conn = _Connection(b"plain text body")
+    scope = _scope("v1/completions", "text/plain", b"plain text body")
+    await asyncio.wait_for(harness.app(scope, conn.receive, conn.send), 5)
+
+    assert conn.status == 200
+    assert harness.upstream[0].content == b"plain text body"
+    harness.assert_released_once()
+
+
+async def test_cancel_during_cold_start_settles_without_a_release(harness: _Harness) -> None:
+    harness.started.clear()
+    task, _ = harness.call("chat-stream")
+    await asyncio.wait_for(harness.starting.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    harness.finished.assert_not_called()
+    assert harness.instance.active_requests == 1
+    assert harness.stats.active_requests == 1
+
+
+async def test_cancel_during_upstream_send_releases_once(harness: _Harness) -> None:
+    before = asyncio.all_tasks()
+    task, _ = harness.call("chat-stream")
+    await asyncio.wait_for(harness.sending.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert harness.send_cancelled.is_set()
+    harness.assert_released_once()
+    assert harness.stats.error_count == 0
+    leftover = [t for t in asyncio.all_tasks() - before if not t.done()]
+    assert leftover == []
+
+
+async def test_base_exception_from_upstream_send_releases_once(harness: _Harness) -> None:
+    harness.send_error = _Abort()
+    task, _ = harness.call("tts")
+    with pytest.raises(_Abort):
+        await asyncio.wait_for(task, 5)
+
+    harness.assert_released_once()
+
+
+async def test_send_race_prefers_disconnect_on_a_tie() -> None:
+    from drove.proxy import _send_unless_disconnected
+
+    response = MagicMock(spec=httpx.Response)
+    response.aclose = AsyncMock()
+    client = MagicMock(spec=httpx.AsyncClient)
+    client.send = AsyncMock(return_value=response)
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.disconnect"}
+
+    assert await _send_unless_disconnected(client, MagicMock(), receive) is None
+    response.aclose.assert_awaited_once()
+
+
+async def test_send_race_ignores_non_disconnect_messages() -> None:
+    from drove.proxy import _send_unless_disconnected
+
+    response = MagicMock(spec=httpx.Response)
+    answer = asyncio.Event()
+
+    async def send(request: object, *, stream: bool = False) -> httpx.Response:
+        await answer.wait()
+        return response
+
+    client = MagicMock(spec=httpx.AsyncClient)
+    client.send = AsyncMock(side_effect=send)
+    messages = [{"type": "http.request", "body": b"", "more_body": False}]
+
+    async def receive() -> dict[str, object]:
+        if messages:
+            message = messages.pop()
+            answer.set()
+            return message
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    assert await _send_unless_disconnected(client, MagicMock(), receive) is response
+
+
+def _race_parts() -> tuple[MagicMock, MagicMock, asyncio.Event, asyncio.Event]:
+    """A client whose send answers at once, and a response whose close can be held."""
+    closing = asyncio.Event()
+    may_close = asyncio.Event()
+    response = MagicMock(spec=httpx.Response)
+
+    async def aclose() -> None:
+        closing.set()
+        await may_close.wait()
+
+    response.aclose = AsyncMock(side_effect=aclose)
+    client = MagicMock(spec=httpx.AsyncClient)
+    client.send = AsyncMock(return_value=response)
+    return client, response, closing, may_close
+
+
+def _cancel_on_watcher_cleanup(parent: list[asyncio.Task[object]]):  # type: ignore[no-untyped-def]
+    """A receive() that blocks, and cancels the handler once the watcher is cancelled.
+
+    That is the moment the send has won and the helper is winding the watcher down.
+    """
+
+    async def receive() -> dict[str, object]:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            parent[0].cancel()
+            raise
+        raise AssertionError("unreachable")
+
+    return receive
+
+
+async def test_send_race_closes_the_response_when_cancelled_during_handoff() -> None:
+    from drove.proxy import _send_unless_disconnected
+
+    client, response, closing, may_close = _race_parts()
+    may_close.set()
+    parent: list[asyncio.Task[object]] = []
+    before = asyncio.all_tasks()
+    receive = _cancel_on_watcher_cleanup(parent)
+    parent.append(asyncio.create_task(_send_unless_disconnected(client, MagicMock(), receive)))
+    with pytest.raises(asyncio.CancelledError):
+        await parent[0]
+
+    await asyncio.wait_for(closing.wait(), 5)
+    response.aclose.assert_awaited_once()
+    assert [t for t in asyncio.all_tasks() - before if not t.done()] == []
+
+
+async def test_send_race_finishes_closing_when_cancelled_again() -> None:
+    from drove.proxy import _send_unless_disconnected
+
+    client, response, closing, may_close = _race_parts()
+    parent: list[asyncio.Task[object]] = []
+    receive = _cancel_on_watcher_cleanup(parent)
+    parent.append(asyncio.create_task(_send_unless_disconnected(client, MagicMock(), receive)))
+    await asyncio.wait_for(closing.wait(), 5)
+    parent[0].cancel()  # a second cancellation must not abandon the close
+    with pytest.raises(asyncio.CancelledError):
+        await parent[0]
+
+    from drove.proxy import _background_tasks
+
+    assert _background_tasks  # the shielded cleanup is still closing the response
+    may_close.set()
+    await asyncio.wait_for(_drain_background_tasks(), 5)
+    response.aclose.assert_awaited_once()
+
+
+async def _drain_background_tasks() -> None:
+    from drove.proxy import _background_tasks
+
+    while _background_tasks:
+        await asyncio.gather(*_background_tasks)
+
+
+def test_unservable_and_incomplete_downloads_are_hidden_and_never_started(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    models = config.models_dir
+    (models / "ready").mkdir()
+    (models / "ready" / "model.gguf").write_bytes(b"GGUF")
+    (models / "org" / "cache-only" / ".cache" / "huggingface").mkdir(parents=True)
+    (models / "org" / "cache-only" / ".cache" / "huggingface" / "x.incomplete").write_bytes(b"")
+    (models / "raw").mkdir()
+    (models / "raw" / "model.safetensors").write_bytes(b"weights")
+    (models / "split").mkdir()
+    (models / "split" / "split-00001-of-00002.gguf").write_bytes(b"GGUF")
+    app = create_app(config)
+    with (
+        patch.object(app.state.manager, "_start", new_callable=AsyncMock) as start,
+        TestClient(app, raise_server_exceptions=False) as client,
+    ):
+        ids = [m["id"] for m in client.get("/v1/models").json()["data"]]
+        resp = client.post("/v1/chat/completions", json={"model": "split", "messages": []})
+    assert ids == ["ready"]
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == (
+        "Model 'split' is incomplete. Rerun 'drove models download' to finish it; "
+        "'drove models info split' shows what is missing."
+    )
+    assert str(models) not in resp.json()["detail"]
+    start.assert_not_awaited()

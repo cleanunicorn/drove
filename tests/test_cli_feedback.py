@@ -246,11 +246,9 @@ def test_failed_completion_write_does_not_report_success(cli, tmp_path, monkeypa
 
 
 def test_failed_config_write_reports_error_without_success(cli, monkeypatch) -> None:
-    from drove.config import Config
-
     runner, cfg, _ = cli
     original = cfg.read_text()
-    monkeypatch.setattr(Config, "save", Mock(side_effect=OSError("read-only")))
+    monkeypatch.setattr("drove.config._write_config_file", Mock(side_effect=OSError("read-only")))
     for args in (["init", "--force"], ["config", "listen_port", "9000"]):
         result = runner.invoke(app, ["-c", str(cfg), *args])
         assert result.exit_code == 1 and "Error:" in result.stderr

@@ -39,11 +39,20 @@ drove models download unsloth/Qwen3-8B-GGUF:Q4_K_M --name qwen
 
 Then use `"model":"qwen"`. See [Model naming](./models.md#download-and-name-a-model).
 
+## HTTP 500: invalid model config
+
+`invalid model config for '<name>'` means the model's sidecar (or `_global.toml`)
+is malformed, has a wrong-typed value, or names an unknown `backend`. The server
+log says which key. Models that are already loaded are not evicted by a broken
+config.
+
 ## HTTP 503: backend startup failed
 
-Run `drove -v serve --host 127.0.0.1` in the foreground after stopping any
-existing proxy on that port, or inspect your service logs. Check the relevant
-backend:
+The response only says `backend unavailable` (executable missing or not
+launchable) or `model failed to start`; the backend's own output is kept out of
+responses. Run `drove -v serve --host 127.0.0.1` in the foreground after
+stopping any existing proxy on that port, or inspect your service logs, where the
+backend stderr appears. Check the relevant backend:
 
 | Backend | Check |
 | --- | --- |

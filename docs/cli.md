@@ -36,6 +36,15 @@ Global options: `-c, --config PATH`, `-v, --verbose` (debug logging),
 drove --config /path/to/config.toml server status -V
 ```
 
+`-v` is a root option, so it goes before the command: `drove -v chat MODEL`. While a
+full-screen interface runs (`drove chat`, its model picker, `drove observe`, and the
+quantization picker in `drove models download`), log records go to Textual's log
+instead of the terminal, so they never draw over the screen. To watch them, install
+`textual-dev` into drove's environment, run `textual console` in another terminal,
+and start drove with `TEXTUAL=devtools drove -v chat MODEL`. Without a connected
+console these records are discarded. Every other command, including `drove server`,
+logs to stderr as before.
+
 For walkthroughs, see [Managing models](./models.md),
 [Text and vision](./text-and-vision.md), and [Running drove](./operations.md).
 
@@ -74,7 +83,8 @@ available through `/sessions` when using their model.
 from configuration, or opens the existing model picker when no default is set.
 The same order applies with `--endpoint`; an explicit model overrides the
 configured identifier for remote APIs too. `--resume` looks up sessions for
-the selected model.
+the selected model. Session files that cannot be read are skipped with a warning and
+left on disk, so a repaired file shows up again.
 
 ```bash
 drove config default_model "org/model:Q4_K_M"
@@ -133,15 +143,49 @@ queue without restarting it. Pending messages are not saved until sent.
 Each tool call appears in the reply as soon as the model requests it, with its
 name and shortened arguments, marked **pending** until it is approved and
 **running** with elapsed seconds while it executes. `shell_execute` streams the last
-few lines of its output into the entry as it runs; the model still receives the
-full output. When the tool ends, the same entry shows its result and outcome:
+few lines of its output into the entry as it runs; the model receives the full
+output up to the tool output limit below. When the tool ends, the same entry shows its result and outcome:
 **✓** done, **✗ failed** (an error, timeout, or nonzero exit code), **⊘ denied**,
 or **⊘ not run** after a stop. Resumed sessions show earlier calls without an
 outcome mark, except denials.
 
 Tool confirmation shortcuts are **y** (allow once), **n** or **Esc** (deny once),
 **s** (allow for this session), and **a** (allow always). Esc in this dialog denies
-the call rather than stopping the whole turn. A tool that has already started
+the call rather than stopping the whole turn.
+
+What asks for approval:
+
+- `read_file`, `list_files` and `search_files` run without asking inside the
+  directory `drove chat` was started in, and ask for anything outside it. Paths are
+  resolved first, so `..`, `~` and symlinks that lead out ask too; a recursive search or
+  listing never follows a symlink out of the approved directories. When the chat
+  talks to a server that is not this machine (`--endpoint`, or `--host` other than
+  `localhost`/a loopback address), every read asks, once per call.
+- `shell_execute` and `write_file` ask on every call; the dialog offers only allow once
+  or deny.
+- `fetch_url` asks once per origin: scheme, host and port, so `https://example.com`
+  does not cover `http://example.com` or `https://example.com:8443`. It fetches only
+  `http`/`https` URLs, follows up to five redirects (a redirect to another origin asks
+  again), and refuses hosts that are or resolve to a loopback, private, link-local or
+  otherwise internal address (IPv6 forms that embed an IPv4 address, such as NAT64
+  `64:ff9b::/96` or 6to4, count as that IPv4 address, and local-use NAT64 `64:ff9b:1::/48`
+  always counts as internal) unless you approve that origin in a dialog that says so.
+  Site-specific NAT64 prefixes are not recognised.
+
+**s** and **a** grant only the scope the dialog names: a directory and everything
+below it, for that one read tool (the file's directory for `read_file`), or one exact
+origin for `fetch_url`. **a** saves the grant in `allowed_tools`; bare tool names there
+are ignored.
+
+Limits: every tool result is cut to 64 KiB with an `… [output truncated]` notice before
+it reaches the model or a saved session. `read_file` returns 200 lines unless `limit`
+says otherwise and ends with the `offset` to continue from. `search_files` matches the
+file name first and skips content in files over 1 MiB, binary or non-UTF-8 files. Shell
+timeouts are 1–600 seconds (default 30). A command runs in its own process group, and
+anything still running in it when the command ends or times out is killed: use
+`"background": true` for long-running jobs. At most four background tasks run at once
+under the same timeout; their results stay available to `check_background_task` for ten
+minutes. A tool that has already started
 cannot be undone: stopping shows a waiting status, retains its actual result,
 and prevents any remaining calls or follow-up model request. New turns, session
 changes, and an explicit quit wait until that tool finishes. Closing the client
@@ -185,6 +229,10 @@ drove config idle_timeout_seconds 3600
 drove config llama_server.n_gpu_layers -1
 ```
 
+Setting a value writes only that key to the config file; `DROVE_*` overrides
+are never saved. It also works when the file holds an invalid value, so it can
+repair one; a file with broken TOML syntax is refused unchanged. See [Sources and precedence](configuration.md#sources-and-precedence).
+
 ## Models management
 
 ```bash
@@ -214,8 +262,9 @@ instead of animated progress bars.
 
 Ctrl+C exits with status 130 and prints a quoted resume command that preserves the
 selected quantization, custom name and explicit TTS engine. For an ONNX all-variants
-selection, it asks you to choose all variants again (`--yes` selects only the default
-ONNX variant). Transfer errors identify
+or GGUF all-variants selection, it asks you to choose all variants again (`--yes`
+selects only the default ONNX variant and asks for `:QUANT` on a multi-quant GGUF
+repository). Transfer errors identify
 the failed file and exit with status 1. Completed files and Hugging Face's partial
 cache are kept: repeat the printed command to skip complete files and reuse cached
 partial data where supported. A changed remote file or transport may still require
@@ -233,7 +282,9 @@ summary without downloading again.
 
 For multi-variant downloads, use ↑/↓ and Enter to select a quantization, or
 Esc/Ctrl+C to cancel. The picker shows sizes, local status and advisory RAM
-estimates. `:QUANT` and `--yes` bypass it for scripts. See
+estimates. `:QUANT` bypasses it for scripts; `--yes` alone stops with a request for
+`:QUANT` when a GGUF repository has several quantizations. Repositories without GGUF
+or ONNX weights are refused (drove does not convert models). See
 [Choosing a download variant](./models.md#choosing-a-download-variant) for the
 memory estimate and download-all behavior.
 

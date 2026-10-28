@@ -277,6 +277,17 @@ def test_write_default_config_ignores_env(tmp_path: Path, monkeypatch: pytest.Mo
     assert load_config(cfg_file).model_dump() == cfg.model_dump()
 
 
+def test_write_default_config_writes_every_setting(tmp_path: Path) -> None:
+    """drove init must not silently miss a newly added Config field."""
+    from drove.config import Config, write_default_config
+
+    cfg_file = tmp_path / "config.toml"
+    write_default_config(cfg_file)
+    written = set(tomllib.loads(cfg_file.read_text()))
+    # default_model has no default to write (None is never stored).
+    assert written | {"default_model"} == set(Config.model_fields)
+
+
 def test_load_config_names_file_and_key(tmp_path: Path) -> None:
     from drove.config import ConfigError
 

@@ -120,9 +120,18 @@ def canonical_origin(url: str) -> tuple[str, str] | None:
     if host is None:
         return None
     parsed = httpx.URL(url)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = url_port(parsed)
     shown = f"[{host}]" if ":" in host else host
     return f"{parsed.scheme}://{shown}:{port}", host
+
+
+def url_port(url: httpx.URL) -> int:
+    """The port *url* connects to: its explicit port, else 443 for https and 80 otherwise.
+
+    Shared by the approval scope (canonical_origin) and fetch_url's resolver, so the
+    approved origin and the connection target always agree.
+    """
+    return url.port or (443 if url.scheme == "https" else 80)
 
 
 def is_local_endpoint(base_url: str) -> bool:

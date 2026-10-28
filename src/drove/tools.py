@@ -28,6 +28,7 @@ from drove.tool_policy import (
     canonical_origin,
     cap_output,
     is_blocked_address,
+    url_port,
 )
 
 TOOL_DEFINITIONS = [
@@ -651,7 +652,7 @@ def _vet_hop(
         raise _Refused(f"Error: invalid URL: {url}")
     origin, host = parsed
     try:
-        addresses = [host] if _is_ip(host) else _resolve(host, url.port or _default_port(url))
+        addresses = [host] if _is_ip(host) else _resolve(host, url_port(url))
     except OSError as e:
         raise _Refused(f"Error fetching URL: cannot resolve {host}: {e}") from e
     if not addresses:
@@ -682,10 +683,6 @@ def _is_ip(host: str) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _default_port(url: httpx.URL) -> int:
-    return 443 if url.scheme == "https" else 80
 
 
 def _pinned_request(client: httpx.Client, url: httpx.URL, host: str, address: str) -> httpx.Request:

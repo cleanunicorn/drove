@@ -388,3 +388,21 @@ def test_only_loopback_endpoints_are_local(url: str, local: bool) -> None:
 )
 def test_internal_addresses_are_blocked(address: str, blocked: bool) -> None:
     assert is_blocked_address(address) is blocked
+
+
+@pytest.mark.parametrize(
+    ("url", "port"),
+    [
+        ("https://example.com/a", 443),
+        ("http://example.com", 80),
+        ("https://example.com:8443", 8443),
+    ],
+)
+def test_url_port_matches_the_origin_port(url: str, port: int) -> None:
+    import httpx
+
+    from drove.tool_policy import canonical_origin, url_port
+
+    assert url_port(httpx.URL(url)) == port
+    origin = canonical_origin(url)
+    assert origin is not None and origin[0].endswith(f":{port}")

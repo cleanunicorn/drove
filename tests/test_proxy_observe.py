@@ -320,6 +320,24 @@ def test_startup_keeps_records_when_disabled(tmp_path: Path) -> None:
         assert old.exists()
 
 
+def test_failing_retention_pass_leaves_the_proxy_serving(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _, app, _ = _setup(tmp_path)
+    boom = MagicMock(side_effect=PermissionError("observe dir unreadable"))
+
+    with (
+        patch.object(proxy_module, "prune_records", boom),
+        caplog.at_level("WARNING", logger="drove.proxy"),
+        TestClient(app) as client,
+    ):
+        resp = client.get("/v1/models")
+
+    boom.assert_called_once()
+    assert resp.status_code == 200
+    assert "Observe retention pass failed: observe dir unreadable" in caplog.text
+
+
 async def test_periodic_pass_uses_current_config(tmp_path: Path) -> None:
     config, app, _ = _setup(tmp_path, observe_max_age_days=0)
     old = _aged_record(config.observe_dir, "old", 10)

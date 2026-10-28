@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from drove.download_state import UNREADABLE, read_state
+from drove.download_state import MANIFEST_NAME, UNREADABLE, read_state
 from drove.model_config import load_download_info, resolve_model_alias
 
 # Suffixes that mark a directory as a model root rather than a namespace.  Raw
@@ -156,7 +156,7 @@ class ModelStore:
             if not self._contains(p):
                 continue
             if p.is_dir() and not p.name.startswith("."):
-                if self._has_model_files(p):
+                if self._has_model_files(p) or self._has_record(p):
                     self._add_entry(p, p.name, results, hidden)
                 else:
                     # Namespace directory — scan one level deeper
@@ -298,6 +298,12 @@ class ModelStore:
         return None
 
     @staticmethod
+    def _has_record(directory: Path) -> bool:
+        """True when *directory* holds a download record, so it is a model root."""
+        record = directory / MANIFEST_NAME
+        return record.exists() or record.is_symlink()
+
+    @staticmethod
     def _has_model_files(directory: Path) -> bool:
         return any(f.suffix.lower() in _MODEL_EXTS for f in directory.iterdir() if f.is_file())
 
@@ -311,6 +317,11 @@ class ModelStore:
         # Same choice as _find_primary, so list() only offers what resolve() serves.
         primary = self._select_primary(directory)
         if primary is None:
+            # Interrupted before any weights arrived: only the record (and the
+            # transfer cache) exists, so there is nothing to serve yet.
+            state = read_state(directory)
+            if state is not None and not state.complete:
+                hidden.append(name)
             return
         if self._incomplete_reason(primary) is not None:
             hidden.append(name)

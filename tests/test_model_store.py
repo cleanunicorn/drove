@@ -919,3 +919,25 @@ def test_incomplete_lists_what_list_hides(tmp_path: Path) -> None:
     store = ModelStore(tmp_path)
     assert [e.name for e in store.list()] == ["ready"]
     assert store.incomplete() == ["flat-00001-of-00002", "org/half", "split"]
+
+
+@pytest.mark.parametrize("name", ["half", "org/half"])
+def test_incomplete_names_a_download_interrupted_before_any_weights(
+    tmp_path: Path, name: str
+) -> None:
+    """The record is written before the first transfer; a failure there leaves only it."""
+    root = tmp_path / name
+    _write_manifest(root, "incomplete", {"half.gguf": 4})
+    (root / ".cache" / "huggingface").mkdir(parents=True)
+    (root / ".cache" / "huggingface" / "x.incomplete").write_bytes(b"part")
+    _make_gguf(tmp_path, "ready.gguf")
+
+    store = ModelStore(tmp_path)
+    assert [e.name for e in store.list()] == ["ready"]
+    assert store.incomplete() == [name]
+    assert store.find_root(name) == root  # so drove models delete can remove it
+
+
+def test_complete_record_without_a_primary_is_not_reported_incomplete(tmp_path: Path) -> None:
+    _write_manifest(tmp_path / "odd", "complete", {})
+    assert ModelStore(tmp_path).incomplete() == []

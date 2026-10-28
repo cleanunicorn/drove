@@ -63,6 +63,27 @@ def test_model_list_empty_and_populated(tmp_path: Path, monkeypatch: pytest.Monk
     assert "\x1b" not in result.stdout
 
 
+def test_model_list_names_hidden_incomplete_downloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models_dir = tmp_path / "models"
+    (models_dir / "split").mkdir(parents=True)
+    (models_dir / "split" / "split-00001-of-00002.gguf").write_bytes(b"GGUF")
+    monkeypatch.setenv("DROVE_MODELS_DIR", str(models_dir))
+    runner = CliRunner()
+
+    only_hidden = runner.invoke(app, ["models", "list"])
+    assert only_hidden.exit_code == 0
+    assert "No models found." in only_hidden.stdout
+    assert "1incompletedownload(s)hidden:split." in _unwrapped(only_hidden.stdout)
+
+    (models_dir / "ready.gguf").write_bytes(b"GGUF")
+    mixed = _unwrapped(runner.invoke(app, ["models", "list"]).stdout)
+    assert "1model(s)" in mixed
+    assert "1incompletedownload(s)hidden:split." in mixed
+    assert "drovemodelsdelete<name>" in mixed
+
+
 def test_model_list_verbose_wraps_long_storage_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

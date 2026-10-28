@@ -211,6 +211,16 @@ def add_tts_model(
     )
 
 
+def _hint_incomplete(out: Console, hidden: list[str]) -> None:
+    """Say which incomplete downloads list hides, and how to finish or remove them."""
+    if hidden:
+        hint(
+            out,
+            f"{len(hidden)} incomplete download(s) hidden: {', '.join(hidden)}. "
+            "Rerun drove models download for it, or drove models delete <name>.",
+        )
+
+
 @models_app.command("list")
 def list_models(
     ctx: typer.Context,
@@ -227,8 +237,10 @@ def list_models(
 
     out = console()
     heading(out, "Models", str(models_dir) if verbose else None)
+    hidden = ModelStore(models_dir).incomplete()
     if not models:
         out.print("No models found.")
+        _hint_incomplete(out, hidden)
         hint(out, "Download a model: drove models download <org/repo[:QUANT]>")
         return
 
@@ -246,6 +258,7 @@ def list_models(
         listing.add_row(*row)
     out.print(listing)
     hint(out, f"{len(models)} model(s) · {_fmt_size(sum(m[2] for m in models))} on disk")
+    _hint_incomplete(out, hidden)
     if not verbose:
         hint(out, "Inspect a model: drove models info <name>")
 

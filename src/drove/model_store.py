@@ -138,31 +138,45 @@ class ModelStore:
 
         Only names that resolve() accepts are listed; files or directories
         whose names break the naming rule stay hidden until renamed, and
-        incomplete downloads stay hidden until finished.
+        incomplete downloads stay hidden until finished (see incomplete()).
         """
-        results: list[ModelEntry] = []
+        return self._scan()[0]
+
+    def incomplete(self) -> builtins.list[str]:
+        """Return the names list() hides because their download is incomplete."""
+        return self._scan()[1]
+
+    def _scan(self) -> tuple[builtins.list[ModelEntry], builtins.list[str]]:
+        """Walk the models directory once: (complete entries, incomplete names)."""
+        results: builtins.list[ModelEntry] = []
+        hidden: builtins.list[str] = []
         if not self._dir.exists():
-            return results
+            return results, hidden
         for p in sorted(self._dir.iterdir()):
             if not self._contains(p):
                 continue
             if p.is_dir() and not p.name.startswith("."):
                 if self._has_model_files(p):
-                    self._add_entry(p, p.name, results)
+                    self._add_entry(p, p.name, results, hidden)
                 else:
                     # Namespace directory — scan one level deeper
                     for sub in sorted(p.iterdir()):
                         if sub.is_dir() and not sub.name.startswith(".") and self._contains(sub):
-                            self._add_entry(sub, f"{p.name}/{sub.name}", results)
+                            self._add_entry(sub, f"{p.name}/{sub.name}", results, hidden)
             elif (
                 p.suffix.lower() == ".gguf"
                 and not MMPROJ_RE.search(p.name)
                 and p.is_file()
                 and self._servable(p)
-                and self._incomplete_reason(p) is None
             ):
-                results.append(ModelEntry(p.stem, p, p.stat().st_size))
-        return [entry for entry in results if _is_valid_name(entry.name)]
+                if self._incomplete_reason(p) is None:
+                    results.append(ModelEntry(p.stem, p, p.stat().st_size))
+                else:
+                    hidden.append(p.stem)
+        return (
+            [entry for entry in results if _is_valid_name(entry.name)],
+            [name for name in hidden if _is_valid_name(name)],
+        )
 
     def complete(self, prefix: str) -> builtins.list[str]:
         """Return model names that start with *prefix* (for shell completion).
@@ -289,10 +303,19 @@ class ModelStore:
     def _has_model_files(directory: Path) -> bool:
         return any(f.suffix.lower() in _MODEL_EXTS for f in directory.iterdir() if f.is_file())
 
-    def _add_entry(self, directory: Path, name: str, results: builtins.list[ModelEntry]) -> None:
+    def _add_entry(
+        self,
+        directory: Path,
+        name: str,
+        results: builtins.list[ModelEntry],
+        hidden: builtins.list[str],
+    ) -> None:
         # Same choice as _find_primary, so list() only offers what resolve() serves.
         primary = self._select_primary(directory)
-        if primary is None or self._incomplete_reason(primary) is not None:
+        if primary is None:
+            return
+        if self._incomplete_reason(primary) is not None:
+            hidden.append(name)
             return
         total = sum(
             f.stat().st_size for f in directory.rglob("*") if f.is_file() and self._contains(f)

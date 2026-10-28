@@ -889,3 +889,13 @@ def test_record_applies_under_a_symlinked_models_dir(tmp_path: Path) -> None:
     assert [e.name for e in store.list()] == ["legacy"]
     with pytest.raises(FileNotFoundError, match="incomplete"):
         store.resolve("m")
+
+
+def test_incomplete_lists_what_list_hides(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "ready", "model.gguf")
+    _make_gguf(tmp_path, "split", "split-00001-of-00002.gguf")
+    _make_gguf(tmp_path, "org", "half", "half-00001-of-00003.gguf")
+    _make_gguf(tmp_path, "flat-00001-of-00002.gguf")
+    store = ModelStore(tmp_path)
+    assert [e.name for e in store.list()] == ["ready"]
+    assert store.incomplete() == ["flat-00001-of-00002", "org/half", "split"]

@@ -15,6 +15,8 @@
   `write_file` asked on every call and no longer offered these choices. Bare tool names
   already in `allowed_tools` (such as `"shell_execute"` or `"fetch_url"`) were no longer
   honoured; approve the directory or origin again when asked.
+- `drove models list` now names the incomplete downloads it hides and says how to finish or
+  delete them.
 
 ### Removed
 

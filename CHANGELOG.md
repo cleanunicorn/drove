@@ -70,6 +70,9 @@
 - New conversations started within the same second (with `/new`, `/clear`, or in two windows) now get their own session files instead of overwriting each other.
 - The observe viewers (web and TUI) no longer fail with an error when the retention pass deletes
   an old record while it is being listed, searched or opened; the record is just skipped.
+- In `drove chat`, choosing "Allow always" now warns when the approval cannot be saved to the
+  config file (for example, because another value in it is invalid); it still applies for the
+  session.
 
 ### Security
 

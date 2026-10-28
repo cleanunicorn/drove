@@ -1518,7 +1518,10 @@ class ChatApp(App[None]):
 
                     add_allowed_tool(grant.token(), self._config_path)
                 except Exception:
-                    pass
+                    self.notify(
+                        "The approval could not be saved to config; it applies to this session.",
+                        severity="warning",
+                    )
         return True
 
     def _origin_approver(self, turn: ChatTurn) -> OriginApproval:

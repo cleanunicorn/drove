@@ -339,7 +339,7 @@ def test_output_tail_is_bounded_thread_safe_and_ignores_late_output():
 
 
 async def test_allow_always_persists_only_the_chosen_tool(tmp_path, monkeypatch):
-    """"Allow always" writes just the chosen grant: other keys and env values stay out."""
+    """ "Allow always" writes just the chosen grant: other keys and env values stay out."""
     import tomllib
 
     app, _, config_path = policy_app(tmp_path, monkeypatch)
@@ -360,6 +360,36 @@ async def test_allow_always_persists_only_the_chosen_tool(tmp_path, monkeypatch)
         "listen_port": 7000,
         "allowed_tools": [existing, chosen],
     }
+
+
+async def test_allow_always_save_failure_warns_and_keeps_the_session_grant(tmp_path, monkeypatch):
+    import drove.config
+    from drove.config import ConfigError
+
+    app, _, config_path = policy_app(tmp_path, monkeypatch)
+    config_path.write_text('listen_port = "broken"\n')  # any invalid key blocks the save
+    outside = outside_dir(tmp_path)
+    notes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        app, "notify", lambda msg, severity="information", **_: notes.append((msg, severity))
+    )
+    calls: list[str] = []
+
+    def failing_add(token: str, path) -> None:
+        calls.append(token)
+        raise ConfigError("Invalid config file")
+
+    monkeypatch.setattr(drove.config, "add_allowed_tool", failing_add)
+    answering(app, monkeypatch, "allow-always")
+
+    target = json.dumps({"path": str(outside / "a.txt")})
+    assert await app._tool_allowed("read_file", target)
+    assert len(calls) == 1
+    assert notes == [
+        ("The approval could not be saved to config; it applies to this session.", "warning")
+    ]
+    # The session grant still holds: the same read does not ask again.
+    assert await app._tool_allowed("read_file", target)
 
 
 # ── Approval policy in the chat (AC2, AC3) ──────────────────────────────────────

@@ -289,13 +289,17 @@ def set_config_value(key: str, value: Any, path: Path | None = None) -> None:
     _write_config_file(data, config_path)
 
 
-def add_allowed_tool(name: str, path: Path | None = None) -> None:
-    """Add *name* to the file's ``allowed_tools`` (never copying env-provided entries)."""
+def add_allowed_tool(entry: str, path: Path | None = None) -> None:
+    """Append a chat tool grant to the file's ``allowed_tools``.
+
+    *entry* is a token from ``tool_policy.Grant.token()``; bare tool names are
+    ignored by the approval policy. Env-provided entries are never copied in.
+    """
     tools = read_config_file(path).get("allowed_tools", [])
     if not isinstance(tools, list):
         tools = []
-    if name not in tools:
-        set_config_value("allowed_tools", [*tools, name], path)
+    if entry not in tools:
+        set_config_value("allowed_tools", [*tools, entry], path)
 
 
 def save_tui_completed_hints(hints: list[ChatHint], path: Path | None = None) -> None:

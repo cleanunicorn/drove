@@ -14,7 +14,6 @@ from drove.observe import (
     MAX_BODY_BYTES,
     MAX_RECORD_BYTES,
     REDACTED,
-    ObserveContext,
     ObserveRecord,
     find_record_path,
     list_records,
@@ -24,6 +23,7 @@ from drove.observe import (
     save_record,
     search_records_page,
 )
+from tests.observe_helpers import legacy_record, make_ctx
 
 
 def _make_record(
@@ -307,15 +307,7 @@ def test_sse_tool_calls_assembled() -> None:
         f'data: {{"choices":[{{"delta":{{"tool_calls":[{tc3}]}}}}]}}\n'
         "data: [DONE]\n"
     )
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
-        endpoint="v1/chat/completions",
-        method="POST",
-        request_headers={},
-        request_body=b"{}",
-        response_body=sse_body.encode(),
-    )
+    ctx = make_ctx(response_body=sse_body.encode())
     record = ctx.to_record()
 
     parsed = json.loads(record.response_body)
@@ -328,11 +320,7 @@ def test_sse_tool_calls_assembled() -> None:
 
 
 def test_observe_context_to_record() -> None:
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
-        endpoint="v1/chat/completions",
-        method="POST",
+    ctx = make_ctx(
         request_headers={"content-type": "application/json"},
         request_body=b'{"model": "testmodel"}',
         response_status=200,
@@ -367,15 +355,7 @@ def test_sse_response_assembled() -> None:
         'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n'
         "data: [DONE]\n"
     )
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
-        endpoint="v1/chat/completions",
-        method="POST",
-        request_headers={},
-        request_body=b"{}",
-        response_body=sse_body.encode(),
-    )
+    ctx = make_ctx(response_body=sse_body.encode())
     record = ctx.to_record()
 
     # The assembled body should have the concatenated content
@@ -389,14 +369,7 @@ def test_sse_response_assembled() -> None:
 
 
 def test_observe_context_to_record_none_model() -> None:
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model=None,
-        endpoint="health",
-        method="GET",
-        request_headers={},
-        request_body=b"",
-    )
+    ctx = make_ctx(model=None, endpoint="health", method="GET", request_body=b"")
     record = ctx.to_record()
     assert record.model is None
 
@@ -484,13 +457,8 @@ _CREDENTIALS = {
 
 
 def test_to_record_redacts_credential_headers_any_case() -> None:
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
-        endpoint="v1/chat/completions",
-        method="POST",
+    ctx = make_ctx(
         request_headers={**_CREDENTIALS, "content-type": "application/json"},
-        request_body=b"{}",
         response_headers={**_CREDENTIALS, "x-request-id": "abc"},
     )
     record = ctx.to_record()
@@ -519,11 +487,8 @@ def test_save_record_redacts_direct_callers(tmp_path: Path) -> None:
 
 def test_oversized_text_body_is_truncated_with_marker() -> None:
     body = b'{"prompt": "' + b"x" * (3 * MAX_BODY_BYTES) + b'"}'
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
+    ctx = make_ctx(
         endpoint="v1/completions",
-        method="POST",
         request_headers={"content-type": "application/json"},
         request_body=body,
     )
@@ -536,13 +501,9 @@ def test_oversized_text_body_is_truncated_with_marker() -> None:
 
 def test_binary_bodies_become_placeholders_never_hex() -> None:
     upload = b"\xff\xd8\x00" * 1000
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
+    ctx = make_ctx(
         endpoint="v1/audio/transcriptions",
-        method="POST",
         request_headers={"content-type": "multipart/form-data; boundary=x"},
-        # Valid UTF-8 multipart is still omitted: it can carry whole files.
         request_body=b"--x\r\nContent-Disposition: form-data; name=file\r\n\r\nhello",
         request_body_size=123_456,
         response_headers={"content-type": "audio/wav"},
@@ -559,14 +520,7 @@ def test_binary_bodies_become_placeholders_never_hex() -> None:
 
 
 def test_invalid_utf8_without_content_type_is_placeholder() -> None:
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
-        endpoint="v1/x",
-        method="POST",
-        request_headers={},
-        request_body=b"\xff\xfe\xfd",
-    )
+    ctx = make_ctx(endpoint="v1/x", request_body=b"\xff\xfe\xfd")
     record = ctx.to_record()
     assert record.request_body is not None
     assert record.request_body.startswith("[binary body omitted: 3 bytes")
@@ -575,11 +529,8 @@ def test_invalid_utf8_without_content_type_is_placeholder() -> None:
 def test_saved_record_stays_under_cap_with_escaping_heavy_bodies(tmp_path: Path) -> None:
     # Control characters expand six-fold when JSON-escaped.
     body = b"\x01" * MAX_BODY_BYTES
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
+    ctx = make_ctx(
         endpoint="v1/completions",
-        method="POST",
         request_headers={"content-type": "text/plain", "x-big": "v" * 100_000},
         request_body=body,
         response_headers={"content-type": "text/plain"},
@@ -654,18 +605,7 @@ def test_prune_records_zero_and_missing_dir_are_noops(tmp_path: Path) -> None:
 
 
 def test_legacy_record_without_new_fields_still_loads(tmp_path: Path) -> None:
-    legacy = {
-        "id": "20250101-000000-deadbeef",
-        "timestamp": "2025-01-01T00:00:00",
-        "model": "testmodel",
-        "endpoint": "v1/audio/transcriptions",
-        "method": "POST",
-        "request_headers": {"authorization": "Bearer old"},
-        "request_body": "fffe00",
-        "response_status": 200,
-        "response_headers": {},
-        "response_body": "{}",
-    }
+    legacy = legacy_record(request_headers={"authorization": "Bearer old"})
     path = tmp_path / "testmodel" / f"{legacy['id']}.json"
     path.parent.mkdir()
     path.write_text(json.dumps(legacy))
@@ -789,9 +729,7 @@ def test_save_record_rejects_ids_that_are_not_plain_names(tmp_path: Path, record
 
 
 def test_saved_record_stays_under_cap_with_oversized_metadata(tmp_path: Path) -> None:
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
+    ctx = make_ctx(
         endpoint="v1/" + "e" * (2 * MAX_RECORD_BYTES),
         method="M" * 100_000,
         request_headers={f"x-h{i}": "\x01" * 5000 for i in range(200)},

@@ -28,6 +28,7 @@ from drove.observe import (
 )
 from drove.proxy import create_app
 from drove.stats import ProxyStats
+from tests.observe_helpers import make_ctx
 
 
 def make_config(tmp_path: Path, observe: bool = False) -> Config:
@@ -414,15 +415,7 @@ async def test_observe_on_captures_bounded_prefix(tmp_path: Path) -> None:
     chunks = _usage_sse(5000, "y" * 1000)
     total = sum(len(c) for c in chunks)
     stats = ProxyStats()
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
-        endpoint="v1/chat/completions",
-        method="POST",
-        request_headers={},
-        request_body=b"{}",
-        response_headers={"content-type": "text/event-stream"},
-    )
+    ctx = make_ctx(response_headers={"content-type": "text/event-stream"})
     writer = MagicMock()
     await _drain(
         proxy_module._counting_stream(
@@ -446,15 +439,7 @@ async def test_observe_on_captures_bounded_prefix(tmp_path: Path) -> None:
 async def test_audio_responses_are_not_buffered(tmp_path: Path) -> None:
     chunks = [b"\x00\x01" * 32768 for _ in range(64)]  # 4 MiB of audio
     stats = ProxyStats()
-    ctx = ObserveContext(
-        timestamp="2026-04-08T12:00:00",
-        model="testmodel",
-        endpoint="v1/audio/speech",
-        method="POST",
-        request_headers={},
-        request_body=b"{}",
-        response_headers={"content-type": "audio/wav"},
-    )
+    ctx = make_ctx(endpoint="v1/audio/speech", response_headers={"content-type": "audio/wav"})
     with patch.object(proxy_module, "_record_usage") as record_usage:
         forwarded = await _drain(
             proxy_module._counting_stream(
@@ -488,17 +473,7 @@ async def test_observe_writer_drops_when_full_and_drains(tmp_path: Path) -> None
         written.append(ctx.endpoint)
 
     writer = proxy_module._ObserveWriter(limit=2)
-    ctxs = [
-        ObserveContext(
-            timestamp="2026-04-08T12:00:00",
-            model="testmodel",
-            endpoint=f"e{i}",
-            method="POST",
-            request_headers={},
-            request_body=b"",
-        )
-        for i in range(3)
-    ]
+    ctxs = [make_ctx(endpoint=f"e{i}", request_body=b"") for i in range(3)]
     with patch.object(proxy_module, "_write_observe_record", slow_write):
         for ctx in ctxs:
             writer.submit(ctx, tmp_path)
@@ -531,19 +506,7 @@ async def test_large_non_streaming_json_keeps_usage(tmp_path: Path, observe: boo
     assert b"".join(chunks) == body
 
     stats = ProxyStats()
-    ctx = (
-        ObserveContext(
-            timestamp="2026-04-08T12:00:00",
-            model="testmodel",
-            endpoint="v1/chat/completions",
-            method="POST",
-            request_headers={},
-            request_body=b"{}",
-            response_headers={"content-type": "application/json"},
-        )
-        if observe
-        else None
-    )
+    ctx = make_ctx(response_headers={"content-type": "application/json"}) if observe else None
     forwarded = await _drain(
         proxy_module._counting_stream(
             aiter(chunks),

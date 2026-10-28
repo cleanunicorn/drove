@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from drove.observe import ObserveRecord, save_record
 from drove.observe_web import create_observe_app
+from tests.observe_helpers import legacy_record
 
 
 def _make_record(
@@ -243,18 +244,7 @@ def test_browser_assets_are_served(tmp_path: Path) -> None:
 
 def test_api_record_detail_loads_legacy_record(tmp_path: Path) -> None:
     """Records written before #122 (no raw body, hex request body) still open."""
-    legacy = {
-        "id": "20250101-000000-deadbeef",
-        "timestamp": "2025-01-01T00:00:00",
-        "model": "testmodel",
-        "endpoint": "v1/audio/transcriptions",
-        "method": "POST",
-        "request_headers": {"content-type": "multipart/form-data"},
-        "request_body": "fffe00",
-        "response_status": 200,
-        "response_headers": {},
-        "response_body": "{}",
-    }
+    legacy = legacy_record(request_headers={"content-type": "multipart/form-data"})
     path = tmp_path / "testmodel" / f"{legacy['id']}.json"
     path.parent.mkdir()
     path.write_text(json.dumps(legacy))

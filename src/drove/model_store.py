@@ -163,12 +163,7 @@ class ModelStore:
                     for sub in sorted(p.iterdir()):
                         if sub.is_dir() and not sub.name.startswith(".") and self._contains(sub):
                             self._add_entry(sub, f"{p.name}/{sub.name}", results, hidden)
-            elif (
-                p.suffix.lower() == ".gguf"
-                and not MMPROJ_RE.search(p.name)
-                and p.is_file()
-                and self._servable(p)
-            ):
+            elif p.suffix.lower() == ".gguf" and self._is_flat_primary(p):
                 if self._incomplete_reason(p) is None:
                     results.append(ModelEntry(p.stem, p, p.stat().st_size))
                 else:
@@ -225,13 +220,16 @@ class ModelStore:
             if primary is not None:
                 return primary, self._incomplete_reason(primary)
         candidate = self._dir / f"{name}.gguf"
-        if (
-            not MMPROJ_RE.search(candidate.name)
-            and candidate.is_file()
-            and self._servable(candidate)
-        ):
+        if self._is_flat_primary(candidate):
             return candidate, self._incomplete_reason(candidate)
         return None
+
+    def _is_flat_primary(self, path: Path) -> bool:
+        """True for a legacy top-level GGUF that can be served (never a projector).
+
+        Shared by list() and _find_primary so both accept the same flat files.
+        """
+        return not MMPROJ_RE.search(path.name) and path.is_file() and self._servable(path)
 
     def _select_primary(self, directory: Path) -> Path | None:
         """Choose a model directory's primary: the first servable file by format priority.

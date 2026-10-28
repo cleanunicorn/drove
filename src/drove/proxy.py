@@ -10,13 +10,14 @@ import signal
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.types import Receive
 
 from drove.config import Config, load_config
 from drove.model_store import validate_model_name
@@ -167,8 +168,22 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         "/{path:path}",
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
     )
-    async def proxy(request: Request, path: str) -> StreamingResponse:
+    async def proxy(request: Request, path: str) -> Response:
         stats.request_started()
+        claim = _Claim()
+        try:
+            return await _forward(request, path, claim)
+        except Exception:
+            raise  # _forward settled the accounting for its own failures
+        except BaseException:
+            # Cancellation (or another BaseException) skips _forward's Exception
+            # handlers: release the claimed instance, if any, and settle once.
+            if claim.model is not None:
+                manager.request_finished(claim.model, claim.slot)
+            stats.request_finished()
+            raise
+
+    async def _forward(request: Request, path: str, claim: _Claim) -> Response:
         requested = await _extract_model(request)
         current_config: Config = app.state.config
         used_default = requested is _ABSENT and current_config.default_model is not None
@@ -220,11 +235,23 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         # that was picked as the current fallback.
         if model_name is None:
             slot = manager.request_started(resolved_model)
+        claim.model, claim.slot = resolved_model, slot
+
+        def abandon() -> Response:
+            # The client left before the response started: release its slot and
+            # drop the request. Nobody reads the status, and it is not an error.
+            manager.request_finished(resolved_model, slot)
+            stats.request_finished()
+            return Response(status_code=_CLIENT_CLOSED_REQUEST)
+
         try:
             manager.record_request(resolved_model)
 
             headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
             body = await request.body()
+            if await request.is_disconnected():
+                # The client left while the model was starting: never forward.
+                return abandon()
             if (
                 used_default
                 and path == "v1/audio/speech"
@@ -274,12 +301,14 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     timeout=timeout,
                 )
                 upstream_started = time.monotonic()
-                resp = await client.send(upstream, stream=True)
+                resp = await _send_unless_disconnected(client, upstream, request.receive)
             except httpx.TransportError as e:
                 # str(e) is empty for some httpx errors (e.g. ReadError);
                 # include the exception class name for diagnostics.
                 detail = f"Upstream error: {type(e).__name__}: {e}".rstrip(": ")
                 raise HTTPException(status_code=502, detail=detail) from e
+            if resp is None:
+                return abandon()
 
             response_headers = {
                 k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP
@@ -417,6 +446,15 @@ def _mtime(path: Path) -> float:
 
 
 _ABSENT = object()  # the request body carries no 'model' field
+_CLIENT_CLOSED_REQUEST = 499  # nginx's status for a client that left before the response
+
+
+@dataclass
+class _Claim:
+    """The model slot a proxied request holds, once it has claimed one."""
+
+    model: str | None = None
+    slot: object | None = None
 
 
 async def _extract_model(request: Request) -> object:
@@ -444,6 +482,54 @@ async def _extract_model(request: Request) -> object:
             return _ABSENT
         return form["model"] if "model" in form else _ABSENT
     return _ABSENT
+
+
+async def _send_unless_disconnected(
+    client: httpx.AsyncClient, upstream: httpx.Request, receive: Receive
+) -> httpx.Response | None:
+    """Send *upstream*, unless the client disconnects before the response arrives.
+
+    Races the send against the client's ``http.disconnect``; the disconnect
+    wins a tie. Returns None when the client left, after cancelling the send
+    and closing any response it already produced. Call only after the request
+    body has been read, so the watcher can consume nothing but the disconnect.
+    """
+    send = asyncio.ensure_future(client.send(upstream, stream=True))
+    watch = asyncio.ensure_future(_wait_for_disconnect(receive))
+    handed_over = False
+    try:
+        await asyncio.wait((send, watch), return_when=asyncio.FIRST_COMPLETED)
+        if watch.done():
+            watch.result()  # re-raise a failed watcher rather than report a disconnect
+            return None
+        watch.cancel()
+        await asyncio.gather(watch, return_exceptions=True)
+        response = send.result()
+        handed_over = True
+        return response
+    finally:
+        if not handed_over:
+            # Disconnected, failed or cancelled (possibly mid-handoff): stop both
+            # tasks and close any response nobody will read. Shielded, so a repeated
+            # cancellation cannot abandon the upstream connection half-closed.
+            cleanup = asyncio.ensure_future(_discard_send(send, watch))
+            _background_tasks.add(cleanup)
+            cleanup.add_done_callback(_background_tasks.discard)
+            await asyncio.shield(cleanup)
+
+
+async def _discard_send(send: asyncio.Future[httpx.Response], watch: asyncio.Future[None]) -> None:
+    """Cancel a send race and close the upstream response if one arrived anyway."""
+    send.cancel()
+    watch.cancel()
+    await asyncio.gather(send, watch, return_exceptions=True)
+    if not send.cancelled() and send.exception() is None:
+        await send.result().aclose()
+
+
+async def _wait_for_disconnect(receive: Receive) -> None:
+    while (await receive())["type"] != "http.disconnect":
+        pass
 
 
 async def _counting_stream(

@@ -24,6 +24,9 @@
   print HTTP request log lines (and other log records) over the screen next to the input
   box; while they run, records go to Textual's log, visible with `textual console`.
   `drove server` and other commands still log to stderr.
+- Requests from clients that disconnect while their model is starting, or before the backend
+  answers, are no longer forwarded (or are cancelled in flight), so the model no longer stays busy
+  for nobody. A cancelled request no longer leaves the active-request counts raised.
 
 ### Security
 

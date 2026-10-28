@@ -722,10 +722,11 @@ def test_save_record_never_writes_through_a_swapped_directory(
     assert list(outside.iterdir()) == []
 
 
-@pytest.mark.parametrize("record_id", ["sub/x", "../x", ""])
+@pytest.mark.parametrize("record_id", ["sub/x", "../x", "", "a\0b"])
 def test_save_record_rejects_ids_that_are_not_plain_names(tmp_path: Path, record_id: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="is not a plain file name"):
         save_record(tmp_path, _make_record(record_id=record_id))
+    assert list(tmp_path.rglob("*")) == []
 
 
 def test_saved_record_stays_under_cap_with_oversized_metadata(tmp_path: Path) -> None:

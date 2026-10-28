@@ -260,10 +260,8 @@ def test_cli_cancel_select_and_all(
         assert metadata.call_args.args[1].quant == (None if answer == ALL_VARIANTS else answer)
 
 
-@pytest.mark.parametrize("args", [["org/model:Q4_K_M"], ["org/model", "--yes"]])
-def test_cli_script_bypass(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, args: list[str]
-) -> None:
+def _bypass_stubs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Mock, Mock, Mock]:
+    """Stub a download whose picker and memory probe must never run."""
     plan = _plan()
     plan.mmproj_files = {}
     execute, _ = _stub_download(monkeypatch, tmp_path, plan)
@@ -271,15 +269,27 @@ def test_cli_script_bypass(
     memory = Mock(side_effect=AssertionError("memory should not be probed"))
     monkeypatch.setattr("drove.cli.models._prompt_quant_choice", prompt)
     monkeypatch.setattr("drove.cli.quant_picker.available_memory", memory)
-    result = CliRunner().invoke(app, ["models", "download", *args], input="y\n")
-    if "--yes" in args:
-        # Unattended with several quantizations: ask for :QUANT, download nothing.
-        assert result.exit_code == 1
-        assert "org/model:QUANT" in result.output
-        execute.assert_not_called()
-    else:
-        assert result.exit_code == 0, result.output
-        execute.assert_called_once()
+    return execute, prompt, memory
+
+
+def test_cli_script_bypass(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    execute, prompt, memory = _bypass_stubs(monkeypatch, tmp_path)
+    result = CliRunner().invoke(app, ["models", "download", "org/model:Q4_K_M"], input="y\n")
+    assert result.exit_code == 0, result.output
+    execute.assert_called_once()
+    prompt.assert_not_called()
+    memory.assert_not_called()
+
+
+def test_cli_yes_without_quant_asks_for_one_without_picking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unattended with several quantizations: ask for :QUANT, download nothing, no picker."""
+    execute, prompt, memory = _bypass_stubs(monkeypatch, tmp_path)
+    result = CliRunner().invoke(app, ["models", "download", "org/model", "--yes"], input="y\n")
+    assert result.exit_code == 1
+    assert "org/model:QUANT" in result.output
+    execute.assert_not_called()
     prompt.assert_not_called()
     memory.assert_not_called()
 

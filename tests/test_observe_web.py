@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -219,3 +220,29 @@ def test_browser_assets_are_served(tmp_path: Path) -> None:
             assert response.status_code == 200
             assert content_type in response.headers["content-type"]
             assert response.content
+
+
+def test_api_record_detail_loads_legacy_record(tmp_path: Path) -> None:
+    """Records written before #122 (no raw body, hex request body) still open."""
+    legacy = {
+        "id": "20250101-000000-deadbeef",
+        "timestamp": "2025-01-01T00:00:00",
+        "model": "testmodel",
+        "endpoint": "v1/audio/transcriptions",
+        "method": "POST",
+        "request_headers": {"content-type": "multipart/form-data"},
+        "request_body": "fffe00",
+        "response_status": 200,
+        "response_headers": {},
+        "response_body": "{}",
+    }
+    path = tmp_path / "testmodel" / f"{legacy['id']}.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(legacy))
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        resp = client.get(f"/api/records/{legacy['id']}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["request_body"] == "fffe00"
+    assert data["response_body_raw"] == ""

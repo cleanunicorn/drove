@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `observe_max_age_days` setting (default 30): observe records older than that are
+  deleted at startup and hourly while serving; `0` keeps them forever.
+
 ### Removed
 
 - Removed the unused Hugging Face to GGUF conversion module and every mention suggesting drove
@@ -41,10 +46,19 @@
   builds, instead of downloading files no backend can serve.
 - `drove models download <repo> --yes` on a repository with several GGUF quantizations now stops
   and asks for `<repo>:QUANT` instead of downloading every quantization.
+- Observe records stay below 1 MiB: text bodies are capped at 256 KiB with a truncation marker,
+  and binary uploads and audio are saved as a size and content-type placeholder instead of hex.
+- The proxy no longer keeps whole responses in memory to count tokens, and never buffers audio.
+- Saving an observe record no longer blocks request handling on the event loop.
+- Proxy speed and time-to-first-token statistics no longer grow with every request, so
+  `/status` stays cheap on long-running servers.
 
 ### Security
 
 - Backend stderr is no longer returned to clients on startup failure; it stays in the server log. The 404 for an unknown model no longer reveals the server's models directory.
+- Observe records no longer store `Authorization`, `Proxy-Authorization`, `Cookie`,
+  `Set-Cookie` or `X-Api-Key` header values; they are saved as `[REDACTED]`.
+- Observe record files are created readable by their owner only (mode 0600).
 
 ## [Unreleased]
 

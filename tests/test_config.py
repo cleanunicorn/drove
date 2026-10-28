@@ -308,3 +308,31 @@ def test_invalid_env_json_member_names_its_variable(
     with pytest.raises(ConfigError) as info:
         load_config(tmp_path / "missing.toml")
     assert f"variable {name} (" in str(info.value)
+
+
+def test_observe_max_age_days_defaults_to_30(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "nonexistent.toml")
+    assert cfg.observe_max_age_days == 30
+
+
+def test_observe_max_age_days_zero_allowed_and_survives_save(tmp_path: Path) -> None:
+    from drove.config import set_config_value
+
+    cfg_file = tmp_path / "config.toml"
+    set_config_value("observe_max_age_days", 0, cfg_file)
+    assert load_config(cfg_file).observe_max_age_days == 0
+
+    set_config_value("observe_max_age_days", 7, cfg_file)
+    assert load_config(cfg_file).observe_max_age_days == 7
+
+
+def test_observe_max_age_days_rejects_negative(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_bytes(tomli_w.dumps({"observe_max_age_days": -1}).encode())
+    with pytest.raises(ConfigError, match="observe_max_age_days"):
+        load_config(cfg_file)
+
+
+def test_observe_max_age_days_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DROVE_OBSERVE_MAX_AGE_DAYS", "3")
+    assert load_config(tmp_path / "nonexistent.toml").observe_max_age_days == 3

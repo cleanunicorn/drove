@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import time
 from pathlib import Path
 
 import pytest
 
 from drove.observe import (
+    MAX_BODY_BYTES,
+    MAX_RECORD_BYTES,
+    REDACTED,
     ObserveContext,
     ObserveRecord,
     find_record_path,
     list_records,
     list_records_page,
     load_record,
+    prune_records,
     save_record,
     search_records_page,
 )
@@ -434,3 +441,359 @@ def test_unfiltered_scans_skip_outward_directories_and_files(tmp_path: Path) -> 
     assert [p for p, _ in list_records(observe_dir)] == [kept]
     assert find_record_path(observe_dir, "20260408-120000-out00001") is None
     assert find_record_path(observe_dir, "20260408-120000-out00002") is None
+
+
+# ── credential redaction (#122) ──────────────────────────────────────────────
+
+_CREDENTIALS = {
+    "Authorization": "Bearer sk-secret-1",
+    "PROXY-AUTHORIZATION": "Basic c2VjcmV0LTI=",
+    "cookie": "session=secret-3",
+    "Set-Cookie": "session=secret-4; HttpOnly",
+    "X-Api-KEY": "secret-5",
+}
+
+
+def test_to_record_redacts_credential_headers_any_case() -> None:
+    ctx = ObserveContext(
+        timestamp="2026-04-08T12:00:00",
+        model="testmodel",
+        endpoint="v1/chat/completions",
+        method="POST",
+        request_headers={**_CREDENTIALS, "content-type": "application/json"},
+        request_body=b"{}",
+        response_headers={**_CREDENTIALS, "x-request-id": "abc"},
+    )
+    record = ctx.to_record()
+    for headers in (record.request_headers, record.response_headers):
+        for name in _CREDENTIALS:
+            assert headers[name] == REDACTED
+    assert record.request_headers["content-type"] == "application/json"
+    assert record.response_headers["x-request-id"] == "abc"
+    # The context's own mappings are left alone; only the stored copy is redacted.
+    assert ctx.request_headers["Authorization"] == "Bearer sk-secret-1"
+
+
+def test_save_record_redacts_direct_callers(tmp_path: Path) -> None:
+    record = _make_record()
+    record.request_headers = dict(_CREDENTIALS)
+    record.response_headers = dict(_CREDENTIALS)
+    path = save_record(tmp_path, record)
+    text = path.read_text()
+    for value in _CREDENTIALS.values():
+        assert value not in text
+    assert text.count(REDACTED) == 2 * len(_CREDENTIALS)
+
+
+# ── body caps and binary placeholders (#122) ─────────────────────────────────
+
+
+def test_oversized_text_body_is_truncated_with_marker() -> None:
+    body = b'{"prompt": "' + b"x" * (3 * MAX_BODY_BYTES) + b'"}'
+    ctx = ObserveContext(
+        timestamp="2026-04-08T12:00:00",
+        model="testmodel",
+        endpoint="v1/completions",
+        method="POST",
+        request_headers={"content-type": "application/json"},
+        request_body=body,
+    )
+    record = ctx.to_record()
+    assert record.request_body is not None
+    assert len(record.request_body.encode()) < MAX_BODY_BYTES + 200
+    assert "[TRUNCATED" in record.request_body
+    assert f"original_bytes={len(body)}" in record.request_body
+
+
+def test_binary_bodies_become_placeholders_never_hex() -> None:
+    upload = b"\xff\xd8\x00" * 1000
+    ctx = ObserveContext(
+        timestamp="2026-04-08T12:00:00",
+        model="testmodel",
+        endpoint="v1/audio/transcriptions",
+        method="POST",
+        request_headers={"content-type": "multipart/form-data; boundary=x"},
+        # Valid UTF-8 multipart is still omitted: it can carry whole files.
+        request_body=b"--x\r\nContent-Disposition: form-data; name=file\r\n\r\nhello",
+        request_body_size=123_456,
+        response_headers={"content-type": "audio/wav"},
+        response_body=upload,
+    )
+    record = ctx.to_record()
+    assert record.request_body is not None
+    assert "123456 bytes" in record.request_body
+    assert "multipart/form-data" in record.request_body
+    assert "hello" not in record.request_body
+    assert f"{len(upload)} bytes" in record.response_body
+    assert "audio/wav" in record.response_body_raw
+    assert upload.hex()[:20] not in record.response_body_raw
+
+
+def test_invalid_utf8_without_content_type_is_placeholder() -> None:
+    ctx = ObserveContext(
+        timestamp="2026-04-08T12:00:00",
+        model="testmodel",
+        endpoint="v1/x",
+        method="POST",
+        request_headers={},
+        request_body=b"\xff\xfe\xfd",
+    )
+    record = ctx.to_record()
+    assert record.request_body is not None
+    assert record.request_body.startswith("[binary body omitted: 3 bytes")
+
+
+def test_saved_record_stays_under_cap_with_escaping_heavy_bodies(tmp_path: Path) -> None:
+    # Control characters expand six-fold when JSON-escaped.
+    body = b"\x01" * MAX_BODY_BYTES
+    ctx = ObserveContext(
+        timestamp="2026-04-08T12:00:00",
+        model="testmodel",
+        endpoint="v1/completions",
+        method="POST",
+        request_headers={"content-type": "text/plain", "x-big": "v" * 100_000},
+        request_body=body,
+        response_headers={"content-type": "text/plain"},
+        response_body=body,
+    )
+    path = save_record(tmp_path, ctx.to_record())
+    assert path.stat().st_size <= MAX_RECORD_BYTES
+    loaded = load_record(path)
+    assert "[TRUNCATED" in loaded.response_body_raw
+    assert len(loaded.request_headers["x-big"]) < 2000
+
+
+# ── private files (#122) ─────────────────────────────────────────────────────
+
+
+def test_saved_record_is_private_and_never_overwritten(tmp_path: Path) -> None:
+    old_umask = os.umask(0)
+    try:
+        path = save_record(tmp_path, _make_record())
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    with pytest.raises(FileExistsError):
+        save_record(tmp_path, _make_record())
+
+
+# ── retention (#122) ─────────────────────────────────────────────────────────
+
+
+def _aged(path: Path, now: float, age_seconds: float) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text("{}")
+    os.utime(path, (now - age_seconds, now - age_seconds))
+    return path
+
+
+def test_prune_records_deletes_only_expired_records(tmp_path: Path) -> None:
+    now = time.time()
+    day = 86400
+    old_flat = _aged(tmp_path / "m" / "old.json", now, 31 * day)
+    new_flat = _aged(tmp_path / "m" / "new.json", now, 29 * day)
+    edge = _aged(tmp_path / "m" / "edge.json", now, 30 * day)
+    old_ns = _aged(tmp_path / "org" / "repo:q4" / "old.json", now, 40 * day)
+    new_ns = _aged(tmp_path / "org" / "repo:q4" / "new.json", now, day)
+    old_unknown = _aged(tmp_path / "_unknown" / "old.json", now, 90 * day)
+    unrelated = _aged(tmp_path / "m" / "notes.txt", now, 90 * day)
+    target = _aged(tmp_path.parent / f"{tmp_path.name}-outside.json", now, 90 * day)
+    link = tmp_path / "m" / "link.json"
+    link.symlink_to(target)
+
+    removed = prune_records(tmp_path, 30, now=now)
+
+    assert removed == 3
+    for gone in (old_flat, old_ns, old_unknown):
+        assert not gone.exists()
+    for kept in (new_flat, edge, new_ns, unrelated, target):
+        assert kept.exists()
+    assert link.is_symlink()
+
+
+def test_prune_records_zero_and_missing_dir_are_noops(tmp_path: Path) -> None:
+    now = time.time()
+    old = _aged(tmp_path / "m" / "old.json", now, 365 * 86400)
+    assert prune_records(tmp_path, 0, now=now) == 0
+    assert old.exists()
+    assert prune_records(tmp_path / "missing", 30, now=now) == 0
+    assert not (tmp_path / "missing").exists()
+
+
+# ── records from older versions (#122) ───────────────────────────────────────
+
+
+def test_legacy_record_without_new_fields_still_loads(tmp_path: Path) -> None:
+    legacy = {
+        "id": "20250101-000000-deadbeef",
+        "timestamp": "2025-01-01T00:00:00",
+        "model": "testmodel",
+        "endpoint": "v1/audio/transcriptions",
+        "method": "POST",
+        "request_headers": {"authorization": "Bearer old"},
+        "request_body": "fffe00",
+        "response_status": 200,
+        "response_headers": {},
+        "response_body": "{}",
+    }
+    path = tmp_path / "testmodel" / f"{legacy['id']}.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(legacy))
+
+    record = load_record(path)
+    assert record.request_body == "fffe00"
+    assert record.response_body_raw == ""
+    assert [p for p, _ in list_records(tmp_path)] == [path]
+
+
+@pytest.mark.parametrize(("flat_age", "nested_age"), [(1, 40), (40, 1), (40, 40)])
+def test_prune_records_handles_flat_and_namespaced_records_under_one_parent(
+    tmp_path: Path, flat_age: int, nested_age: int
+) -> None:
+    # "org" and "org/repo:q4" are both valid model names and can coexist.
+    now = time.time()
+    flat = _aged(tmp_path / "org" / "flat.json", now, flat_age * 86400)
+    nested = _aged(tmp_path / "org" / "repo:q4" / "nested.json", now, nested_age * 86400)
+
+    removed = prune_records(tmp_path, 30, now=now)
+
+    assert flat.exists() == (flat_age < 30)
+    assert nested.exists() == (nested_age < 30)
+    assert removed == (flat_age >= 30) + (nested_age >= 30)
+
+
+# ── directory swap races (#122 review) ───────────────────────────────────────
+
+
+def _swap_to_outward_link(directory: Path, outside: Path) -> None:
+    """Replace a validated directory with a symlink pointing outside observe_dir."""
+    directory.rename(directory.with_name(directory.name + "-moved"))
+    directory.symlink_to(outside, target_is_directory=True)
+
+
+def _outside_victim(tmp_path: Path, now: float) -> Path:
+    victim = tmp_path / "outside" / "old.json"
+    return _aged(victim, now, 365 * 86400)
+
+
+def test_prune_never_follows_a_directory_swapped_before_it_is_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = time.time()
+    observe_dir = tmp_path / "observe"
+    _aged(observe_dir / "m" / "old.json", now, 365 * 86400)
+    victim = _outside_victim(tmp_path, now)
+    real_open = os.open
+    swapped = False
+
+    def racing_open(path, flags, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        nonlocal swapped
+        if path == "m" and dir_fd is not None and not swapped:
+            swapped = True
+            _swap_to_outward_link(observe_dir / "m", victim.parent)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    prune_records(observe_dir, 30, now=now)
+
+    assert swapped
+    assert victim.exists()
+
+
+def test_prune_never_follows_a_directory_swapped_before_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = time.time()
+    observe_dir = tmp_path / "observe"
+    _aged(observe_dir / "m" / "old.json", now, 365 * 86400)
+    victim = _outside_victim(tmp_path, now)
+    real_unlink = os.unlink
+    swapped = False
+
+    def racing_unlink(path, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            _swap_to_outward_link(observe_dir / "m", victim.parent)
+        return real_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "unlink", racing_unlink)
+    removed = prune_records(observe_dir, 30, now=now)
+
+    assert swapped
+    assert victim.exists()
+    # The pinned directory (now moved) lost its expired record instead.
+    assert removed == 1
+    assert not (observe_dir / "m-moved" / "old.json").exists()
+
+
+def test_save_record_never_writes_through_a_swapped_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observe_dir = tmp_path / "observe"
+    (observe_dir / "testmodel").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_open = os.open
+    swapped = False
+
+    def racing_open(path, flags, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        nonlocal swapped
+        if path == "testmodel" and dir_fd is not None and not swapped:
+            swapped = True
+            _swap_to_outward_link(observe_dir / "testmodel", outside)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    with pytest.raises(OSError):
+        save_record(observe_dir, _make_record())
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("record_id", ["sub/x", "../x", ""])
+def test_save_record_rejects_ids_that_are_not_plain_names(tmp_path: Path, record_id: str) -> None:
+    with pytest.raises(ValueError):
+        save_record(tmp_path, _make_record(record_id=record_id))
+
+
+def test_saved_record_stays_under_cap_with_oversized_metadata(tmp_path: Path) -> None:
+    ctx = ObserveContext(
+        timestamp="2026-04-08T12:00:00",
+        model="testmodel",
+        endpoint="v1/" + "e" * (2 * MAX_RECORD_BYTES),
+        method="M" * 100_000,
+        request_headers={f"x-h{i}": "\x01" * 5000 for i in range(200)},
+        request_body=b"\x01" * MAX_BODY_BYTES,
+        response_headers={"content-type": "text/plain"},
+        response_body=b"\x01" * MAX_BODY_BYTES,
+    )
+    path = save_record(tmp_path, ctx.to_record())
+    assert path.stat().st_size <= MAX_RECORD_BYTES
+    loaded = load_record(path)
+    assert loaded.endpoint.startswith("v1/eee")
+    assert "[TRUNCATED" in loaded.endpoint
+    assert "[TRUNCATED" in loaded.method
+
+
+def test_record_falls_back_to_metadata_only_and_never_exceeds_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import drove.observe as observe_module
+
+    monkeypatch.setattr(observe_module, "MAX_RECORD_BYTES", 4096)
+    record = _make_record()
+    record.request_headers = {f"x-h{i}": "v" * 1000 for i in range(20)}
+    path = save_record(tmp_path, record)
+    assert path.stat().st_size <= 4096
+    loaded = load_record(path)
+    assert loaded.request_headers == {}
+    assert loaded.request_body is not None
+    assert loaded.request_body.startswith("[omitted: record exceeded 4096 bytes]")
+
+    monkeypatch.setattr(observe_module, "MAX_RECORD_BYTES", 10)
+    with pytest.raises(ValueError, match="cannot fit"):
+        save_record(tmp_path, _make_record(record_id="20260408-120000-other000"))
+    assert not (tmp_path / "testmodel" / "20260408-120000-other000.json").exists()

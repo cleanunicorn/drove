@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass
+
+# Recent samples kept for the "last" values; averages use lifetime running sums,
+# so memory and /status cost stay constant however many requests are served.
+MAX_SAMPLES = 1024
 
 
 @dataclass
@@ -27,8 +32,13 @@ class ProxyStats:
         self.speech = AudioStats()
         self.tokens_prompt: int = 0
         self.tokens_completion: int = 0
-        self._completion_speeds: list[tuple[int, float]] = []  # (tokens, duration_secs)
-        self._ttft_samples: list[float] = []  # time-to-first-token in seconds
+        # (tokens, duration_secs)
+        self._completion_speeds: deque[tuple[int, float]] = deque(maxlen=MAX_SAMPLES)
+        self._ttft_samples: deque[float] = deque(maxlen=MAX_SAMPLES)  # time-to-first-token (s)
+        self._speed_tokens: int = 0
+        self._speed_seconds: float = 0.0
+        self._ttft_sum: float = 0.0
+        self._ttft_count: int = 0
 
     def request_started(self) -> None:
         self.request_count += 1
@@ -47,10 +57,14 @@ class ProxyStats:
     def record_completion_speed(self, completion_tokens: int, duration_seconds: float) -> None:
         if completion_tokens > 0 and duration_seconds > 0:
             self._completion_speeds.append((completion_tokens, duration_seconds))
+            self._speed_tokens += completion_tokens
+            self._speed_seconds += duration_seconds
 
     def record_ttft(self, seconds: float) -> None:
         if seconds >= 0:
             self._ttft_samples.append(seconds)
+            self._ttft_sum += seconds
+            self._ttft_count += 1
 
     @property
     def last_tokens_per_second(self) -> float | None:
@@ -61,11 +75,9 @@ class ProxyStats:
 
     @property
     def avg_tokens_per_second(self) -> float | None:
-        if not self._completion_speeds:
+        if self._speed_seconds <= 0:
             return None
-        total_tokens = sum(t for t, _ in self._completion_speeds)
-        total_duration = sum(d for _, d in self._completion_speeds)
-        return total_tokens / total_duration if total_duration > 0 else None
+        return self._speed_tokens / self._speed_seconds
 
     @property
     def last_ttft(self) -> float | None:
@@ -73,6 +85,6 @@ class ProxyStats:
 
     @property
     def avg_ttft(self) -> float | None:
-        if not self._ttft_samples:
+        if not self._ttft_count:
             return None
-        return sum(self._ttft_samples) / len(self._ttft_samples)
+        return self._ttft_sum / self._ttft_count

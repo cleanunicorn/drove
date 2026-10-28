@@ -21,7 +21,13 @@ from starlette.types import Receive
 
 from drove.config import Config, load_config
 from drove.model_store import validate_model_name
-from drove.observe import ObserveContext, save_record
+from drove.observe import (
+    MAX_BODY_BYTES,
+    ObserveContext,
+    is_binary_content_type,
+    prune_records,
+    save_record,
+)
 from drove.server_manager import BackendUnavailableError, ServerManager
 from drove.stats import ProxyStats
 
@@ -35,6 +41,18 @@ _RESTART_REQUIRED = {"listen_host", "listen_port"}
 
 # Strong references to fire-and-forget tasks so they are not garbage-collected.
 _background_tasks: set[asyncio.Task[None]] = set()
+
+# Observe records are written by worker threads; at most this many may be
+# pending per app before new ones are dropped (with a warning) instead of
+# piling up in memory behind a slow disk.
+_OBSERVE_MAX_PENDING = 64
+
+# How often expired observe records are pruned while serving.
+_OBSERVE_PRUNE_SECONDS = 3600
+
+# Token usage is parsed from at most the last this-many response bytes, so the
+# proxy never holds a whole response in memory; usage sits at the end of a stream.
+_USAGE_TAIL_BYTES = 1024 * 1024
 
 # Header names to strip when forwarding (hop-by-hop)
 _HOP_BY_HOP = frozenset(
@@ -52,8 +70,30 @@ _HOP_BY_HOP = frozenset(
 )
 
 
+class _ObserveWriter:
+    """Writes observe records off the event loop, with a bounded backlog."""
+
+    def __init__(self, limit: int = _OBSERVE_MAX_PENDING) -> None:
+        self._limit = limit
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def submit(self, obs_ctx: ObserveContext, observe_dir: Path) -> None:
+        if len(self._tasks) >= self._limit:
+            logger.warning("Observe writer backlog full; dropping record for %s", obs_ctx.endpoint)
+            return
+        task = asyncio.create_task(asyncio.to_thread(_write_observe_record, obs_ctx, observe_dir))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def drain(self) -> None:
+        """Wait for every pending write (used at shutdown so no record is lost)."""
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
 def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     manager = ServerManager(config)
+    observe_writer = _ObserveWriter()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -71,11 +111,16 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
         # Drop prompt caches that outlived their TTL while drove was not running.
         manager.prune_prompt_cache()
 
+        await _prune_observe_once(_app)
+        tasks.append(asyncio.create_task(_observe_retention(_app), name="observe-retention"))
+
         try:
             yield
         finally:
             for t in tasks:
                 t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await observe_writer.drain()
             await manager.stop()
             await client.aclose()
 
@@ -91,6 +136,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
     app.state.manager = manager
     app.state.config = config
     app.state.stats = stats
+    app.state.observe_writer = observe_writer
 
     client = httpx.AsyncClient(timeout=300.0)
     app.state.client = client  # kept here so lifespan can close it
@@ -279,7 +325,9 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     endpoint=path,
                     method=request.method,
                     request_headers=dict(headers),
-                    request_body=body,
+                    # Keep only what can be stored, not a copy of a large upload.
+                    request_body=body[:MAX_BODY_BYTES],
+                    request_body_size=len(body),
                 )
 
             try:
@@ -331,6 +379,7 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                     audio_duration=resp.headers.get("x-drove-audio-seconds"),
                     upstream_started=upstream_started,
                     slot=slot,
+                    observe_writer=observe_writer,
                 ),
                 status_code=resp.status_code,
                 headers=response_headers,
@@ -344,6 +393,31 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
             raise
 
     return app
+
+
+async def _prune_observe_once(app: FastAPI) -> None:
+    """Delete expired observe records in a worker thread, using the current config."""
+    config: Config = app.state.config
+    if not config.observe or config.observe_max_age_days <= 0:
+        return
+    try:
+        removed = await asyncio.to_thread(
+            prune_records, config.observe_dir, config.observe_max_age_days
+        )
+    except Exception as e:
+        logger.warning("Observe retention pass failed: %s", e)
+        return
+    if removed:
+        logger.info(
+            "Pruned %d observe records older than %d days", removed, config.observe_max_age_days
+        )
+
+
+async def _observe_retention(app: FastAPI) -> None:
+    """Background task: prune expired observe records periodically."""
+    while True:
+        await asyncio.sleep(_OBSERVE_PRUNE_SECONDS)
+        await _prune_observe_once(app)
 
 
 async def _config_watcher(app: FastAPI, config_path: Path) -> None:
@@ -545,21 +619,41 @@ async def _counting_stream(
     audio_duration: str | None = None,
     upstream_started: float | None = None,
     slot: object | None = None,
+    observe_writer: _ObserveWriter | None = None,
 ) -> AsyncIterator[bytes]:
-    """Wrap a response stream, collecting bytes to extract token usage afterwards."""
+    """Wrap a response stream, keeping bounded bytes for token usage and observe logging.
+
+    Only the last _USAGE_TAIL_BYTES (non-audio) and, when observing a text
+    response, the first MAX_BODY_BYTES are retained; everything else is
+    forwarded and forgotten.
+    """
     try:
-        chunks: list[bytes] = []
+        is_audio = endpoint in {"v1/audio/transcriptions", "v1/audio/speech"}
+        capture = obs_ctx is not None and not is_binary_content_type(
+            next(
+                (v for k, v in obs_ctx.response_headers.items() if k.lower() == "content-type"),
+                "",
+            )
+        )
+        captured = bytearray()
+        tail = bytearray()
+        total = 0
         t_start = time.monotonic()
         t_first_chunk: float | None = None
         async for chunk in raw_iter:
             if t_first_chunk is None:
                 t_first_chunk = time.monotonic()
-            chunks.append(chunk)
+            total += len(chunk)
+            if capture and len(captured) < MAX_BODY_BYTES:
+                captured += chunk[: MAX_BODY_BYTES - len(captured)]
+            if not is_audio:
+                tail += chunk
+                if len(tail) > 2 * _USAGE_TAIL_BYTES:
+                    del tail[:-_USAGE_TAIL_BYTES]
             yield chunk
         t_end = time.monotonic()
         duration = t_end - t_start
         ttft = (t_first_chunk - t_start) if t_first_chunk is not None else None
-        is_audio = endpoint in {"v1/audio/transcriptions", "v1/audio/speech"}
         if ttft is not None and not is_audio:
             stats.record_ttft(ttft)
         if is_audio and 200 <= response_status < 300:
@@ -574,25 +668,24 @@ async def _counting_stream(
                 seconds = 0.0
             if math.isfinite(seconds) and seconds >= 0:
                 audio.audio_seconds += seconds
-        full_body = b"".join(chunks)
+        del tail[:-_USAGE_TAIL_BYTES]
         tokens = (
             {"prompt": 0, "completion": 0, "speed": None}
             if is_audio
-            else _record_usage(full_body, stats, duration)
+            else _record_usage(bytes(tail), stats, duration)
         )
 
-        # Fire-and-forget observe logging
-        if obs_ctx is not None and observe_dir is not None:
-            obs_ctx.response_body = full_body
+        # Observe logging runs in a worker thread; the response is already sent.
+        if obs_ctx is not None and observe_dir is not None and observe_writer is not None:
+            obs_ctx.response_body = bytes(captured)
+            obs_ctx.response_body_size = total
             obs_ctx.duration_seconds = duration
             obs_ctx.ttft_seconds = ttft
             obs_ctx.tokens_prompt = int(tokens.get("prompt") or 0)
             obs_ctx.tokens_completion = int(tokens.get("completion") or 0)
             speed = tokens.get("speed")
             obs_ctx.tokens_per_second = float(speed) if speed is not None else None
-            task = asyncio.create_task(_save_observe_record(obs_ctx, observe_dir))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+            observe_writer.submit(obs_ctx, observe_dir)
     except Exception:
         stats.request_error()
         raise
@@ -601,8 +694,8 @@ async def _counting_stream(
         stats.request_finished()
 
 
-async def _save_observe_record(obs_ctx: ObserveContext, observe_dir: Path) -> None:
-    """Write an observe record to disk (runs as a fire-and-forget task)."""
+def _write_observe_record(obs_ctx: ObserveContext, observe_dir: Path) -> None:
+    """Build, encode and write an observe record (runs in a worker thread)."""
     try:
         record = obs_ctx.to_record()
         save_record(observe_dir, record)
@@ -628,6 +721,27 @@ def _extract_tokens_from_obj(data: dict[str, object], out: dict[str, int | float
             out["completion"] = timings.get("predicted_n", 0)
         if timings.get("predicted_per_second"):
             out["speed"] = timings["predicted_per_second"]
+
+
+def _extract_trailing_objects(text: str, out: dict[str, int | float | None]) -> None:
+    """Parse the last ``"usage"`` and ``"timings"`` objects found in a JSON fragment."""
+    decoder = json.JSONDecoder()
+    for key in ("usage", "timings"):
+        idx = text.rfind(f'"{key}"')
+        if idx < 0:
+            continue
+        colon = text.find(":", idx + len(key) + 2)
+        if colon < 0:
+            continue
+        start = colon + 1
+        while start < len(text) and text[start].isspace():
+            start += 1
+        try:
+            obj, _ = decoder.raw_decode(text, start)
+        except json.JSONDecodeError, ValueError:
+            continue
+        if isinstance(obj, dict):
+            _extract_tokens_from_obj({key: obj}, out)
 
 
 def _record_usage(
@@ -663,6 +777,11 @@ def _record_usage(
                     break
             except json.JSONDecodeError, ValueError:
                 continue
+
+    # A non-streaming JSON body longer than the usage tail arrives cut at the
+    # front; its trailing usage/timings objects are still whole, so parse them.
+    if not tokens_out["completion"]:
+        _extract_trailing_objects(text, tokens_out)
 
     prompt_tokens = int(tokens_out["prompt"] or 0)
     completion_tokens = int(tokens_out["completion"] or 0)

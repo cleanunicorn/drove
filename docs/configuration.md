@@ -63,6 +63,7 @@ not the example budget in the next section.
 | `max_memory` | `"0"` | Estimated combined model memory budget (`"0"` = unlimited) |
 | `observe` | `false` | Save request/response logs |
 | `observe_dir` | `~/.local/share/drove/observe` | Request log storage |
+| `observe_max_age_days` | `30` | Delete observe records older than this many days (`0` = keep forever) |
 | `prompt_cache` | `true` | Persist llama-server KV caches across shutdowns |
 | `prompt_cache_dir` | `~/.local/share/drove/prompt-cache` | KV cache storage |
 | `prompt_cache_ttl_seconds` | `3600` | Cache expiry (`0` = never) |
@@ -171,6 +172,40 @@ Kokoro, 4 GiB for Qwen3-TTS and Chatterbox, 8 GiB for Fish, 6 GiB for KittenTTS 
 (KV cache) and runtime overhead are not counted, so leave some headroom below
 your real RAM/VRAM limit. A model whose estimate alone exceeds `max_memory` is
 still started (after evicting everything else) rather than refused.
+
+## Request log retention
+
+With `observe = true`, every proxied request is saved as one JSON file under
+`observe_dir`. drove deletes record files older than `observe_max_age_days`
+(default `30`) once at startup and then hourly while serving, reading the
+current config each time, so a reload takes effect on the next pass. Age is
+the file's modification time: copying or touching a record restarts its
+clock. Deletion is permanent and also removes records written by older drove
+versions; set `observe_max_age_days = 0` to keep records forever (negative
+values are rejected). Nothing is pruned while `observe` is `false`.
+
+Every record is bounded and private, whatever the traffic:
+
+- `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` and
+  `X-Api-Key` header values (any case, request and response) are stored as
+  `[REDACTED]`. This is not configurable; the forwarded request is unchanged.
+  Credentials inside request bodies are not redacted.
+- Each text body keeps at most 256 KiB, followed by
+  `[TRUNCATED; original_bytes=N]`. Binary bodies — multipart uploads, audio,
+  images, anything not declared as text or not valid UTF-8 — are stored as
+  `[binary body omitted: N bytes, content-type: …]`, never as hex.
+- A whole record is at most 1 MiB of JSON; header values are cut at 1 KiB.
+- Files are created with mode `0600`.
+
+Records are built and written in worker threads. If more than 64 are waiting
+on a slow disk, new ones are dropped with a warning instead of queueing in
+memory; pending writes finish before shutdown. Token usage is read from the
+last 1 MiB of each response, where streaming and non-streaming backends put
+their `usage` and `timings` objects. Retention bounds the age of records, not
+the total disk use: a busy server keeps 30 days of traffic.
+
+Records written before this change keep whatever credentials, sizes and file
+modes they were written with until retention deletes them.
 
 ## Prompt cache
 

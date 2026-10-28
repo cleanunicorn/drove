@@ -191,6 +191,7 @@ def parse_grant(token: str) -> Grant | None:
 
 
 def parse_grants(tokens: Iterable[str]) -> frozenset[Grant]:
+    """Parse every valid grant in *tokens*; entries parse_grant rejects are dropped."""
     return frozenset(g for token in tokens if (g := parse_grant(token)) is not None)
 
 

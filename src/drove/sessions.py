@@ -210,4 +210,5 @@ def list_sessions(sessions_dir: Path, model: str, *, warn: Warn | None = None) -
 
 
 def latest_session(sessions_dir: Path, model: str, *, warn: Warn | None = None) -> Session | None:
+    """Return the newest readable session for *model*, or None; *warn* as in list_sessions."""
     return next(_iter_sessions(sessions_dir, model, warn), None)

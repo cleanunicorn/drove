@@ -65,6 +65,9 @@
   instead of reporting every redirect as an error.
 - A request for a model whose download is incomplete now returns a 404 saying so and how to
   finish it, instead of reporting the model as not found.
+- Chat sessions are now saved atomically, so a crash or full disk mid-save keeps the previous copy of the conversation instead of leaving a truncated file.
+- An unreadable or malformed session file no longer breaks `drove chat --resume` or `/sessions`; it is skipped with a warning and left on disk for repair.
+- New conversations started within the same second (with `/new`, `/clear`, or in two windows) now get their own session files instead of overwriting each other.
 
 ### Security
 
@@ -89,17 +92,6 @@
   `read_file` returned 200 lines by default and said where to continue; `search_files`
   matched the file name before reading content and skipped files over 1 MiB, binary files
   and non-UTF-8 files.
-
-## [Unreleased]
-
-### Fixed
-
-- Chat sessions are now saved atomically, so a crash or full disk mid-save keeps the previous copy of the conversation instead of leaving a truncated file.
-- An unreadable or malformed session file no longer breaks `drove chat --resume` or `/sessions`; it is skipped with a warning and left on disk for repair.
-- New conversations started within the same second (with `/new`, `/clear`, or in two windows) now get their own session files instead of overwriting each other.
-
-### Security
-
 - A session id read from a stored session file can no longer direct a save outside the sessions directory.
 
 ## v0.13.1 (2026-10-27)

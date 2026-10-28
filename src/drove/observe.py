@@ -560,7 +560,7 @@ def list_records(observe_dir: Path, model: str | None = None) -> list[tuple[Path
     for p in _record_paths(observe_dir, model):
         try:
             results.append((p, load_record(p)))
-        except json.JSONDecodeError, KeyError, ValueError:
+        except FileNotFoundError, json.JSONDecodeError, KeyError, ValueError:
             continue
     return results
 
@@ -577,8 +577,9 @@ def list_records_page(
 
     Only the files within the requested window are read from disk; the rest
     are ordered by filename alone, so large logs do not pay the cost of
-    parsing every record on each call.  Files that fail to load are skipped
-    in the page but still counted in the total. An optional stop event raises
+    parsing every record on each call.  Files that fail to load (or that a
+    retention pass deleted after they were listed) are skipped in the page
+    but still counted in the total. An optional stop event raises
     CancelledError between filesystem operations when the caller shuts down.
     """
     paths = _record_paths(observe_dir, model, stop)
@@ -588,7 +589,7 @@ def list_records_page(
         _check_cancelled(stop)
         try:
             page.append((p, load_record(p)))
-        except json.JSONDecodeError, KeyError, ValueError:
+        except FileNotFoundError, json.JSONDecodeError, KeyError, ValueError:
             continue
     return page, total
 
@@ -615,7 +616,7 @@ def search_records_page(
         _check_cancelled(stop)
         try:
             record = load_record(p)
-        except json.JSONDecodeError, KeyError, ValueError:
+        except FileNotFoundError, json.JSONDecodeError, KeyError, ValueError:
             continue
         if not record_matches(record, query):
             continue

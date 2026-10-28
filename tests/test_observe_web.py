@@ -127,6 +127,25 @@ def test_api_record_detail(tmp_path: Path) -> None:
     assert data["response_body_raw"] is not None
 
 
+def test_api_record_pruned_before_open_is_not_found(tmp_path: Path, monkeypatch) -> None:
+    import drove.observe_web as observe_web
+
+    record = _make_record()
+    path = save_record(tmp_path, record)
+    real_load = observe_web.load_record
+
+    def load_after_prune(target: Path) -> ObserveRecord:
+        target.unlink()  # retention deleted it between lookup and open
+        return real_load(target)
+
+    monkeypatch.setattr(observe_web, "load_record", load_after_prune)
+    app = create_observe_app(tmp_path)
+    with TestClient(app) as client:
+        resp = client.get(f"/api/records/{record.id}")
+    assert resp.status_code == 404
+    assert not path.exists()
+
+
 def test_api_record_not_found(tmp_path: Path) -> None:
     app = create_observe_app(tmp_path)
     with TestClient(app) as client:

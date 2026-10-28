@@ -190,6 +190,35 @@ def test_search_records_page_skips_corrupt_files(tmp_path: Path) -> None:
     assert len(page) == 1
 
 
+@pytest.mark.parametrize("reader", ["list", "page", "search"])
+def test_readers_skip_a_record_pruned_after_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader: str
+) -> None:
+    """Retention can unlink a record between enumeration and open: skip it, keep the rest."""
+    import drove.observe as observe
+
+    for n in (1, 2, 3):
+        save_record(tmp_path, _make_record(record_id=f"20260408-10000{n}-aaaa000{n}"))
+    real_load = observe.load_record
+
+    def load_after_prune(path: Path) -> ObserveRecord:
+        if path.stem.endswith("0002"):
+            path.unlink()  # the hourly prune wins the race
+        return real_load(path)
+
+    monkeypatch.setattr(observe, "load_record", load_after_prune)
+    if reader == "list":
+        ids = [r.id for _, r in list_records(tmp_path)]
+    elif reader == "page":
+        page, total = list_records_page(tmp_path)
+        ids = [r.id for _, r in page]
+        assert total == 3
+    else:
+        page, _ = search_records_page(tmp_path, "testmodel")
+        ids = [r.id for _, r in page]
+    assert ids == ["20260408-100003-aaaa0003", "20260408-100001-aaaa0001"]
+
+
 def test_find_record_path_locates_record(tmp_path: Path) -> None:
     record = _make_record(record_id="20260408-100001-aaaa0001")
     saved = save_record(tmp_path, record)

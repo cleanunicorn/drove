@@ -73,7 +73,7 @@ def create_observe_app(observe_dir: Path, model: str | None = None) -> FastAPI:
             return JSONResponse({"error": "not found"}, status_code=404)
         try:
             record = load_record(path)
-        except json.JSONDecodeError, KeyError, ValueError:
+        except FileNotFoundError, json.JSONDecodeError, KeyError, ValueError:
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse(_record_to_dict(record))
 

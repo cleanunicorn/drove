@@ -68,6 +68,8 @@
 - Chat sessions are now saved atomically, so a crash or full disk mid-save keeps the previous copy of the conversation instead of leaving a truncated file.
 - An unreadable or malformed session file no longer breaks `drove chat --resume` or `/sessions`; it is skipped with a warning and left on disk for repair.
 - New conversations started within the same second (with `/new`, `/clear`, or in two windows) now get their own session files instead of overwriting each other.
+- The observe viewers (web and TUI) no longer fail with an error when the retention pass deletes
+  an old record while it is being listed, searched or opened; the record is just skipped.
 
 ### Security
 

@@ -826,3 +826,62 @@ def test_record_falls_back_to_metadata_only_and_never_exceeds_cap(
     with pytest.raises(ValueError, match="cannot fit"):
         save_record(tmp_path, _make_record(record_id="20260408-120000-other000"))
     assert not (tmp_path / "testmodel" / "20260408-120000-other000.json").exists()
+
+
+# ── capture boundaries and type rules (#153) ─────────────────────────────────
+
+
+def test_text_cut_inside_a_character_at_the_capture_limit_stays_text() -> None:
+    from drove.observe import render_body
+
+    body = ("a" * (MAX_BODY_BYTES - 1) + "é" + "tail").encode()  # é straddles the limit
+    captured = body[:MAX_BODY_BYTES]
+
+    rendered = render_body(captured, len(body), "text/plain")
+
+    assert not rendered.startswith("[binary body omitted")
+    assert rendered.startswith("a" * 100)
+    assert f"original_bytes={len(body)}" in rendered
+
+
+def test_invalid_utf8_before_the_limit_is_binary() -> None:
+    from drove.observe import render_body
+
+    body = b"a" * 100 + b"\xff" + b"a" * 100
+    assert render_body(body, len(body), "") == (
+        f"[binary body omitted: {len(body)} bytes, content-type: unknown]"
+    )
+
+
+def test_headers_beyond_the_count_cap_are_summarised() -> None:
+    from drove.observe import sanitize_headers
+
+    headers = {f"x-h{i}": "v" for i in range(70)}
+    out = sanitize_headers(headers)
+
+    assert len(out) == 65
+    assert out["[TRUNCATED]"] == "6 more headers omitted"
+    assert list(out)[:64] == [f"x-h{i}" for i in range(64)]
+
+
+@pytest.mark.parametrize(
+    ("content_type", "binary"),
+    [
+        ("", False),
+        ("application/json; charset=utf-8", False),
+        ("APPLICATION/X-NDJSON", False),
+        ("application/x-www-form-urlencoded", False),
+        ("application/xml", False),
+        ("text/event-stream", False),
+        ("application/vnd.api+json", False),
+        ("multipart/form-data; boundary=x", True),
+        ("application/octet-stream", True),
+        ("audio/wav", True),
+        ("image/png", True),
+        ("application/pdf", True),
+    ],
+)
+def test_text_type_allowlist(content_type: str, binary: bool) -> None:
+    from drove.observe import is_binary_content_type
+
+    assert is_binary_content_type(content_type) is binary

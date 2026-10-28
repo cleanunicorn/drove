@@ -339,23 +339,26 @@ def test_output_tail_is_bounded_thread_safe_and_ignores_late_output():
 
 
 async def test_allow_always_persists_only_the_chosen_tool(tmp_path, monkeypatch):
+    """"Allow always" writes just the chosen grant: other keys and env values stay out."""
     import tomllib
 
-    config_path = tmp_path / "config.toml"
-    config_path.write_text('listen_port = 7000\nallowed_tools = ["fetch_url"]\n')
+    app, _, config_path = policy_app(tmp_path, monkeypatch)
+    existing = Grant("list_files", directory=str(tmp_path)).token()
+    config_path.write_text(f"listen_port = 7000\nallowed_tools = [{json.dumps(existing)}]\n")
+    env_grant = Grant("read_file", directory="/from-env").token()
     monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
-    monkeypatch.setenv("DROVE_ALLOWED_TOOLS", '["write_file"]')
-    app = ChatApp("http://localhost:8080", "test-model", tmp_path, config_path)
+    monkeypatch.setenv("DROVE_ALLOWED_TOOLS", json.dumps([env_grant]))
+    outside = outside_dir(tmp_path)
+    answering(app, monkeypatch, "allow-always", "allow-always")
 
-    async def always(screen):
-        return "allow-always"
+    assert await app._tool_allowed("read_file", json.dumps({"path": str(outside / "a.txt")}))
+    # shell_execute is per-call: even an "always" answer persists nothing for it.
+    assert await app._tool_allowed("shell_execute", json.dumps({"command": "true"}))
 
-    monkeypatch.setattr(app, "push_screen_wait", always)
-
-    assert await app._tool_allowed("shell_execute", "{}")
+    chosen = Grant("read_file", directory=str(outside.resolve())).token()
     assert tomllib.loads(config_path.read_text()) == {
         "listen_port": 7000,
-        "allowed_tools": ["fetch_url", "shell_execute"],
+        "allowed_tools": [existing, chosen],
     }
 
 

@@ -9,6 +9,9 @@
   or never becomes healthy.
 - Failed startups no longer leak the active-request count, whatever the error.
 - A broken model config is detected before any loaded model is stopped or evicted.
+- Fixed vision models being served from their `mmproj` projector instead of the model weights, so
+  their model settings are found again; a directory holding only projectors is no longer listed as
+  a model.
 
 ### Security
 

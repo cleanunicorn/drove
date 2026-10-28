@@ -433,3 +433,161 @@ def test_inventory_and_resolve_pick_the_same_servable_candidate(tmp_path: Path) 
         assert store.resolve(name) == path
     with pytest.raises(FileNotFoundError):
         store.resolve("blocked")
+
+
+# ── mmproj projectors never become the primary ───────────────────────────────
+
+
+def _write_download(path: Path, files: list[str], extra: str = "") -> None:
+    listed = ", ".join(f'"{f}"' for f in files)
+    path.write_text(f'{extra}[download]\nrepo_id = "org/repo"\nfiles = [{listed}]\n')
+
+
+def _agree(store: ModelStore, name: str, expected: Path) -> None:
+    assert store.resolve(name) == expected
+    assert {e.name: e.primary for e in store.list()}[name] == expected
+    assert name in store.complete("")
+
+
+@pytest.mark.parametrize(
+    ("projector", "weights"),
+    [
+        ("mmproj-F16.gguf", "zeta-q4_k_m.gguf"),
+        ("MMPROJ-F16.GGUF", "zeta-q4_k_m.gguf"),
+        ("MmProj-f16.GgUf", "Zeta-Q4.GGUF"),
+        ("mmproj-F16.gguf", "ZETA.GGUF"),
+        ("zz-mmproj.gguf", "aa-weights.gguf"),
+        ("aa-mmproj.gguf", "zz-weights.gguf"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("name", "layout", "weights_sub"),
+    [("vis", ("vis",), ()), ("org/vis", ("org", "vis"), ()), ("vis", ("vis",), ("weights",))],
+)
+def test_primary_is_weights_not_projector(
+    tmp_path: Path,
+    projector: str,
+    weights: str,
+    name: str,
+    layout: tuple[str, ...],
+    weights_sub: tuple[str, ...],
+) -> None:
+    _make_gguf(tmp_path, *layout, projector)
+    expected = _make_gguf(tmp_path, *layout, *weights_sub, weights)
+    _agree(ModelStore(tmp_path), name, expected)
+
+
+def test_sharded_vision_model_resolves_to_shard_one(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "vis", "mmproj-F16.gguf")
+    first = _make_gguf(tmp_path, "vis", "shard-00001-of-00002.gguf")
+    _make_gguf(tmp_path, "vis", "shard-00002-of-00002.gguf")
+    _agree(ModelStore(tmp_path), "vis", first)
+
+
+def test_sharded_vision_model_with_sidecar_resolves_to_shard_one(tmp_path: Path) -> None:
+    first = _make_gguf(tmp_path, "vis", "shard-00001-of-00002.gguf")
+    _make_gguf(tmp_path, "vis", "shard-00002-of-00002.gguf")
+    _make_gguf(tmp_path, "vis", "mmproj-F16.gguf")
+    _write_download(
+        first.with_suffix(".toml"),
+        ["shard-00001-of-00002.gguf", "shard-00002-of-00002.gguf", "mmproj-F16.gguf"],
+    )
+    _agree(ModelStore(tmp_path), "vis", first)
+
+
+def test_sidecar_files_list_selects_weights_over_sorted_first_decoy(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "vis", "a-decoy.gguf")
+    weights = _make_gguf(tmp_path, "vis", "zeta.gguf")
+    _make_gguf(tmp_path, "vis", "mmproj-F16.gguf")
+    _write_download(weights.with_suffix(".toml"), ["mmproj-F16.gguf", "remote/path/zeta.gguf"])
+    _agree(ModelStore(tmp_path), "vis", weights)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [[], ["mmproj-F16.gguf"], ["gone.gguf"], ["other-model.gguf"]],
+)
+def test_stale_download_metadata_falls_back_to_sorted_weights(
+    tmp_path: Path, files: list[str]
+) -> None:
+    first = _make_gguf(tmp_path, "vis", "a.gguf")
+    weights = _make_gguf(tmp_path, "vis", "zeta.gguf")
+    _make_gguf(tmp_path, "vis", "mmproj-F16.gguf")
+    _write_download(weights.with_suffix(".toml"), files)
+    _agree(ModelStore(tmp_path), "vis", first)
+
+
+def test_malformed_download_metadata_falls_back(tmp_path: Path) -> None:
+    first = _make_gguf(tmp_path, "vis", "a.gguf")
+    weights = _make_gguf(tmp_path, "vis", "zeta.gguf")
+    weights.with_suffix(".toml").write_text("[download\nbroken")
+    first.with_suffix(".toml").write_text("[download]\nrepo_id = 1\n")
+    _agree(ModelStore(tmp_path), "vis", first)
+
+
+def test_escaping_sidecar_is_never_read_for_preference(tmp_path: Path) -> None:
+    models = tmp_path / "models"
+    external = tmp_path / "external.toml"
+    _write_download(external, ["zeta.gguf"])
+    first = _make_gguf(models, "vis", "a.gguf")
+    _make_gguf(models, "vis", "zeta.gguf")
+    (models / "vis" / "zeta.toml").symlink_to(external)
+    _agree(ModelStore(models), "vis", first)
+
+
+@pytest.mark.parametrize("layout", [("vis",), ("org", "vis")])
+def test_projector_only_directory_is_not_a_model(tmp_path: Path, layout: tuple[str, ...]) -> None:
+    proj = _make_gguf(tmp_path, *layout, "MMPROJ-F16.GGUF")
+    _make_gguf(tmp_path, *layout, "mmproj-BF16.gguf")
+    proj.with_suffix(".toml").write_text("ctx_size = 1\n")
+    (proj.parent / "README.md").write_text("notes")
+    name = "/".join(layout)
+    store = ModelStore(tmp_path)
+    assert store.list() == []
+    assert store.complete("") == []
+    with pytest.raises(FileNotFoundError):
+        store.resolve(name)
+    assert store.find_root(name) == proj.parent
+
+
+def test_legacy_flat_projector_is_not_a_model(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "mmproj-F16.gguf")
+    store = ModelStore(tmp_path)
+    assert store.list() == []
+    with pytest.raises(FileNotFoundError):
+        store.resolve("mmproj-F16")
+
+
+def test_projector_alongside_onnx_serves_onnx(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "asr", "mmproj-F16.gguf")
+    onnx = _make_gguf(tmp_path, "asr", "model.onnx")
+    _agree(ModelStore(tmp_path), "asr", onnx)
+
+
+def test_undecodable_sidecar_does_not_break_inventory(tmp_path: Path) -> None:
+    bad = _make_gguf(tmp_path, "bad", "main.gguf")
+    bad.with_suffix(".toml").write_bytes(b"\xff\xfe[download]")
+    good = _make_gguf(tmp_path, "good", "main.gguf")
+    store = ModelStore(tmp_path)
+    assert {e.name: e.primary for e in store.list()} == {"bad": bad, "good": good}
+    assert store.resolve("bad") == bad
+
+
+@pytest.mark.parametrize("filename", ["mmproj-speech.onnx", "MMPROJ-voice.tts"])
+def test_mmproj_in_non_gguf_model_name_is_still_a_model(tmp_path: Path, filename: str) -> None:
+    primary = _make_gguf(tmp_path, "speech", filename)
+    _agree(ModelStore(tmp_path), "speech", primary)
+
+
+@pytest.mark.parametrize("marker", ["model.tts", "model.TTS", "model.TtS"])
+def test_nested_tts_marker_does_not_override_gguf_in_resolve(tmp_path: Path, marker: str) -> None:
+    """resolve() only honours a top-level .tts marker, as before the projector fix."""
+    gguf = _make_gguf(tmp_path, "voice", "main.gguf")
+    _make_gguf(tmp_path, "voice", "backup", marker)
+    assert ModelStore(tmp_path).resolve("voice") == gguf
+
+
+def test_top_level_tts_marker_wins_over_gguf(tmp_path: Path) -> None:
+    _make_gguf(tmp_path, "voice", "main.gguf")
+    marker = _make_gguf(tmp_path, "voice", "model.tts")
+    _agree(ModelStore(tmp_path), "voice", marker)

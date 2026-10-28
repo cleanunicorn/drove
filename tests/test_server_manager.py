@@ -1316,3 +1316,27 @@ async def test_sidecar_broken_during_eviction_drain_is_rejected(tmp_path: Path) 
 
     spawn.assert_not_awaited()
     assert not manager._instances
+
+
+def test_vision_model_args_pass_distinct_model_and_mmproj(tmp_path: Path) -> None:
+    """An earlier-sorting projector must not become --model (issue #116)."""
+    from drove.model_config import load_model_config
+
+    config = make_config(tmp_path)
+    model_dir = config.models_dir / "vis"
+    model_dir.mkdir()
+    projector = model_dir / "mmproj-F16.gguf"
+    projector.write_bytes(b"")
+    weights = model_dir / "zeta-q4_k_m.gguf"
+    weights.write_bytes(b"")
+    weights.with_suffix(".toml").write_text('ctx_size = 4096\nmmproj = "mmproj-F16.gguf"\n')
+    manager = ServerManager(config)
+
+    model_path = manager._resolve_model("vis")
+    args = manager._build_args(model_path, load_model_config(model_path), 9999)
+
+    assert model_path == weights
+    assert args[args.index("--model") + 1] == str(weights)
+    assert args[args.index("--mmproj") + 1] == str(projector)
+    assert args[args.index("--model") + 1] != args[args.index("--mmproj") + 1]
+    assert args[args.index("--ctx-size") + 1] == "4096"

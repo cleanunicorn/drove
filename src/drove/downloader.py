@@ -13,7 +13,7 @@ from typing import Literal
 from huggingface_hub import HfApi, hf_hub_download
 
 from drove.backend import infer_tts_engine
-from drove.model_store import is_within, validate_model_name
+from drove.model_store import MMPROJ_RE, is_within, validate_model_name
 
 type ProgressCallback = Callable[[int, int, str], None]
 
@@ -105,9 +105,6 @@ _ONNX_EXTRA_EXTS = {".txt", ".json", ".model"}
 # Quantization variant infix in ONNX filenames (e.g. encoder-model.int8.onnx)
 _ONNX_QUANT_RE = re.compile(r"\.(int8|uint8|fp16|int8_fp16)\.", re.IGNORECASE)
 
-# Pattern matching mmproj (multimodal projection) filenames
-_MMPROJ_RE = re.compile(r"mmproj", re.IGNORECASE)
-
 
 def parse_model_ref(ref: str) -> tuple[str, str | None]:
     """Split 'org/repo:QUANT' into (repo_id, quant).
@@ -149,7 +146,7 @@ def _fetch_files_with_sizes(
             elif suffix in _ONNX_EXTRA_EXTS:
                 extra_files[path] = size
         elif suffix in _MODEL_EXTS:
-            if _MMPROJ_RE.search(Path(path).name):
+            if MMPROJ_RE.search(Path(path).name):
                 mmproj_files[path] = size
             else:
                 model_files[path] = size

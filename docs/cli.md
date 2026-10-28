@@ -36,6 +36,15 @@ Global options: `-c, --config PATH`, `-v, --verbose` (debug logging),
 drove --config /path/to/config.toml server status -V
 ```
 
+`-v` is a root option, so it goes before the command: `drove -v chat MODEL`. While a
+full-screen interface runs (`drove chat`, its model picker, `drove observe`, and the
+quantization picker in `drove models download`), log records go to Textual's log
+instead of the terminal, so they never draw over the screen. To watch them, install
+`textual-dev` into drove's environment, run `textual console` in another terminal,
+and start drove with `TEXTUAL=devtools drove -v chat MODEL`. Without a connected
+console these records are discarded. Every other command, including `drove server`,
+logs to stderr as before.
+
 For walkthroughs, see [Managing models](./models.md),
 [Text and vision](./text-and-vision.md), and [Running drove](./operations.md).
 

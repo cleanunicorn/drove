@@ -20,6 +20,10 @@
   commands with a short message naming the file or variable and the key, instead of a traceback.
   `drove config <key> <value>` could repair an invalid value in the file; broken TOML syntax had
   to be fixed by hand or reset with `drove init --force`.
+- `drove chat`, its model picker, `drove observe` and the quantization picker no longer
+  print HTTP request log lines (and other log records) over the screen next to the input
+  box; while they run, records go to Textual's log, visible with `textual console`.
+  `drove server` and other commands still log to stderr.
 
 ### Security
 

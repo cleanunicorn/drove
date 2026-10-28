@@ -1,122 +1,784 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Added
+## v0.14.0 (2026-10-28)
 
-- Added the `observe_max_age_days` setting (default 30): observe records older than that are
-  deleted at startup and hourly while serving; `0` keeps them forever.
+### Bug Fixes
 
-### Changed
+- **chat**: Align the approval scope line and mark the reason
+  ([`2d7df0f`](https://github.com/cleanunicorn/drove/commit/2d7df0f892dcfce6d30622b523ad06f832482610))
 
-- "Allow for Session" and "Allow Always" applied to one directory (and below) for a read
-  tool, or to one exact origin (scheme, host and port) for `fetch_url`, instead of the whole
-  tool. `shell_execute` and
-  `write_file` asked on every call and no longer offered these choices. Bare tool names
-  already in `allowed_tools` (such as `"shell_execute"` or `"fetch_url"`) were no longer
-  honoured; approve the directory or origin again when asked.
-- `drove models list` named the incomplete downloads it hid, including ones interrupted before
-  any weights arrived, and said how to finish or delete them.
-- Logic that this release's changes had written twice was shared instead: the response
-  content-type lookup, the observe body-size rule, the file-only config sources, the flat-GGUF
-  primary check, the default port and tool path join for chat tools, the download record's
-  temporary name, the config-error exit and the tool dialog choices. Proxy statistics kept only
-  the newest speed and time-to-first-token sample. No behaviour changed.
-- Documented the grant-token format of `allowed_tools` and `add_allowed_tool`,
-  `latest_session` and `parse_grants`, why the downloader pre-checks expected files, and
-  `cli/tui_logging.py` in the agent guide's project map. Added tests covering download records,
-  observe capture limits, retention failures, unresolvable read paths and `drove init`
-  completeness, and pinned the exact reasons for incomplete downloads.
+The #tool-scope label lacked the "message" class its siblings carry, so it started two cells left of
+  the reason line and ran straight into "Arguments:". Give it the class, and give #tool-reason a
+  $warning rule (the project's attention colour) so the reason stands out from the boilerplate
+  intro. Existing tokens only.
 
-### Removed
+Belongs to: #154.
 
-- Removed the unused Hugging Face to GGUF conversion module and every mention suggesting drove
-  converts models; drove serves GGUF and ONNX models as published.
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
-### Fixed
+- **chat**: Cap old tool results when a session is loaded from /sessions
+  ([`78f1c32`](https://github.com/cleanunicorn/drove/commit/78f1c322db083b5e4c3ea9d2f57a9a4da3876e4e))
 
-- Startup failures now return deliberate statuses with short messages instead of bare 500s: 503 for
-  a missing or unlaunchable backend, 500 for an invalid model config, 503 for a backend that exits
-  or never becomes healthy.
-- Failed startups no longer leak the active-request count, whatever the error.
-- A broken model config is detected before any loaded model is stopped or evicted.
-- Fixed vision models being served from their `mmproj` projector instead of the model weights, so
-  their model settings are found again; a directory holding only projectors is no longer listed as
-  a model.
-- Saving configuration (`drove config <key> <value>`, `/theme` and "allow always" in
-  `drove chat`, chat tip progress) changed only that key in `config.toml`. `DROVE_*`
-  environment overrides stayed temporary and defaults were no longer frozen into the file;
-  `drove init` wrote the true defaults even when `DROVE_*` variables were set.
-- An invalid value in `config.toml`, broken TOML syntax, or an invalid `DROVE_*` value stopped
-  commands with a short message naming the file or variable and the key, instead of a traceback.
-  `drove config <key> <value>` could repair an invalid value in the file; broken TOML syntax had
-  to be fixed by hand or reset with `drove init --force`.
-- `drove chat`, its model picker, `drove observe` and the quantization picker no longer
-  print HTTP request log lines (and other log records) over the screen next to the input
-  box; while they run, records go to Textual's log, visible with `textual console`.
-  `drove server` and other commands still log to stderr.
-- Requests from clients that disconnect while their model is starting, or before the backend
-  answers, are no longer forwarded (or are cancelled in flight), so the model no longer stays busy
-  for nobody. A cancelled request no longer leaves the active-request counts raised.
-- Interrupted downloads, Hugging Face cache leftovers and raw safetensors/`.bin`/`.pt` weights are
-  no longer listed, advertised on `/v1/models`, offered by shell completion or registered with
-  agents, and they are never served. A split GGUF missing any shard counts as incomplete too, and
-  `drove models info` explains what is missing. Rerunning the download finishes it; models
-  downloaded before this change keep working.
-- Downloading a repository with no GGUF or ONNX weights is refused up front with a pointer to GGUF
-  builds, instead of downloading files no backend can serve.
-- `drove models download <repo> --yes` on a repository with several GGUF quantizations now stops
-  and asks for `<repo>:QUANT` instead of downloading every quantization.
-- Observe records stay below 1 MiB: text bodies are capped at 256 KiB with a truncation marker,
-  and binary uploads and audio are saved as a size and content-type placeholder instead of hex.
-- The proxy no longer keeps whole responses in memory to count tokens, and never buffers audio.
-- Saving an observe record no longer blocks request handling on the event loop.
-- Proxy speed and time-to-first-token statistics no longer grow with every request, so
-  `/status` stays cheap on long-running servers.
-- `fetch_url` followed up to five redirects (a redirect to a new origin asked for approval)
-  instead of reporting every redirect as an error.
-- A request for a model whose download was incomplete returned a 404 saying so and how to
-  finish it, instead of reporting the model as not found.
-- Chat sessions are now saved atomically, so a crash or full disk mid-save keeps the previous copy of the conversation instead of leaving a truncated file.
-- An unreadable or malformed session file no longer breaks `drove chat --resume` or `/sessions`; it is skipped with a warning and left on disk for repair.
-- New conversations started within the same second (with `/new`, `/clear`, or in two windows) now get their own session files instead of overwriting each other.
-- The observe viewers (web and TUI) no longer failed with an error when the retention pass
-  deleted an old record while it was being listed, searched or opened; the record was skipped.
-- In `drove chat`, choosing "Allow always" warned when the approval could not be saved to the
-  config file (for example, because another value in it was invalid); it still applied for the
-  session.
-- In the `drove chat` tool approval dialog, the line saying what "Allow for Session" and
-  "Allow Always" grant lined up with the text above it, and the reason for asking was marked
-  with a warning-coloured rule.
-- A backend that failed to start had its stderr written to the server log once instead of
-  twice.
+Only constructor resume capped stored tool results; choosing an older conversation in /sessions put
+  an oversized result back in history and in the next model request. Cap it at that load too.
 
-### Security
+Refs review A-correctness-1.
 
-- Backend stderr is no longer returned to clients on startup failure; it stays in the server log. The 404 for an unknown model no longer reveals the server's models directory.
-- Observe records no longer store `Authorization`, `Proxy-Authorization`, `Cookie`,
-  `Set-Cookie` or `X-Api-Key` header values; they are saved as `[REDACTED]`.
-- Observe record files are created readable by their owner only (mode 0600).
-- `drove chat` asked before `read_file`, `list_files` or `search_files` touched anything
-  outside the directory the chat was started in (symlinks followed), and before every read
-  when `--endpoint` (or `--host`) pointed at a server other than this machine. Searches and
-  listings inside the working directory skipped symlinks leading out of it.
-- `fetch_url` refused loopback, private, link-local, unique-local and unspecified addresses
-  (IPv4 and IPv6, including NAT64, 6to4 and other IPv6 forms of an internal IPv4 address)
-  unless the user approved that origin, checked every DNS answer of every redirect hop,
-  connected only to the address it had checked, and ignored proxy environment variables.
-- Shell commands ran in their own process group, killed on timeout and after the command
-  ended, so no child or grandchild outlived it. Timeouts were clamped to 1–600 seconds
-  (a missing, `null` or invalid value meant 30), at most four background tasks ran at once
-  under the same timeout, and finished ones were forgotten after ten minutes (sixteen kept).
-- Every tool result was capped at 64 KiB with a truncation notice before it reached the
-  model, the chat history or a saved session, and resumed sessions were capped when loaded.
-  `read_file` returned 200 lines by default and said where to continue; `search_files`
-  matched the file name before reading content and skipped files over 1 MiB, binary files
-  and non-UTF-8 files.
-- A session id read from a stored session file can no longer direct a save outside the sessions directory.
-- `read_file`, `list_files` and `search_files` refused a path outside the approved directories
-  before checking whether it existed, so a model could no longer probe which paths exist there.
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: End a pending mid-fetch approval on stop or quit
+  ([`ef258b8`](https://github.com/cleanunicorn/drove/commit/ef258b8a9e2a15eee5db360f118112308706bc94))
+
+The worker's wait for a mid-fetch origin approval only noticed a closed loop, so a stop or quit left
+  the dialog open and the turn generating until someone answered. The wait now also watches
+  stop_requested and cancels the approval, which dismisses its dialog and refuses the fetch.
+
+Refs review A-correctness-2.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Judge NAT64, 6to4 and other IPv4-in-IPv6 forms by the IPv4
+  ([`d3a90dd`](https://github.com/cleanunicorn/drove/commit/d3a90ddc257e960234f9bc457e4abbe94515d026))
+
+64:ff9b::/96 is globally routable to ipaddress, so a NAT64 address of 169.254.169.254 or 10.0.0.1
+  passed the internal-address check. Decode IPv4-mapped, IPv4-compatible, NAT64 (well-known and
+  local-use /96 layout), 6to4 and Teredo addresses and apply the IPv4 rule.
+
+Refs review B-security-2.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Never leave a tool worker waiting on a closed loop
+  ([`7e54ab2`](https://github.com/cleanunicorn/drove/commit/7e54ab28421d77735b38ef9ddbf05a2ccb912807))
+
+Poll the mid-fetch approval so a worker returns when the event loop is gone, and drop the per-call
+  grant when a call is denied.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Refuse out-of-root reads before revealing whether they exist
+  ([`2a82b01`](https://github.com/cleanunicorn/drove/commit/2a82b0177f2be0d3ed28012ee4e8e827b771af2b))
+
+read_file, list_files and search_files ran their exists/is_file/is_dir checks before _check_roots,
+  so a call outside the approved roots got "not found" or "not a file" instead of the roots refusal,
+  which leaks whether the path exists. Check the roots first in all three.
+
+Belongs to: #154.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Scope fetch approvals to scheme, host and port
+  ([`07b2fd3`](https://github.com/cleanunicorn/drove/commit/07b2fd37f9dead66e32e53dd5c9566e6c85b83bc))
+
+A fetch grant covered every scheme and port of a host, so approving https://example.com also allowed
+  http://example.com and https://example.com:8443 (another service) without asking, directly or
+  through a redirect. Grants, session approvals, the execution context, redirect checks and
+  internal-address approvals now use the canonical origin scheme://host:port (default port spelled
+  out). Host-only and non-canonical saved grants are ignored, so nothing widens silently.
+
+Docs also note the IPv4-in-IPv6 rule from the previous commit.
+
+Refs review B-security-1.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Treat local-use NAT64 addresses as internal
+  ([`7c36657`](https://github.com/cleanunicorn/drove/commit/7c36657dc81957f5a427765810c5368d4f854f81))
+
+64:ff9b:1::/48 was decoded as if the IPv4 address sat in the last 32 bits, but local-use prefixes
+  may be /48 to /96 with the IPv4 bits elsewhere, so a private target with a public-looking suffix
+  skipped internal approval. Keep decoding the well-known 64:ff9b::/96 and block the whole local-use
+  range unless the user approves the origin.
+
+Refs review B-security-3.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Warn when an allow-always approval cannot be saved
+  ([`5b64ddb`](https://github.com/cleanunicorn/drove/commit/5b64ddb20d80efbfabd515f3ded72bb278670a0c))
+
+The persistence failure was swallowed silently. Since #148's set_config_value validates the whole
+  file, any invalid key elsewhere now blocks the save, so the user chose "Allow always", saw
+  nothing, and was asked again next launch. Show a warning notification; the session grant still
+  applies.
+
+Belongs to: #154 (made more likely by #148).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **cli**: Keep logging off the terminal while a Textual app runs
+  ([`aa1d19e`](https://github.com/cleanunicorn/drove/commit/aa1d19e28388080e23825ac0a2df77aacfffc002))
+
+The root callback's basicConfig binds a StreamHandler to the real stderr before any command runs.
+  Textual redirects sys.stderr while it owns the screen, but that handler keeps the original stream,
+  so httpx's INFO "HTTP Request" lines were drawn over drove chat next to the input box.
+
+Swap the root handlers for a single TextualHandler (no stdout/stderr fallback) around every Textual
+  run — chat, the initial model picker, observe, and the quant picker — and restore them afterwards.
+  Records, including DEBUG under `drove -v`, go to Textual's log instead; non-TUI commands and drove
+  server log to stderr unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **cli**: Require :QUANT for unattended multi-quant downloads
+  ([`2f0337e`](https://github.com/cleanunicorn/drove/commit/2f0337e107bbfc2c225b7db954662e3740e88217))
+
+`drove models download <repo> --yes` on a repository with several GGUF quantizations now fails
+  before touching the disk and asks for org/repo:QUANT instead of downloading every variant.
+  Rerunning a download whose files all landed but whose record is still incomplete finishes the
+  record instead of exiting early, `models info` reports an incomplete download with its reason, and
+  the retry hint after an all-variants GGUF download keeps the picker. Consumer tests cover
+  /v1/models, chat routing and agent registration.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **config**: Name the variable for invalid members of JSON env values
+  ([`682946c`](https://github.com/cleanunicorn/drove/commit/682946c41fc1bd659a7e821c4981b3bd38e188a4))
+
+An invalid element in an otherwise valid DROVE_ALLOWED_TOOLS list, or an invalid field in a
+  DROVE_LLAMA_SERVER object, was reported as "DROVE_*" because any dotted error location was treated
+  as a llama_server leaf. Attribution now starts from the root field and also considers the
+  whole-field variable.
+
+Findings: A:correctness-1, B:correctness-2
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **config**: Report invalid paths as config errors, not tracebacks
+  ([`0a34382`](https://github.com/cleanunicorn/drove/commit/0a343823688634b4cd0e5899bf052f3f5ce66484))
+
+`models_dir = 123` (TypeError) or a `~user` path that cannot be expanded (RuntimeError) escaped the
+  readable-error boundary because only ValueError becomes a pydantic validation error. The path
+  validator now raises ValueError, so the file or DROVE_* variable and key are named and `drove
+  config <key> <value>` can repair it. The same unexpandable `~` in --config or DROVE_CONFIG now
+  gives a readable error too.
+
+Finding: B:correctness-1
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **config**: Save only the changed key and explain broken config
+  ([`0659bda`](https://github.com/cleanunicorn/drove/commit/0659bdabffc8dd1e907524db70938810f6362977))
+
+Every config write started from the env-loaded Config and dumped all fields, so a one-off DROVE_*
+  override (and every default) became permanent. Writers now patch one key in the raw TOML mapping
+  and validate the merged file with an env-free settings class; init writes true defaults.
+  Config.save is removed so no caller can reintroduce the bug.
+
+Loading wraps TOML, validation and env-parse failures in ConfigError, naming the file or DROVE_*
+  variable and the key; the CLI prints it and exits 1. `config` and `init` no longer load the config
+  up front, so `drove config <key> <value>` can repair a broken key.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **downloader**: Refuse non-GGUF repos and record download completion
+  ([`99770e9`](https://github.com/cleanunicorn/drove/commit/99770e909fb58560bac7b5064a37bfca8e6ba0f0))
+
+Text and vision downloads take GGUF files only; a repository with no GGUF or ONNX weights is refused
+  with a message that drove does not convert weights. Every download now writes its record
+  incomplete before the first transfer and complete after the last, so an interrupted download is
+  never listed or served, and two repository files that would flatten onto one local path are
+  refused before anything is written.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **model-store**: Apply a symlinked primary's target records (correctness-1)
+  ([`e5f2f40`](https://github.com/cleanunicorn/drove/commit/e5f2f4069d6c29b98a21e2378dc707a356b3ab01))
+
+A contained file symlink (alias/model.onnx or alias.gguf pointing into another model's directory)
+  reached an unfinished or stale download without consulting its record, because records were looked
+  up only along the lexical path. Also walk the resolved target's ancestry, and apply the
+  split-shard rule to the target, at every call site. No-record links, a symlinked models directory
+  and old downloads keep working.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **model-store**: Honour every download record above a primary (correctness-1)
+  ([`7b63781`](https://github.com/cleanunicorn/drove/commit/7b637813cc278119d9b69a865504832fe159fdc1))
+
+Completeness was checked only at the directory the requested name pointed at, so resolving a parent
+  namespace ("org") reached an unfinished child download ("org/asr") without consulting its record.
+  Check every record between the models directory and the selected primary, for list, resolve and
+  flat files alike.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **model-store**: List and serve only complete, servable models
+  ([`d9b504e`](https://github.com/cleanunicorn/drove/commit/d9b504edc1e16d59ac4f1dfa9be8f70a2a46a918))
+
+Remove the arbitrary-file primary fallback so Hugging Face cache metadata and raw
+  safetensors/.bin/.pt weights are never listed, completed, advertised or integrated. Hidden paths
+  never become a primary, a split GGUF needs every shard, and a per-model download record
+  (.drove-download.json) must say complete with every file at its expected size. Downloads made
+  before the record existed are judged by their files. Incomplete models raise IncompleteModelError
+  (a FileNotFoundError).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **model-store**: Require a download record to cover its primary (correctness-2)
+  ([`dc22b96`](https://github.com/cleanunicorn/drove/commit/dc22b961ee301abdd21e9d7d2cba87583b13d6bc))
+
+A complete record only checked the files it listed, so a stale or empty record let an unrecorded
+  (possibly partial) file become the served primary. The selected primary must now be listed by
+  every record above it; a TTS model's generated marker is the one exception, since the record lists
+  its weights instead. Models without a record are unaffected.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **models**: Ignore nested TTS markers regardless of suffix case
+  ([`5fb6af0`](https://github.com/cleanunicorn/drove/commit/5fb6af086c0aa3a03ae1ddd5d8b31913abde8487))
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **models**: Ignore undecodable download sidecars when picking weights
+  ([`8479829`](https://github.com/cleanunicorn/drove/commit/8479829cfd077e40192d21420928c3be9a0dfd67))
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **models**: Keep resolve ignoring nested TTS markers
+  ([`8683d21`](https://github.com/cleanunicorn/drove/commit/8683d2111fc188da770b083a9cc4957efdf4d93b))
+
+Unifying primary selection had made resolve() pick a nested .tts over a GGUF; restore the previous
+  top-level-only behavior and pin it with tests.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **models**: Limit projector exclusion to GGUF files
+  ([`1a6d515`](https://github.com/cleanunicorn/drove/commit/1a6d51599cbaa84472e38deb67637ce7f4d00990))
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **models**: Name downloads interrupted before any weights arrived
+  ([`1a42ae6`](https://github.com/cleanunicorn/drove/commit/1a42ae6e4782113621e9231ec2e5b619d2830ba3))
+
+The re-check found ModelStore.incomplete() missed the commonest interruption: the downloader writes
+  the incomplete record before the first transfer, so a failure there leaves a root holding only the
+  record and the transfer cache. With no primary, it was neither listed nor reported, and drove
+  models list still said "No models found". Treat a directory with a download record as a model
+  root, and report it as incomplete when the record says so.
+
+Belongs to: #152.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **models**: Select vision weights instead of mmproj projectors
+  ([`c4d83f4`](https://github.com/cleanunicorn/drove/commit/c4d83f4d8a6b4238e46b1dd725ff172c3776cc6e))
+
+Primary selection had two case-sensitive copies that never excluded mmproj files, so a projector
+  sorting first became --model and its sidecar was missed. One selector now serves list and resolve,
+  skips projectors (shared MMPROJ_RE with the downloader), prefers the download sidecar's first
+  weights entry, and treats projector-only directories as not a model.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **observe**: Hold the 1 MiB record cap for oversized metadata
+  ([`eb3e8a2`](https://github.com/cleanunicorn/drove/commit/eb3e8a2142d58b20677f23831720a52bb3f1ca0e))
+
+The encoder shrank only bodies and returned an oversized document once its budget ran out, so a long
+  request path could exceed the cap. The endpoint and method are now bounded with a truncation
+  marker, a record that still does not fit drops its headers and bodies with a marker, and one that
+  cannot fit at all is refused rather than written.
+
+Refs B-correctness-1
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **observe**: Never prune or write through a swapped directory
+  ([`7de42b3`](https://github.com/cleanunicorn/drove/commit/7de42b3760218dcac1dcfe6edf24ff38ed9f093b))
+
+Retention checked containment by path and then scanned and unlinked by path, so a model directory
+  replaced with an outward symlink mid-pass could redirect deletions outside observe_dir. Retention
+  now walks by directory descriptor with O_NOFOLLOW and stats and unlinks each file relative to its
+  pinned directory. save_record opens model directories the same way, and rejects record ids that
+  are not plain file names.
+
+Refs B-security-1
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **observe**: Prune namespaced records that share a parent with flat ones
+  ([`5543005`](https://github.com/cleanunicorn/drove/commit/5543005b873b92abbe547639b0be714d3116bfc6))
+
+Retention reused the listing helper, which searches a directory one level deeper only when it holds
+  no records, so org/repo records were never pruned while org had records of its own. Retention now
+  visits every model directory and each of its child directories.
+
+Refs A-correctness-1, B-correctness-2
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **observe**: Skip records the retention pass deletes mid-read
+  ([`a55cc0e`](https://github.com/cleanunicorn/drove/commit/a55cc0ed31da89372bc49822e4d810552dc322b4))
+
+The hourly retention pass can unlink a record after a reader enumerated it but before it opened it.
+  list/page/search readers and the web detail endpoint did not catch FileNotFoundError, so the web
+  list returned 500 and the TUI showed "Unable to read requests". Treat a vanished record as a
+  concurrent deletion: skip it (404 for the detail endpoint).
+
+Belongs to: #153.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **proxy**: Bound observe capture and write records off the event loop
+  ([`724b209`](https://github.com/cleanunicorn/drove/commit/724b2092e5614fbaf67633e45580bf8e25a5e2f2))
+
+The proxy no longer joins every response in memory: it keeps the last 1 MiB for usage parsing (none
+  for audio) and, only when observing a text response, the first 256 KiB. Request bodies are
+  snapshotted to the same bound. Records are built, encoded and written in worker threads by a
+  per-app writer that drops records past 64 pending writes and drains on shutdown. Expired records
+  are pruned at startup and hourly using the current observe_max_age_days.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **proxy**: Close the upstream response when cancelled mid-handoff
+  ([`d3442bf`](https://github.com/cleanunicorn/drove/commit/d3442bfccac0cd55b6927b990d6fb8c40169d185))
+
+If the handler was cancelled while the send race wound its watcher down after the send had already
+  won, the helper exited without returning or closing the upstream response, leaving its connection
+  open. Treat the response as handed over only once the helper returns, and close it otherwise in a
+  shielded cleanup so a repeated cancellation cannot interrupt the close.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **proxy**: Explain incomplete downloads instead of reporting not found
+  ([`fc3fb8d`](https://github.com/cleanunicorn/drove/commit/fc3fb8de6b5c8cf838858030278e79de0ed1764e))
+
+IncompleteModelError subclasses FileNotFoundError, so the fixed startup mapping from #146 answered
+  "not found, run drove models list" for #152's incomplete downloads, which that list deliberately
+  hides. Map it first to a fixed 404 that says the download is incomplete and how to finish it,
+  still without paths or exception text.
+
+Belongs to: #152 (interaction with #146).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **proxy**: Keep the models directory out of unknown-model 404s
+  ([`c2e0567`](https://github.com/cleanunicorn/drove/commit/c2e0567cb8973d3caa8fd832a03b367e555c00f3))
+
+The 404 detail was the store's exception text, which names models_dir. Return a fixed message built
+  from the validated model name instead; the original stays in the server log.
+
+- **proxy**: Keep token usage for non-streaming JSON over 1 MiB
+  ([`c9ee25b`](https://github.com/cleanunicorn/drove/commit/c9ee25b4377395fb803c55debf587f65eadac4e4))
+
+The bounded usage tail cut large JSON responses at the front, so the whole-document parse failed and
+  their usage was lost. When neither the JSON nor the SSE path finds usage, the trailing usage and
+  timings objects are now parsed from the retained tail.
+
+Refs A-correctness-2
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **proxy**: Map startup failures deliberately and keep backend stderr private
+  ([`46a4d7f`](https://github.com/cleanunicorn/drove/commit/46a4d7f66e4df9521ad43720d7519ccb39fab627))
+
+Every exception escaping ensure_running now settles the request counters and maps to a fixed, short
+  response: 503 for a missing or unlaunchable backend (new BackendUnavailableError) and failed
+  health checks, 500 for a broken model config or an unexpected error, 404 for an unknown model.
+  Config and backend validity are checked before an idle restart or an eviction, so a broken sidecar
+  no longer costs a healthy model. Backend stderr moves from the exception message to its notes and
+  the server log.
+
+- **proxy**: Stop forwarding requests after the client disconnects
+  ([`44b22a1`](https://github.com/cleanunicorn/drove/commit/44b22a15cea424d0867e908e117905b5c77b44ee))
+
+A client that disconnected while its model was cold-starting still had its request sent upstream,
+  keeping the model busy until the backend answered. A cancelled handler also skipped the
+  Exception-only cleanup, leaving the active-request counts raised.
+
+Check for a disconnect once the slot is claimed, race the upstream send against the client's
+  http.disconnect (cancelling the send if the client leaves first), and settle the claim exactly
+  once on any BaseException. Mid-stream disconnects are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: Log a failed backend's stderr once
+  ([`f807309`](https://github.com/cleanunicorn/drove/commit/f807309a869ac65288a2bba9ed0065a337a233f7))
+
+ServerManager._start and proxy._startup_error both formatted the exception notes (backend stderr)
+  into their log lines, and the proxy also attached the traceback, which prints the notes again.
+  Keep one owner: the proxy, the manager's only caller, logs once with exc_info (the traceback
+  carries the notes); the manager logs a one-line failure. Removes the duplicated __notes__
+  formatting.
+
+Belongs to: #146.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: Reload the model config after eviction drains
+  ([`2c63da6`](https://github.com/cleanunicorn/drove/commit/2c63da641d6e6f44fd44711d453db9434496fe1d))
+
+The config snapshot taken before eviction could go stale while a busy model drained, launching a
+  backend with old settings but recording the new sidecar mtime, so the edit was never applied.
+  _start reads the config again; the pre-eviction check still keeps a broken sidecar from evicting
+  anything.
+
+- **sessions**: Save atomically, skip unreadable files, unique ids
+  ([`0a54bec`](https://github.com/cleanunicorn/drove/commit/0a54bec17e7dca66ff93adda4fe5841c1e0e5858))
+
+Write each session through a same-directory temp file and os.replace so a failed save never
+  truncates the previous copy. Validate loaded files and skip unusable ones with a warning so
+  --resume and /sessions keep working. Give new sessions microsecond ids with a random suffix so
+  chats started at the same instant get separate files, and validate session ids so a stored id
+  cannot point a save outside the sessions directory.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **sessions**: Skip session files whose messages chat replay cannot show
+  ([`39dea95`](https://github.com/cleanunicorn/drove/commit/39dea95f2bcff978beb23d91dce44cf3b2c22f3b))
+
+A tool message without a string tool_call_id (or a non-text content, thinking, or malformed
+  tool_calls entry) passed load validation, so --resume picked the file and history replay crashed
+  with KeyError. Validate every message field replay reads so such files are skipped.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **sessions**: Skip session files with null tool-call name or arguments
+  ([`178f52f`](https://github.com/cleanunicorn/drove/commit/178f52f8894fb45e60d78e21ccbc6de6d68f217a))
+
+Replay previews tool-call arguments as text, so an explicit null crashed it after --resume picked
+  the file. Earlier drove versions always stored both as strings, so rejecting non-strings keeps old
+  sessions loadable.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **sessions**: Skip session files with roles chat replay cannot show
+  ([`7d8fec2`](https://github.com/cleanunicorn/drove/commit/7d8fec209d36d84dc4b6cc0ab1075e1243a80cd1))
+
+Replay turns a message role into a CSS class, so an empty or unknown role string crashed it after
+  --resume picked the file. Accept only system, user, assistant and tool, the roles drove has ever
+  written, so sessions from earlier versions still load.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **stats**: Bound proxy speed and TTFT samples
+  ([`7878313`](https://github.com/cleanunicorn/drove/commit/787831316daaf3f7b21d29bd0f11ccf3d7645628))
+
+Keep at most 1024 recent samples and compute averages from lifetime running sums, so memory and
+  /status cost no longer grow with traffic while the reported averages stay the same.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **tui**: Rely on unique session ids and log skipped session files
+  ([`cc8c998`](https://github.com/cleanunicorn/drove/commit/cc8c998ee0c3663b154b207d912fa798d284d109))
+
+The switch-model suffix workaround is no longer needed now that every new session id is unique.
+  /sessions routes skipped-file warnings to the Textual log instead of the terminal the app owns.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Documentation
+
+- Describe startup error statuses and private stderr
+  ([`978bb5b`](https://github.com/cleanunicorn/drove/commit/978bb5b3416e910635c052b274b95cfb1953345e))
+
+- Document latest_session and parse_grants
+  ([`0c56de0`](https://github.com/cleanunicorn/drove/commit/0c56de0d64451773a432a7d1882b818d164dd025))
+
+Both are new public helpers whose siblings are documented; say what each returns and that each
+  silently skips unreadable or invalid input.
+
+Belongs to: #150 (latest_session) and #154 (parse_grants).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- Note chat session recovery and changelog for #119
+  ([`e425567`](https://github.com/cleanunicorn/drove/commit/e425567960d92e67de0f977af925a3d148a3903f))
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- Remove the unused converter and document GGUF-only downloads
+  ([`7897ad1`](https://github.com/cleanunicorn/drove/commit/7897ad1cb08b34dcdd02a57bfc553d3d0aaad675))
+
+drove never converts models: delete the unused HF-to-GGUF converter module and its project-map
+  entry, and document that non-GGUF repositories are refused, that incomplete downloads stay hidden
+  until finished (and how older downloads are treated), and that --yes asks for :QUANT on a
+  multi-quant GGUF repository. Add the changelog entries for the fix.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **agents**: List cli/tui_logging.py in the project map
+  ([`56bf019`](https://github.com/cleanunicorn/drove/commit/56bf01980f485ebdd2e07b5c918d28aa86720699))
+
+#149 added the module every Textual entry point goes through; the map listed the batch's other new
+  modules but not this one.
+
+Belongs to: #149.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **changelog**: Cover the fix series' refactors and docs, in past tense
+  ([`12fb7fe`](https://github.com/cleanunicorn/drove/commit/12fb7fe29034b0b1be476db617ceea6512a72818))
+
+The re-check noted that the refactor, documentation and test commits had no Unreleased entry,
+  although AGENTS.md asks for one for every change, and that the new bullets used the present tense.
+  Add one Changed bullet for the shared-logic refactors and one for the docs and tests, and put this
+  series' bullets in the past tense.
+
+Belongs to: batch (spans #146, #148, #149, #150, #152, #153, #154).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **changelog**: Fold the second Unreleased section into the first
+  ([`c8f39c0`](https://github.com/cleanunicorn/drove/commit/c8f39c0060fa7f378555fb382f9901d61b5f2025))
+
+#150's clean auto-merge left its own "## [Unreleased]" section below the batch's. Move its three
+  Fixed bullets and one Security bullet into the matching groups of the single Unreleased section;
+  every bullet kept.
+
+Belongs to: #150.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **changelog**: Note disconnect-aware forwarding
+  ([`ed8a75c`](https://github.com/cleanunicorn/drove/commit/ed8a75c83e45bdd45b52dbfe26834e19257eae6a))
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **changelog**: Use past tense and limit repair claim to bad values
+  ([`f123488`](https://github.com/cleanunicorn/drove/commit/f1234887c8714346eaab73f9c0140561c0a5b1b2))
+
+The entry said `drove config` could repair a file with broken TOML syntax, which it refuses by
+  design; it also used present tense, against AGENTS.md golden rule 7. docs/cli.md now says the
+  same.
+
+Findings: A:docs-1, B:docs-1, A:conventions-1
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Document tool approvals, grant scopes and limits
+  ([`db38acb`](https://github.com/cleanunicorn/drove/commit/db38acb7c71187f1e5165ad7c13304218981dd6f))
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **cli**: Explain where logs go while a TUI runs
+  ([`888dbc4`](https://github.com/cleanunicorn/drove/commit/888dbc46981ae54b6c0b82e67da44f684f1bd792))
+
+Note the root placement of -v, that records go to Textual's log during chat, observe and the
+  pickers, and how to view them with textual console; add the Unreleased Fixed entry for #141.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **config**: Describe single-key saves and config error repair
+  ([`d90b59e`](https://github.com/cleanunicorn/drove/commit/d90b59ef8b12daa975dd21a13cb8a68ec5e6cdab))
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **config**: Describe the allowed_tools entry format
+  ([`07057cd`](https://github.com/cleanunicorn/drove/commit/07057cd625b975b946867cecc542efa21a901e8b))
+
+Its entries became versioned, scoped grant tokens in #154 while the neighbouring fields carry inline
+  comments; say what an entry is.
+
+Belongs to: #154.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **config**: Say add_allowed_tool stores grant tokens, not tool names
+  ([`6d06b7e`](https://github.com/cleanunicorn/drove/commit/6d06b7e3d43b8b9cb6b6624d85ce5e7449c6878c))
+
+After #154 its only caller passes Grant.token(), and the policy ignores bare names. Rename the
+  parameter to entry and say so in the docstring.
+
+Belongs to: #154 (helper added by #148).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **downloader**: Say why _check_targets calls _expected_files
+  ([`e565631`](https://github.com/cleanunicorn/drove/commit/e56563148be817231c91f355f31d40835a103485))
+
+The bare call's result is discarded on purpose: it raises for colliding flattened paths before any
+  I/O. Say so, so a tidy-up does not delete the guard.
+
+Belongs to: #152.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **observe**: Document retention, redaction and record limits
+  ([`ab3f2f4`](https://github.com/cleanunicorn/drove/commit/ab3f2f43c940f64377b0f31bdfebfb27d7e7718b))
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Features
+
+- **chat**: Add a pure approval policy and output cap for chat tools
+  ([`4a75f89`](https://github.com/cleanunicorn/drove/commit/4a75f893de68f0a745b2904579b4abc02224f704))
+
+Approval decisions (reads outside the working directory, every read on a remote endpoint, per-call
+  shell and write, host-scoped fetch) and the 64 KiB UTF-8 output cap live in tool_policy.py so they
+  can be tested without the TUI.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Bound tool output, shell processes and fetch destinations
+  ([`8f82673`](https://github.com/cleanunicorn/drove/commit/8f82673da44f04c7da0d7cc28f0525d853fc6a99))
+
+- Every tool result is capped to 64 KiB; read_file reads 200 lines by default and never more than
+  the cap, list/search stop at the cap. - search_files checks the name first and skips large, binary
+  and undecodable files; reads honour the approved roots from a ToolContext. - Shell timeouts are
+  clamped to 1..600 s, commands run in their own process group which is killed on timeout and after
+  exit; background tasks are limited to 4 running and 16 kept for 10 minutes. - fetch_url follows up
+  to 5 redirects, checks every DNS answer of every hop, refuses internal addresses unless approved,
+  pins the connection to the vetted address (Host and SNI kept) and ignores env proxies.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Scope tool approvals and cap results in history and sessions
+  ([`91c747b`](https://github.com/cleanunicorn/drove/commit/91c747bdc42607370448fca2ef29bbdc68cd643b))
+
+- The chat decides approvals through tool_policy: reads outside the working directory ask, every
+  read asks on a non-local endpoint, shell_execute and write_file ask on every call (no
+  session/always). - Allow for Session/Always record a directory or host grant; saved grants go
+  through a file-only config helper. Bare tool names in allowed_tools are no longer honoured. -
+  Tools receive a ToolContext with the approved read roots and hosts; fetch_url can ask about a host
+  it meets mid-fetch from its worker. - Tool results are capped when they enter history, on resume
+  and when a session is saved.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **config**: Add observe_max_age_days retention setting
+  ([`894d45a`](https://github.com/cleanunicorn/drove/commit/894d45ae5747938d89a084421bdfcee3b6f1839e))
+
+Defaults to 30 days; 0 keeps records forever and negative values are rejected. Persisted by
+  Config.save and documented in the settings table.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **models**: Name hidden incomplete downloads in drove models list
+  ([`d2896e7`](https://github.com/cleanunicorn/drove/commit/d2896e7cf8ec106cd6e85f9a7b2f5784c21000e1))
+
+After #152 an interrupted download vanished from the list, completion and /v1/models with no sign it
+  still used disk space or needed finishing. Add ModelStore.incomplete() (one shared scan with
+  list()) and print a hint naming the hidden downloads and how to finish or delete them.
+
+Belongs to: #152.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **observe**: Redact credentials, cap bodies and prune old records
+  ([`5c941a8`](https://github.com/cleanunicorn/drove/commit/5c941a82c31655e6e48eeb46b0573e56aace293e))
+
+Saved records replace authorization, proxy-authorization, cookie, set-cookie and x-api-key values
+  (any case) with [REDACTED], keep at most 256 KiB of text per body with a truncation marker, store
+  binary and multipart bodies as a size and content-type placeholder instead of hex, and stay under
+  1 MiB of encoded JSON. Files are created exclusively with mode 0600. prune_records deletes record
+  files older than a given number of days by modification time.
+
+The TUI literal-rendering fixture moves its markup value off the Authorization header, which is now
+  redacted.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Refactoring
+
+- **chat**: Build tool paths from one join rule
+  ([`897f2c7`](https://github.com/cleanunicorn/drove/commit/897f2c7b6c7a7e4754dacc0a8f671f15c4490082))
+
+tool_policy.resolve_path (what the policy decides on) and tools._path_arg (what the tool executes
+  on) each expanded ~ and joined to cwd. Add tool_policy.join_tool_path; resolve_path resolves it
+  and _path_arg uses it unresolved, so error messages still show the path as written.
+
+Belongs to: #154.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Derive the default port from one rule
+  ([`8de7c50`](https://github.com/cleanunicorn/drove/commit/8de7c50395f4f82a0a949c61b5c489f8e8da445d))
+
+tool_policy.canonical_origin (the approval scope) and tools._default_port (fetch_url's resolver)
+  each wrote 443-for-https-else-80. Add tool_policy.url_port and use it in both, so the approved
+  origin and the connection target cannot drift apart.
+
+Belongs to: #154.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **chat**: Name the tool dialog choice sets once
+  ([`12973c8`](https://github.com/cleanunicorn/drove/commit/12973c85ac1e4df3682ab82e6e9635d021c865a3))
+
+The modal's per-call guard and ChatApp._confirm each spelled out the allow/scoped choice sets.
+  Define _SCOPED_CHOICES and _ALLOW_CHOICES next to the modal and use them in all three places.
+
+Belongs to: #154.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **cli**: Print-and-exit for ConfigError in one place
+  ([`a6eb37e`](https://github.com/cleanunicorn/drove/commit/a6eb37e05e18435d48a84d764d4e8919cee350f3))
+
+The callback, _load_or_exit and `drove config` each wrote the same error(next_step) + Exit(1) block.
+  Extract _exit_config_error.
+
+Belongs to: #148.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **config**: Share the init-only settings sources override
+  ([`fb63c57`](https://github.com/cleanunicorn/drove/commit/fb63c57c0b9a39908ef9c5f4de1837f94e50762b))
+
+_FileLlamaServerDefaults and _FileConfig each repeated the same settings_customise_sources returning
+  (init_settings,). Move it to an _InitOnlySources mixin placed first in both bases, so the
+  "explicit values only" policy is written once.
+
+Belongs to: #148.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **downloader**: Import the download record's temp name
+  ([`2b3469c`](https://github.com/cleanunicorn/drove/commit/2b3469c2446a594551a9a6269d31cf3b3f6fb75d))
+
+_check_targets rebuilt write_state's private temporary file name to vet it. Export
+  MANIFEST_TEMP_NAME from download_state and use it in both, so renaming the temp file cannot
+  silently drop it from the safety check.
+
+Belongs to: #152.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **models**: Share the flat-GGUF primary check
+  ([`2d4b14a`](https://github.com/cleanunicorn/drove/commit/2d4b14ae7f4e76a245f18a35e66b0707d03c656a))
+
+list() and _find_primary each spelled out "not a projector, a file, and servable" for a top-level
+  <name>.gguf. Extract _is_flat_primary so list() keeps offering exactly what resolve() serves.
+
+Belongs to: #152 (combined with #147's projector rule).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **observe**: Name the original-body-size rule once
+  ([`d3b1d41`](https://github.com/cleanunicorn/drove/commit/d3b1d419f3c5301ce9ebeba4f4d6933f6da3325f))
+
+ObserveContext.to_record wrote "captured length unless an original size was recorded" twice, with
+  stray parentheses. Extract _original_size.
+
+Belongs to: #153.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **proxy**: Read the response content type through observe's helper
+  ([`796aae9`](https://github.com/cleanunicorn/drove/commit/796aae9965d0d2431e3a5a11cb16c1a99db54ed7))
+
+_counting_stream re-implemented observe's case-insensitive Content-Type lookup to decide whether to
+  capture a body, while observe used its own to decide how to render it. Make it
+  observe.content_type and use it in both, so capture and rendering read the header the same way.
+  Rename the request-parsing local that would otherwise shadow it.
+
+Belongs to: #153.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **stats**: Keep only the newest speed and TTFT sample
+  ([`7456a29`](https://github.com/cleanunicorn/drove/commit/7456a29a67286c8a438193d11d514950635ef10d))
+
+Since #153 moved averages onto running sums, the 1024-entry deques were only read at [-1]; the other
+  1023 samples per deque were never used. Keep the last sample instead and drop MAX_SAMPLES. The
+  bounded-memory test now checks that no per-request collection is retained.
+
+Belongs to: #153.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
 
 ## v0.13.1 (2026-10-27)
 

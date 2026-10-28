@@ -95,6 +95,8 @@
   matched the file name before reading content and skipped files over 1 MiB, binary files
   and non-UTF-8 files.
 - A session id read from a stored session file can no longer direct a save outside the sessions directory.
+- `read_file`, `list_files` and `search_files` refuse a path outside the approved directories
+  before checking whether it exists, so a model can no longer probe which paths exist there.
 
 ## v0.13.1 (2026-10-27)
 

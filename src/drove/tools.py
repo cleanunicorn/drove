@@ -335,11 +335,11 @@ def _read_file(args: dict[str, Any], context: ToolContext) -> str:
     path = _path_arg(args, context, "")
     offset = _count_arg(args, "offset", 0)
     limit = _count_arg(args, "limit", _READ_DEFAULT_LINES)
+    _check_roots(path, context)  # first, so missing paths outside the roots are not revealed
     if not path.exists():
         return ToolFailure(f"Error: file not found: {path}")
     if not path.is_file():
         return ToolFailure(f"Error: not a file: {path}")
-    _check_roots(path, context)
 
     lines: list[str] = []
     used = read = 0
@@ -396,11 +396,11 @@ def _list_files(args: dict[str, Any], context: ToolContext) -> str:
     path = _path_arg(args, context, ".")
     recursive = args.get("recursive", False)
 
+    _check_roots(path, context)  # first, so missing paths outside the roots are not revealed
     if not path.exists():
         return ToolFailure(f"Error: path not found: {path}")
     if not path.is_dir():
         return ToolFailure(f"Error: not a directory: {path}")
-    _check_roots(path, context)
 
     entries: list[str] = []
     used = 0
@@ -726,9 +726,9 @@ def _search_files(args: dict[str, Any], context: ToolContext) -> str:
         if value is not None and not isinstance(value, str):
             return ToolFailure(f"Error: {key} must be a string")
 
+    _check_roots(path, context)  # first, so missing paths outside the roots are not revealed
     if not path.exists():
         return ToolFailure(f"Error: path not found: {path}")
-    _check_roots(path, context)
 
     results: list[str] = []
     used = skipped = outside = 0

@@ -397,6 +397,27 @@ def test_reads_outside_the_approved_roots_fail_at_execution(tmp_path: Path) -> N
     assert inside == "link.txt\nlinkdir/"
 
 
+@pytest.mark.parametrize("tool", ["read_file", "list_files", "search_files"])
+@pytest.mark.parametrize("target", ["missing", "file.txt"])
+def test_outside_roots_refusal_comes_before_existence_checks(
+    tmp_path: Path, tool: str, target: str
+) -> None:
+    """Paths outside the approved roots are refused alike, so existence is not revealed."""
+    cwd, outside = tmp_path / "cwd", tmp_path / "out"
+    cwd.mkdir()
+    outside.mkdir()
+    (outside / "file.txt").write_text("x")
+    context = ToolContext(cwd=cwd.resolve(), read_roots=(cwd.resolve(),))
+    args = {"path": str(outside / target)}
+    if tool == "search_files":
+        args["name_pattern"] = "*"
+
+    result = execute_tool(tool, json.dumps(args), context=context)
+
+    assert isinstance(result, ToolFailure) and "outside the approved" in result
+    assert "not found" not in result and "not a " not in result
+
+
 def test_relative_paths_resolve_against_the_context_cwd(tmp_path: Path) -> None:
     (tmp_path / "here.txt").write_text("found")
     context = ToolContext(cwd=tmp_path, read_roots=(tmp_path.resolve(),))

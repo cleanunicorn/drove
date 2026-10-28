@@ -614,3 +614,45 @@ def test_resumed_sessions_cap_old_oversized_tool_results(tmp_path):
 
     assert len(app._history[1]["content"].encode()) <= TOOL_OUTPUT_LIMIT
     assert app._history[0] == {"role": "user", "content": "hi"}
+
+
+async def test_sessions_loaded_from_the_picker_cap_old_oversized_tool_results(
+    tmp_path, monkeypatch
+):
+    app = chat_app(tmp_path)
+    huge = "x" * (TOOL_OUTPUT_LIMIT * 3)
+    old = Session(
+        model="test-model",
+        session_id="old",
+        messages=[
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c0",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c0", "content": huge},
+        ],
+    )
+    requests: list = []
+
+    async def stream(messages):
+        requests.append([dict(m) for m in messages])
+        yield {"kind": "content", "chunk": "ok"}
+
+    monkeypatch.setattr(app, "_stream_chat", stream)
+    async with app.run_test() as pilot:
+        await app._load_session(old)
+        assert len(app._history[2]["content"].encode()) <= TOOL_OUTPUT_LIMIT
+        app._start_turn("next")
+        await until(pilot, lambda: bool(requests) and not app.is_generating)
+
+    [tool_message] = [m for m in requests[0] if m["role"] == "tool"]
+    assert len(tool_message["content"].encode("utf-8")) <= TOOL_OUTPUT_LIMIT
+    assert tool_message["content"].endswith(TRUNCATION_NOTICE)

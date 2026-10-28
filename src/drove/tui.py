@@ -1129,7 +1129,7 @@ class ChatApp(App[None]):
             await self._show_note("Stop the reply before changing sessions.")
             return
         self._session = session
-        self._history = list(session.messages)
+        self._history = cap_tool_messages(session.messages)
         self._last_speed = self._last_ttft = None
         self._last_usage = {}
         await self.query_one("#messages").remove_children()

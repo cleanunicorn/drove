@@ -73,6 +73,9 @@
 - In `drove chat`, choosing "Allow always" now warns when the approval cannot be saved to the
   config file (for example, because another value in it is invalid); it still applies for the
   session.
+- In the `drove chat` tool approval dialog, the line that says what "Allow for Session" and
+  "Allow Always" grant now lines up with the text above it, and the reason for asking is
+  marked with a warning-coloured rule.
 
 ### Security
 

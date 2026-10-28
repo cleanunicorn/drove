@@ -535,6 +535,23 @@ async def test_per_call_dialog_offers_only_allow_once_or_deny(tmp_path):
         assert choices == ["allow-once"]
 
 
+async def test_scoped_dialog_lines_share_the_message_layout(tmp_path):
+    """Reason and scope lines align with the intro and keep a gap before "Arguments:"."""
+    app = chat_app(tmp_path)
+    async with app.run_test() as pilot:
+        modal = ToolConfirmationModal(
+            "read_file", "{}", reason="Outside the working directory.", scope="read_file in /x"
+        )
+        app.push_screen(modal)
+        await pilot.pause()
+        intro, reason, scope = list(app.screen.query("Label.message"))[:3]
+        assert (reason.id, scope.id) == ("tool-reason", "tool-scope")
+        assert scope.region.x == reason.region.x == intro.region.x
+        assert scope.styles.margin.bottom == 1
+        assert reason.styles.border_left[0] == "solid"
+        assert reason.styles.border_left[1] != intro.styles.border_left[1]
+
+
 async def test_an_approved_outside_read_runs_within_its_scope(tmp_path, monkeypatch):
     app, _, _ = policy_app(tmp_path, monkeypatch)
     outside = outside_dir(tmp_path)

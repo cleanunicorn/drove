@@ -189,6 +189,10 @@ ToolConfirmationModal {
     margin-bottom: 1;
 }
 
+#tool-dialog #tool-reason {
+    border-left: solid $warning;
+}
+
 #tool-arguments-scroll {
     height: 1fr;
     overflow-x: hidden;
@@ -637,7 +641,10 @@ class ToolConfirmationModal(ModalScreen[str]):
                     yield Label(self._reason, classes="message", id="tool-reason", markup=False)
                 if self._scope and not self._per_call:
                     yield Label(
-                        f"Session and Always allow {self._scope}.", id="tool-scope", markup=False
+                        f"Session and Always allow {self._scope}.",
+                        classes="message",
+                        id="tool-scope",
+                        markup=False,
                     )
                 yield Label("Arguments:")
                 yield Label(self._arguments, id="tool-arguments", markup=False)

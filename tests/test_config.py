@@ -247,19 +247,6 @@ def test_set_config_value_rejects_unknown_key(tmp_path: Path) -> None:
     assert not cfg_file.exists()
 
 
-def test_add_allowed_tool_appends_to_file_list_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from drove.config import add_allowed_tool
-
-    cfg_file = tmp_path / "config.toml"
-    cfg_file.write_text('allowed_tools = ["fetch_url"]\n')
-    monkeypatch.setenv("DROVE_ALLOWED_TOOLS", '["write_file"]')
-    add_allowed_tool("shell_execute", cfg_file)
-    add_allowed_tool("shell_execute", cfg_file)
-    assert tomllib.loads(cfg_file.read_text()) == {"allowed_tools": ["fetch_url", "shell_execute"]}
-
-
 def test_write_default_config_ignores_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from drove.config import write_default_config
 
@@ -349,25 +336,27 @@ def test_observe_max_age_days_env_override(tmp_path: Path, monkeypatch: pytest.M
     assert load_config(tmp_path / "nonexistent.toml").observe_max_age_days == 3
 
 
+@pytest.mark.parametrize(
+    "entry",
+    ["shell_execute", '{"dir":"/srv/a, b","tool":"read_file","v":1}'],
+    ids=["bare-name", "grant-token"],
+)
 def test_add_allowed_tool_appends_once_without_copying_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
 ) -> None:
-    import tomllib
-
     from drove.config import add_allowed_tool
 
     path = tmp_path / "config.toml"
     path.write_text('listen_port = 7000\nallowed_tools = ["old"]\n')
     monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
     monkeypatch.setenv("DROVE_ALLOWED_TOOLS", '["from-env"]')
-    token = '{"dir":"/srv/a, b","tool":"read_file","v":1}'
 
-    add_allowed_tool(token, path)
-    add_allowed_tool(token, path)
+    add_allowed_tool(entry, path)
+    add_allowed_tool(entry, path)
 
     assert tomllib.loads(path.read_text()) == {
         "listen_port": 7000,
-        "allowed_tools": ["old", token],
+        "allowed_tools": ["old", entry],
     }
 
 

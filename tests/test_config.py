@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
 import tomli_w
-from pydantic import ValidationError
 
 from drove.config import (
+    ConfigError,
     load_config,
     parse_size,
     resolve_config_path,
     save_tui_completed_hints,
+    set_config_value,
 )
 
 
@@ -61,9 +63,8 @@ def test_models_dir_expands_home(tmp_path: Path) -> None:
 
 def test_save_and_reload(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
-    cfg = load_config(tmp_path / "nonexistent.toml")
-    cfg = cfg.model_copy(update={"listen_port": 1234, "speech_timeout_seconds": 2400})
-    cfg.save(cfg_file)
+    set_config_value("listen_port", 1234, cfg_file)
+    set_config_value("speech_timeout_seconds", 2400, cfg_file)
 
     reloaded = load_config(cfg_file)
     assert reloaded.listen_port == 1234
@@ -74,7 +75,7 @@ def test_save_and_reload(tmp_path: Path) -> None:
 def test_speech_timeout_must_be_positive(tmp_path: Path, value: int) -> None:
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_bytes(tomli_w.dumps({"speech_timeout_seconds": value}).encode())
-    with pytest.raises(ValidationError, match="speech_timeout_seconds"):
+    with pytest.raises(ConfigError, match="speech_timeout_seconds"):
         load_config(cfg_file)
 
 
@@ -118,15 +119,13 @@ def test_max_memory_from_toml(tmp_path: Path) -> None:
 def test_max_memory_invalid_rejected(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_bytes(tomli_w.dumps({"max_memory": "lots"}).encode())
-    with pytest.raises(ValidationError, match="Invalid size"):
+    with pytest.raises(ConfigError, match="Invalid size"):
         load_config(cfg_file)
 
 
 def test_max_memory_survives_save_and_reload(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
-    cfg = load_config(tmp_path / "nonexistent.toml")
-    cfg = cfg.model_copy(update={"max_memory": "16GiB"})
-    cfg.save(cfg_file)
+    set_config_value("max_memory", "16GiB", cfg_file)
 
     reloaded = load_config(cfg_file)
     assert reloaded.max_memory == "16GiB"
@@ -161,7 +160,7 @@ def test_default_model_roundtrip(tmp_path: Path, model: str | None) -> None:
     expected = model if model and model.strip() else None
     assert cfg.default_model == expected
     path = tmp_path / "config.toml"
-    cfg.save(path)
+    set_config_value("default_model", model, path)
     assert load_config(path).default_model == expected
     assert ("default_model" in path.read_text()) == (expected is not None)
 
@@ -179,11 +178,9 @@ def test_default_model_env_precedence(tmp_path: Path, monkeypatch: pytest.Monkey
 
 def test_tutorial_progress_round_trips_without_losing_settings(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
-    cfg = load_config(cfg_file)
-    cfg.listen_port = 1234
-    cfg.tui_theme = "textual-light"
-    cfg.tui_completed_hints = ["send", "commands"]
-    cfg.save(cfg_file)
+    set_config_value("listen_port", 1234, cfg_file)
+    set_config_value("tui_theme", "textual-light", cfg_file)
+    set_config_value("tui_completed_hints", ["send", "commands"], cfg_file)
     reloaded = load_config(cfg_file)
     assert reloaded.tui_completed_hints == ["send", "commands"]
     assert reloaded.listen_port == 1234
@@ -209,3 +206,105 @@ def test_saving_tip_progress_creates_minimal_file(tmp_path: Path) -> None:
     cfg_file = tmp_path / "nested" / "config.toml"
     save_tui_completed_hints([], cfg_file)
     assert cfg_file.read_text() == "tui_completed_hints = []\n"
+
+
+def test_set_config_value_patches_one_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from drove.config import set_config_value
+
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('models_dir = "~/m"\nunknown = "kept"\n[llama_server]\nthreads = 8\n')
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    monkeypatch.setenv("DROVE_LLAMA_SERVER__N_GPU_LAYERS", "3")
+
+    set_config_value("llama_server.n_gpu_layers", 10, cfg_file)
+    set_config_value("prompt_cache_dir", "~/cache", cfg_file)
+
+    assert tomllib.loads(cfg_file.read_text()) == {
+        "models_dir": "~/m",
+        "unknown": "kept",
+        "llama_server": {"threads": 8, "n_gpu_layers": 10},
+        "prompt_cache_dir": str(Path.home() / "cache"),
+    }
+
+
+def test_set_config_value_none_removes_key(tmp_path: Path) -> None:
+    from drove.config import set_config_value
+
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('default_model = "m"\nlisten_port = 1\n')
+    set_config_value("default_model", " ", cfg_file)
+    assert cfg_file.read_text() == "listen_port = 1\n"
+
+
+def test_set_config_value_rejects_unknown_key(tmp_path: Path) -> None:
+    from drove.config import set_config_value
+
+    cfg_file = tmp_path / "config.toml"
+    with pytest.raises(ValueError, match="Unknown config key"):
+        set_config_value("nope", 1, cfg_file)
+    with pytest.raises(ValueError, match="Unknown config key"):
+        set_config_value("llama_server.nope", 1, cfg_file)
+    assert not cfg_file.exists()
+
+
+def test_add_allowed_tool_appends_to_file_list_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from drove.config import add_allowed_tool
+
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('allowed_tools = ["fetch_url"]\n')
+    monkeypatch.setenv("DROVE_ALLOWED_TOOLS", '["write_file"]')
+    add_allowed_tool("shell_execute", cfg_file)
+    add_allowed_tool("shell_execute", cfg_file)
+    assert tomllib.loads(cfg_file.read_text()) == {"allowed_tools": ["fetch_url", "shell_execute"]}
+
+
+def test_write_default_config_ignores_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from drove.config import write_default_config
+
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    monkeypatch.setenv("DROVE_LLAMA_N_GPU_LAYERS", "4")
+    cfg_file = tmp_path / "new" / "config.toml"
+    cfg = write_default_config(cfg_file)
+    assert cfg.listen_port == 8080
+    data = tomllib.loads(cfg_file.read_text())
+    assert data["listen_port"] == 8080
+    assert data["llama_server"] == {"n_gpu_layers": -1}
+    assert "default_model" not in data
+    monkeypatch.delenv("DROVE_LISTEN_PORT")
+    monkeypatch.delenv("DROVE_LLAMA_N_GPU_LAYERS")
+    assert load_config(cfg_file).model_dump() == cfg.model_dump()
+
+
+def test_load_config_names_file_and_key(tmp_path: Path) -> None:
+    from drove.config import ConfigError
+
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[llama_server]\nthreads = "x"\n')
+    with pytest.raises(ConfigError) as info:
+        load_config(cfg_file)
+    assert str(cfg_file) in str(info.value) and "llama_server.threads" in str(info.value)
+
+
+def test_invalid_nested_env_fails_in_load_not_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from drove.config import ConfigError
+
+    monkeypatch.setenv("DROVE_LLAMA_N_GPU_LAYERS", "all")
+    with pytest.raises(ConfigError, match="DROVE_LLAMA_N_GPU_LAYERS"):
+        load_config(tmp_path / "missing.toml")
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [("DROVE_ALLOWED_TOOLS", "[1]"), ("DROVE_LLAMA_SERVER", '{"threads": "x"}')],
+)
+def test_invalid_env_json_member_names_its_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ConfigError) as info:
+        load_config(tmp_path / "missing.toml")
+    assert f"variable {name} (" in str(info.value)

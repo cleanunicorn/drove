@@ -543,6 +543,12 @@ def test_default_model_multipart_preserves_body(tmp_path: Path) -> None:
         assert send.call_args.args[0].content == result.request.content
 
 
+def _write_config(config: Config, path: Path) -> None:
+    import tomli_w
+
+    path.write_text(tomli_w.dumps(config.model_dump(mode="json", exclude_none=True)))
+
+
 def test_default_model_reload_change_and_removal(tmp_path: Path) -> None:
     from drove.proxy import _reload_config
 
@@ -557,11 +563,11 @@ def test_default_model_reload_change_and_removal(tmp_path: Path) -> None:
     ):
         assert client.post("/v1/chat/completions", json={}).status_code == 404
         ensure.assert_awaited_with("first", claim=True)
-        config.model_copy(update={"default_model": "second"}).save(path)
+        _write_config(config.model_copy(update={"default_model": "second"}), path)
         _reload_config(app, path)
         assert client.post("/v1/chat/completions", json={}).status_code == 404
         ensure.assert_awaited_with("second", claim=True)
-        config.model_copy(update={"default_model": None}).save(path)
+        _write_config(config.model_copy(update={"default_model": None}), path)
         _reload_config(app, path)
         assert client.post("/v1/chat/completions", json={}).status_code == 400
         assert ensure.await_count == 2

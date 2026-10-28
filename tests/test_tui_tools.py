@@ -328,3 +328,24 @@ def test_output_tail_is_bounded_thread_safe_and_ignores_late_output():
     tail.close()
     tail.append("late")
     assert tail.take() is None
+
+
+async def test_allow_always_persists_only_the_chosen_tool(tmp_path, monkeypatch):
+    import tomllib
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('listen_port = 7000\nallowed_tools = ["fetch_url"]\n')
+    monkeypatch.setenv("DROVE_LISTEN_PORT", "9000")
+    monkeypatch.setenv("DROVE_ALLOWED_TOOLS", '["write_file"]')
+    app = ChatApp("http://localhost:8080", "test-model", tmp_path, config_path)
+
+    async def always(screen):
+        return "allow-always"
+
+    monkeypatch.setattr(app, "push_screen_wait", always)
+
+    assert await app._tool_allowed("shell_execute", "{}")
+    assert tomllib.loads(config_path.read_text()) == {
+        "listen_port": 7000,
+        "allowed_tools": ["fetch_url", "shell_execute"],
+    }

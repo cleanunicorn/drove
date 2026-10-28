@@ -29,6 +29,19 @@ drove config listen_port                  # get one value
 drove config idle_timeout_seconds 3600    # save a value to the selected file
 ```
 
+Saving a value writes only that key into the file; every other key keeps its
+file value, and `DROVE_*` overrides and defaults are never written. A key set
+in the file while a `DROVE_*` variable overrides it takes effect once the
+variable is unset. `drove init` writes every setting at its built-in default,
+ignoring the environment; `drove init --force` resets an existing file.
+
+An invalid value (in the file or a `DROVE_*` variable) stops commands with a
+message naming the file or variable and the key. `drove config <key> <value>`
+still works on a file with a bad value, so it can fix it; a file that is not
+valid TOML must be fixed by hand or reset with `drove init --force`.
+`allowed_tools` is a list, so set it in the file (or with "allow always" in
+`drove chat`), not with `drove config`.
+
 ## Global settings
 
 Paths below are relative to your home directory. These are built-in defaults,

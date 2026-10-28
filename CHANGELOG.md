@@ -12,6 +12,14 @@
 - Fixed vision models being served from their `mmproj` projector instead of the model weights, so
   their model settings are found again; a directory holding only projectors is no longer listed as
   a model.
+- Saving configuration (`drove config <key> <value>`, `/theme` and "allow always" in
+  `drove chat`, chat tip progress) changed only that key in `config.toml`. `DROVE_*`
+  environment overrides stayed temporary and defaults were no longer frozen into the file;
+  `drove init` wrote the true defaults even when `DROVE_*` variables were set.
+- An invalid value in `config.toml`, broken TOML syntax, or an invalid `DROVE_*` value stopped
+  commands with a short message naming the file or variable and the key, instead of a traceback.
+  `drove config <key> <value>` could repair an invalid value in the file; broken TOML syntax had
+  to be fixed by hand or reset with `drove init --force`.
 
 ### Security
 

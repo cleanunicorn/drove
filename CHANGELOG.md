@@ -63,6 +63,8 @@
   `/status` stays cheap on long-running servers.
 - `fetch_url` followed up to five redirects (a redirect to a new origin asked for approval)
   instead of reporting every redirect as an error.
+- A request for a model whose download is incomplete now returns a 404 saying so and how to
+  finish it, instead of reporting the model as not found.
 
 ### Security
 

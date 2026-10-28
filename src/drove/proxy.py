@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.types import Receive
 
 from drove.config import Config, load_config
-from drove.model_store import validate_model_name
+from drove.model_store import IncompleteModelError, validate_model_name
 from drove.observe import (
     MAX_BODY_BYTES,
     ObserveContext,
@@ -446,6 +446,14 @@ def _startup_error(model_name: str, error: Exception) -> HTTPException:
     )
     if isinstance(error, BackendUnavailableError):
         return HTTPException(status_code=503, detail="backend unavailable; see server logs")
+    if isinstance(error, IncompleteModelError):
+        return HTTPException(
+            status_code=404,
+            detail=(
+                f"Model {model_name!r} is incomplete. Rerun 'drove models download' to finish "
+                f"it; 'drove models info {model_name}' shows what is missing."
+            ),
+        )
     if isinstance(error, FileNotFoundError):
         return HTTPException(
             status_code=404,

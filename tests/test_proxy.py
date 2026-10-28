@@ -1412,5 +1412,9 @@ def test_unservable_and_incomplete_downloads_are_hidden_and_never_started(
         resp = client.post("/v1/chat/completions", json={"model": "split", "messages": []})
     assert ids == ["ready"]
     assert resp.status_code == 404
-    assert "incomplete" in resp.json()["detail"]
+    assert resp.json()["detail"] == (
+        "Model 'split' is incomplete. Rerun 'drove models download' to finish it; "
+        "'drove models info split' shows what is missing."
+    )
+    assert str(models) not in resp.json()["detail"]
     start.assert_not_awaited()

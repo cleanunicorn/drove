@@ -1388,3 +1388,29 @@ async def _drain_background_tasks() -> None:
 
     while _background_tasks:
         await asyncio.gather(*_background_tasks)
+
+
+def test_unservable_and_incomplete_downloads_are_hidden_and_never_started(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    models = config.models_dir
+    (models / "ready").mkdir()
+    (models / "ready" / "model.gguf").write_bytes(b"GGUF")
+    (models / "org" / "cache-only" / ".cache" / "huggingface").mkdir(parents=True)
+    (models / "org" / "cache-only" / ".cache" / "huggingface" / "x.incomplete").write_bytes(b"")
+    (models / "raw").mkdir()
+    (models / "raw" / "model.safetensors").write_bytes(b"weights")
+    (models / "split").mkdir()
+    (models / "split" / "split-00001-of-00002.gguf").write_bytes(b"GGUF")
+    app = create_app(config)
+    with (
+        patch.object(app.state.manager, "_start", new_callable=AsyncMock) as start,
+        TestClient(app, raise_server_exceptions=False) as client,
+    ):
+        ids = [m["id"] for m in client.get("/v1/models").json()["data"]]
+        resp = client.post("/v1/chat/completions", json={"model": "split", "messages": []})
+    assert ids == ["ready"]
+    assert resp.status_code == 404
+    assert "incomplete" in resp.json()["detail"]
+    start.assert_not_awaited()

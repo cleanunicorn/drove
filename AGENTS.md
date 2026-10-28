@@ -294,7 +294,10 @@ src/drove/
   model_config.py      Per-model sidecar TOMLs → llama-server args (ctx_size,
                        n_gpu_layers, cache_*, extra_args passthrough, backend,
                        asr_model, asr_quantization, tts_*)
-  model_store.py       The single authority for resolving/listing models on disk
+  model_store.py       The single authority for resolving/listing models on disk;
+                       lists and serves only complete downloads
+  download_state.py    Per-model .drove-download.json record (incomplete/complete,
+                       expected files and sizes)
   backend.py           Picks the backend per model: .gguf → llama-server,
                        .onnx → built-in ASR worker, .tts → TTS worker
                        (overridable via `backend`); known TTS repos → engine
@@ -314,7 +317,6 @@ src/drove/
                        observe logs when enabled
   downloader.py        HuggingFace downloads (GGUF + ONNX + TTS repos, quantization
                        prompts)
-  converter.py         HF → GGUF conversion
   integrations.py      Registers models with pi, opencode, and Kilo Code; merges
                        a drove provider into each agent's JSON config, inferring
                        capabilities from model config and GGUF metadata

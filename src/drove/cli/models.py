@@ -47,7 +47,7 @@ from drove.model_config import (
     set_global_model_config_key,
     set_model_config_key,
 )
-from drove.model_store import ModelStore, validate_model_name
+from drove.model_store import IncompleteModelError, ModelStore, validate_model_name
 
 models_app = typer.Typer(help="Manage models.", no_args_is_help=True)
 
@@ -95,6 +95,9 @@ def _find_model(models_dir: Path, name: str) -> Path:
     """Locate the primary model file by name or HuggingFace reference."""
     try:
         return ModelStore(models_dir).resolve(_valid_name(name))
+    except IncompleteModelError as e:
+        error(str(e), next_step=f"Finish it, or remove it: drove models delete {name}")
+        raise typer.Exit(1)
     except FileNotFoundError:
         error(
             unknown("model", name, (entry.name for entry in ModelStore(models_dir).list())),
@@ -482,7 +485,7 @@ def _prompt_quant_choice(candidates: list[QuantCandidate], theme: str) -> str | 
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         typer.echo(
-            "Choose a quantization with :QUANT, or pass --yes when not using a terminal.",
+            "Choose a quantization with org/repo:QUANT when not using a terminal.",
             err=True,
         )
         raise typer.Exit(1)
@@ -644,8 +647,10 @@ def download_model(
 
         drove models download hexgrad/Kokoro-82M --name kokoro  (text-to-speech)
     """
+    from drove.download_state import read_state
     from drove.downloader import (
         FileStatus,
+        available_quants,
         parse_model_ref,
         resolve_download,
     )
@@ -672,6 +677,15 @@ def download_model(
         raise typer.Exit(1)
 
     _, quant = parse_model_ref(model_ref)
+    if quant is None and yes and not plan.is_tts and not plan.is_asr:
+        variants = available_quants(plan.files)
+        if len(variants) > 1:
+            # Never download every quantization unattended.
+            error(
+                f"{plan.repo_id} has {len(variants)} quantizations: {', '.join(variants)}.",
+                next_step=f"Choose one: drove models download {plan.repo_id}:QUANT --yes",
+            )
+            raise typer.Exit(1)
     if quant is None and not yes:
         quant = _select_quant_variant(plan, name, models_dir, ctx.obj["config"].tui_theme)
 
@@ -683,7 +697,11 @@ def download_model(
     has_existing = any(s != FileStatus.MISSING for s, _ in statuses.values())
     all_complete = has_existing and all(s == FileStatus.COMPLETE for s, _ in statuses.values())
 
-    if all_complete and not plan.is_tts and not repair_config:
+    # A record still marked incomplete means an earlier run stopped after its
+    # last transfer; run again so it is recorded complete (files are skipped).
+    state = read_state(plan.destination(models_dir))
+    pending = state is not None and not state.complete
+    if all_complete and not plan.is_tts and not repair_config and not pending:
         _download_summary(plan, models_dir, existing=True)
         raise typer.Exit(0)
 
@@ -777,21 +795,20 @@ def _download_retry_command(
         args.extend(["--tts-engine", tts_engine])
     if repair_config:
         args.append("--repair-config")
-    # ONNX --yes resolves the default variant, not all variants. Keep the
-    # picker for that case instead of silently changing the recovery scope.
+    # --yes cannot choose all variants (ONNX resolves its default, GGUF asks
+    # for :QUANT). Keep the picker for that case instead of changing the scope.
     if not _retry_needs_all_choice(plan):
         args.append("--yes")
     return _drove_command(config_path, *args)
 
 
 def _retry_needs_all_choice(plan: DownloadPlan) -> bool:
-    from drove.downloader import available_onnx_quants
+    """True when the plan holds every variant, which only the picker can choose again."""
+    from drove.downloader import available_onnx_quants, available_quants
 
-    return (
-        plan.is_asr
-        and plan.files == plan.onnx_files
-        and len(available_onnx_quants(plan.onnx_files)) > 1
-    )
+    if plan.is_asr:
+        return plan.files == plan.onnx_files and len(available_onnx_quants(plan.onnx_files)) > 1
+    return not plan.is_tts and len(available_quants(plan.files)) > 1
 
 
 def _finish_download(

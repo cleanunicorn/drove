@@ -227,3 +227,164 @@ def test_interrupt_keeps_tts_unpublished(tmp_path, monkeypatch):
         plan.execute(tmp_path, event_cb=events.append)
     assert not (plan.destination(tmp_path) / "model.tts").exists()
     assert not any(e.state in ("complete", "configuring") for e in events)
+
+
+# ── servable downloads only, completion record (#117) ─────────────────────────
+
+
+def _hub(monkeypatch, files: dict[str, int]):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    api = MagicMock()
+    api.model_info.return_value = SimpleNamespace(
+        siblings=[SimpleNamespace(rfilename=name, size=size) for name, size in files.items()]
+    )
+    monkeypatch.setattr("drove.downloader.HfApi", lambda: api)
+    transfer = MagicMock(side_effect=AssertionError("must not download"))
+    monkeypatch.setattr("drove.downloader.hf_hub_download", transfer)
+    return transfer
+
+
+def _fake_transfer(sizes: dict[str, int], fail_on: str | None = None):
+    from pathlib import Path
+
+    calls: list[str] = []
+
+    def download(*, repo_id, filename, local_dir, **kwargs):
+        calls.append(filename)
+        if filename == fail_on:
+            raise KeyboardInterrupt
+        path = Path(local_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * sizes[filename])
+        return str(path)
+
+    download.calls = calls  # type: ignore[attr-defined]
+    return download
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("extension", ["safetensors", "bin", "pt"])
+def test_raw_weight_repository_is_refused_without_downloading(monkeypatch, extension):
+    from drove.downloader import resolve_download
+
+    transfer = _hub(
+        monkeypatch,
+        {f"model-00001-of-00002.{extension}": 10, "config.json": 1, "tokenizer.json": 1},
+    )
+    with pytest.raises(ValueError, match="GGUF") as excinfo:
+        resolve_download("org/raw-model")
+    assert "convert" in str(excinfo.value)
+    transfer.assert_not_called()
+
+
+def test_mixed_repository_downloads_only_gguf(monkeypatch):
+    from drove.downloader import resolve_download
+
+    _hub(monkeypatch, {"model.Q4_K_M.gguf": 10, "model.safetensors": 99, "pytorch_model.bin": 9})
+    plan = resolve_download("org/mixed")
+    assert plan.files == {"model.Q4_K_M.gguf": 10}
+
+
+def test_projector_only_repository_is_refused(monkeypatch):
+    from drove.downloader import resolve_download
+
+    _hub(monkeypatch, {"mmproj-model-f16.gguf": 10})
+    with pytest.raises(ValueError, match="GGUF"):
+        resolve_download("org/proj-only")
+
+
+def test_interrupted_shard_download_is_recorded_and_never_served(tmp_path, monkeypatch):
+    from drove.download_state import read_state
+    from drove.model_store import IncompleteModelError, ModelStore
+
+    sizes = {
+        "big-00001-of-00003.gguf": 3,
+        "big-00002-of-00003.gguf": 4,
+        "big-00003-of-00003.gguf": 5,
+    }
+    plan = DownloadPlan("org/big", sizes, "big", True, mmproj_files={"mmproj.gguf": 2})
+    store = ModelStore(tmp_path)
+    monkeypatch.setattr(
+        "drove.downloader.hf_hub_download",
+        _fake_transfer({**sizes, "mmproj.gguf": 2}, "big-00002-of-00003.gguf"),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        plan.execute(tmp_path)
+
+    dest = plan.destination(tmp_path)
+    state = read_state(dest)
+    assert state is not None and not state.complete
+    assert state.files == {**sizes, "mmproj.gguf": 2}
+    assert (dest / "big-00001-of-00003.gguf").exists()  # kept for resume
+    assert store.list() == []
+    with pytest.raises(IncompleteModelError, match="did not finish"):
+        store.resolve("big")
+
+    retry = _fake_transfer({**sizes, "mmproj.gguf": 2})
+    monkeypatch.setattr("drove.downloader.hf_hub_download", retry)
+    primary = plan.execute(tmp_path)
+    assert retry.calls == ["big-00002-of-00003.gguf", "big-00003-of-00003.gguf", "mmproj.gguf"]
+    assert read_state(dest).complete
+    assert store.resolve("big") == primary == dest / "big-00001-of-00003.gguf"
+
+
+def test_record_is_incomplete_while_transferring(tmp_path, monkeypatch):
+    """A running proxy never sees a model mid-download, even an ONNX one."""
+    from drove.model_store import ModelStore
+
+    sizes = {"model.onnx": 4, "model.onnx.data": 8, "vocab.txt": 1}
+    plan = DownloadPlan(
+        "org/asr",
+        {"model.onnx": 4, "model.onnx.data": 8},
+        "asr",
+        False,
+        extra_files={"vocab.txt": 1},
+    )
+    seen: list[list[str]] = []
+    transfer = _fake_transfer(sizes)
+
+    def observing(**kwargs):
+        seen.append([e.name for e in ModelStore(tmp_path).list()])
+        return transfer(**kwargs)
+
+    monkeypatch.setattr("drove.downloader.hf_hub_download", observing)
+    plan.execute(tmp_path)
+    assert seen == [[], [], []]
+    assert [e.name for e in ModelStore(tmp_path).list()] == ["asr"]
+
+
+def test_tts_download_is_recorded_complete_after_marker(tmp_path, monkeypatch):
+    from drove.download_state import read_state
+
+    plan = DownloadPlan(
+        "org/voice", {"weights.safetensors": 3}, "voice", False, tts_engine="kokoro"
+    )
+    monkeypatch.setattr(
+        "drove.downloader.hf_hub_download", _fake_transfer({"weights.safetensors": 3})
+    )
+    primary = plan.execute(tmp_path)
+    assert primary.name == "model.tts"
+    state = read_state(primary.parent)
+    assert state is not None and state.complete
+    assert state.files == {"weights.safetensors": 3}
+
+
+def test_unknown_remote_size_needs_only_the_file(tmp_path, monkeypatch):
+    from drove.model_store import ModelStore
+
+    plan = DownloadPlan("org/m", {"m.gguf": 0}, "m", False)
+    monkeypatch.setattr("drove.downloader.hf_hub_download", _fake_transfer({"m.gguf": 6}))
+    primary = plan.execute(tmp_path)
+    assert ModelStore(tmp_path).resolve("m") == primary
+
+
+def test_files_flattening_to_one_name_are_refused(tmp_path, monkeypatch):
+    plan = DownloadPlan("org/m", {"a/model.gguf": 1, "b/model.gguf": 1}, "m", False)
+    monkeypatch.setattr("drove.downloader.hf_hub_download", _fake_transfer({}))
+    with pytest.raises(ValueError, match="model.gguf"):
+        plan.execute(tmp_path)
+    assert not plan.destination(tmp_path).exists()

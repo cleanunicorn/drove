@@ -228,8 +228,9 @@ instead of animated progress bars.
 
 Ctrl+C exits with status 130 and prints a quoted resume command that preserves the
 selected quantization, custom name and explicit TTS engine. For an ONNX all-variants
-selection, it asks you to choose all variants again (`--yes` selects only the default
-ONNX variant). Transfer errors identify
+or GGUF all-variants selection, it asks you to choose all variants again (`--yes`
+selects only the default ONNX variant and asks for `:QUANT` on a multi-quant GGUF
+repository). Transfer errors identify
 the failed file and exit with status 1. Completed files and Hugging Face's partial
 cache are kept: repeat the printed command to skip complete files and reuse cached
 partial data where supported. A changed remote file or transport may still require
@@ -247,7 +248,9 @@ summary without downloading again.
 
 For multi-variant downloads, use ↑/↓ and Enter to select a quantization, or
 Esc/Ctrl+C to cancel. The picker shows sizes, local status and advisory RAM
-estimates. `:QUANT` and `--yes` bypass it for scripts. See
+estimates. `:QUANT` bypasses it for scripts; `--yes` alone stops with a request for
+`:QUANT` when a GGUF repository has several quantizations. Repositories without GGUF
+or ONNX weights are refused (drove does not convert models). See
 [Choosing a download variant](./models.md#choosing-a-download-variant) for the
 memory estimate and download-all behavior.
 

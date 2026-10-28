@@ -19,10 +19,8 @@ from tests.test_gguf import _kv_string, _kv_uint32, write_gguf
 
 
 @pytest.mark.parametrize("extension", ["safetensors", "bin", "pt"])
-@pytest.mark.parametrize("name", ["unconverted", "org/unconverted"])
-def test_catalog_excludes_unconverted_weights_from_chat(
-    tmp_path: Path, extension: str, name: str
-) -> None:
+@pytest.mark.parametrize("name", ["raw", "org/raw"])
+def test_catalog_omits_unservable_weights(tmp_path: Path, extension: str, name: str) -> None:
     config = Config(models_dir=tmp_path)
     folder = tmp_path / name
     folder.mkdir(parents=True)
@@ -30,20 +28,25 @@ def test_catalog_excludes_unconverted_weights_from_chat(
     (tmp_path / "ready.gguf").write_bytes(b"gguf")
 
     catalog = model_catalog(config, {"ready"})
-    rows = {row["id"]: row for row in catalog}
-    assert rows[name]["drove"] == {
-        "chat": None,
-        "loaded": False,
-        "size_bytes": 7,
-        "capabilities": None,
-        "context_length": None,
-    }
-    assert [model.id for model in parse_models({"data": catalog})] == ["ready"]
+    assert [row["id"] for row in catalog] == ["ready"]
 
-    # A converted model remains selectable even with the original weights present.
+    # A GGUF placed next to the raw weights (supplied by the user) is servable.
     (folder / "model.gguf").write_bytes(b"gguf")
-    converted = parse_models({"data": model_catalog(config, set())})
-    assert {model.id for model in converted} == {"ready", name}
+    served = parse_models({"data": model_catalog(config, set())})
+    assert {model.id for model in served} == {"ready", name}
+
+
+def test_catalog_omits_interrupted_downloads(tmp_path: Path) -> None:
+    config = Config(models_dir=tmp_path)
+    cache = tmp_path / "org" / "partial" / ".cache" / "huggingface" / "download"
+    cache.mkdir(parents=True)
+    (cache / "abc.incomplete").write_bytes(b"partial")
+    shards = tmp_path / "split"
+    shards.mkdir()
+    (shards / "split-00001-of-00002.gguf").write_bytes(b"gguf")
+    (tmp_path / "ready.gguf").write_bytes(b"gguf")
+
+    assert [row["id"] for row in model_catalog(config, set())] == ["ready"]
 
 
 def test_parse_filters_speech_and_broken_metadata_without_guessing() -> None:

@@ -272,8 +272,14 @@ def test_cli_script_bypass(
     monkeypatch.setattr("drove.cli.models._prompt_quant_choice", prompt)
     monkeypatch.setattr("drove.cli.quant_picker.available_memory", memory)
     result = CliRunner().invoke(app, ["models", "download", *args], input="y\n")
-    assert result.exit_code == 0, result.output
-    execute.assert_called_once()
+    if "--yes" in args:
+        # Unattended with several quantizations: ask for :QUANT, download nothing.
+        assert result.exit_code == 1
+        assert "org/model:QUANT" in result.output
+        execute.assert_not_called()
+    else:
+        assert result.exit_code == 0, result.output
+        execute.assert_called_once()
     prompt.assert_not_called()
     memory.assert_not_called()
 
@@ -284,7 +290,8 @@ def test_noninteractive_ambiguous_download_guides_without_effects(
     execute, metadata = _stub_download(monkeypatch, tmp_path, _plan())
     result = CliRunner().invoke(app, ["models", "download", "org/model"])
     assert result.exit_code == 1
-    assert ":QUANT" in result.output and "--yes" in result.output
+    # --yes no longer settles a multi-quant choice, so it is not suggested.
+    assert ":QUANT" in result.output and "--yes" not in result.output
     assert "\x1b" not in result.output
     execute.assert_not_called()
     metadata.assert_not_called()

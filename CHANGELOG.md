@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the unused Hugging Face to GGUF conversion module and every mention suggesting drove
+  converts models; drove serves GGUF and ONNX models as published.
+
 ### Fixed
 
 - Startup failures now return deliberate statuses with short messages instead of bare 500s: 503 for
@@ -27,6 +32,15 @@
 - Requests from clients that disconnect while their model is starting, or before the backend
   answers, are no longer forwarded (or are cancelled in flight), so the model no longer stays busy
   for nobody. A cancelled request no longer leaves the active-request counts raised.
+- Interrupted downloads, Hugging Face cache leftovers and raw safetensors/`.bin`/`.pt` weights are
+  no longer listed, advertised on `/v1/models`, offered by shell completion or registered with
+  agents, and they are never served. A split GGUF missing any shard counts as incomplete too, and
+  `drove models info` explains what is missing. Rerunning the download finishes it; models
+  downloaded before this change keep working.
+- Downloading a repository with no GGUF or ONNX weights is refused up front with a pointer to GGUF
+  builds, instead of downloading files no backend can serve.
+- `drove models download <repo> --yes` on a repository with several GGUF quantizations now stops
+  and asks for `<repo>:QUANT` instead of downloading every quantization.
 
 ### Security
 

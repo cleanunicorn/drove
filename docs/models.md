@@ -17,6 +17,21 @@ tag, repositories with several variants show a picker. Partial downloads
 resume; rerun the same command after an interrupted transfer. Sharded weights
 are kept together, and multimodal projectors are detected automatically.
 
+drove downloads GGUF weights for text and vision models and ONNX weights for
+speech-to-text; text-to-speech repositories keep their engine's own files. It
+never converts weights: a repository that only holds safetensors, `.bin` or
+`.pt` files is refused before anything is downloaded. Look for a GGUF build of
+the model instead, often published as a separate `-GGUF` repository.
+
+An interrupted download is not listed, offered to agents or served until it
+finishes. Each download records its expected files in a hidden
+`.drove-download.json` and is marked complete only after the last file lands;
+a later missing or truncated file, or a split GGUF without all its shards,
+hides the model again. `drove models info <name>` explains what is missing.
+Rerun the download to finish it, or delete it. Models downloaded before this
+record existed are trusted as they are, except that split GGUFs still need
+every shard.
+
 `--name qwen` gives the download a stable local name. Without `--name`, the name
 is derived from the repository and selected quantization, such as
 `unsloth/Qwen3-8B-GGUF:Q4_K_M`. Always check the result:
@@ -65,9 +80,11 @@ all-variants directory are labeled with that location; they are not silently
 moved or reused in a new quantization directory. Esc or Ctrl+C cancels without
 downloading. The usual download/resume confirmation follows selection.
 
-For scripts or redirected output, pass `org/repo:QUANT` or `--yes` to bypass
-the picker. Existing `--yes` behavior is unchanged: all GGUF files, or the
-resolved default ONNX variant. TTS and single-variant repositories skip it.
+For scripts or redirected output, pass `org/repo:QUANT` to bypass the picker.
+`--yes` never downloads every GGUF quantization: on a repository with several,
+it stops and asks for `org/repo:QUANT` without downloading anything. For ONNX
+it selects the default variant. TTS and single-variant repositories skip the
+picker.
 
 ## Inspect what is installed
 

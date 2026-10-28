@@ -619,6 +619,42 @@ def test_fetch_refuses_a_redirect_to_a_nat64_internal_address(fake_net) -> None:
     assert len(fake_net.requests) == 1
 
 
+LOCAL_USE_NAT64 = "64:ff9b:1:a00:0:100:5db8:d822"  # 10.0.0.1 in the /48 layout
+
+
+def test_local_use_nat64_needs_internal_approval(fake_net) -> None:
+    fake_net.dns["example.com"] = [LOCAL_USE_NAT64]
+    asked: list[tuple[str, bool]] = []
+
+    def deny(origin: str, internal: bool) -> bool:
+        asked.append((origin, internal))
+        return False
+
+    literal = f"https://[{LOCAL_USE_NAT64}]/"
+    literal_origin = f"https://[{LOCAL_USE_NAT64}]:443"
+    context = ToolContext(
+        cwd=Path("/"),
+        approved_origins={"https://example.com:443", literal_origin},
+        approve_origin=deny,
+    )
+
+    by_name = _fetch("https://example.com/", context)
+    by_literal = _fetch(literal, context)
+
+    assert isinstance(by_name, ToolFailure) and "internal" in by_name
+    assert isinstance(by_literal, ToolFailure) and "internal" in by_literal
+    assert asked == [("https://example.com:443", True), (literal_origin, True)]
+    assert fake_net.requests == []
+
+    granted = ToolContext(
+        cwd=Path("/"),
+        approved_origins={"https://example.com:443"},
+        internal_origins={"https://example.com:443"},
+    )
+    assert _fetch("https://example.com/", granted) == "hello"
+    assert fake_net.requests[0].url.host == LOCAL_USE_NAT64
+
+
 def test_a_public_nat64_answer_is_fetched_at_that_address(fake_net) -> None:
     fake_net.dns["v6only.example"] = ["64:ff9b::5db8:d822"]
 

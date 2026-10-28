@@ -57,21 +57,24 @@ def cap_tool_messages(messages: Iterable[dict[str, Any]]) -> list[dict[str, Any]
 def is_blocked_address(address: str) -> bool:
     """True for loopback, private, link-local, unspecified and other non-public IPs.
 
-    An IPv6 address that carries an IPv4 one (mapped, IPv4-compatible, NAT64, 6to4,
-    Teredo) is judged by the IPv4 address, which a translator or tunnel would reach.
+    An IPv6 address that carries an IPv4 one (mapped, IPv4-compatible, well-known NAT64,
+    6to4, Teredo) is judged by the IPv4 address, which a translator or tunnel would
+    reach. Local-use NAT64 addresses, whose layout cannot be known, are always blocked.
     """
     ip = ipaddress.ip_address(address.split("%", 1)[0])
-    if isinstance(ip, ipaddress.IPv6Address) and (embedded := _embedded_ipv4(ip)):
-        return any(_is_internal(v4) for v4 in embedded)
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip in _NAT64_LOCAL_USE:
+            return True
+        if embedded := _embedded_ipv4(ip):
+            return any(_is_internal(v4) for v4 in embedded)
     return _is_internal(ip)
 
 
-# NAT64 prefixes (RFC 6052 well-known, RFC 8215 local-use). Only the /96 layout, with
-# the IPv4 address in the last 32 bits, is decoded; site-specific prefixes are not known.
-_NAT64_PREFIXES = (
-    ipaddress.IPv6Network("64:ff9b::/96"),
-    ipaddress.IPv6Network("64:ff9b:1::/48"),
-)
+# The well-known NAT64 prefix (RFC 6052) is always a /96 with the IPv4 address in the
+# last 32 bits. The local-use prefix (RFC 8215) may be split at /48 to /96, each placing
+# the IPv4 bits differently, so no single decoding is safe: it is always internal.
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL_USE = ipaddress.IPv6Network("64:ff9b:1::/48")
 _IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
 
 
@@ -82,9 +85,8 @@ def _embedded_ipv4(ip: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
         return [ip.sixtofour]
     if ip.teredo is not None:
         return list(ip.teredo)  # the relay server and the client
-    nat64 = any(ip in prefix for prefix in _NAT64_PREFIXES)
-    if nat64 or (ip in _IPV4_COMPATIBLE and int(ip) > 1):  # :: and ::1 are not IPv4
-        return [ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)]
+    if ip in _NAT64_WELL_KNOWN or (ip in _IPV4_COMPATIBLE and int(ip) > 1):
+        return [ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)]  # :: and ::1 are not IPv4
     return []
 
 

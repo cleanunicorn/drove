@@ -374,8 +374,10 @@ def test_only_loopback_endpoints_are_local(url: str, local: bool) -> None:
         ("64:ff9b::a9fe:a9fe", True),  # NAT64 of 169.254.169.254
         ("64:ff9b::7f00:1", True),  # NAT64 of 127.0.0.1
         ("64:ff9b::5db8:d822", False),  # NAT64 of 93.184.216.34
-        ("64:ff9b:1::c0a8:1", True),  # local-use NAT64 of 192.168.0.1
-        ("64:ff9b:1::5db8:d822", False),
+        # Local-use NAT64 (64:ff9b:1::/48) has no single layout: always internal.
+        ("64:ff9b:1::c0a8:1", True),
+        ("64:ff9b:1::5db8:d822", True),
+        ("64:ff9b:1:a00:0:100:5db8:d822", True),  # /48 layout of 10.0.0.1, public-looking tail
         ("2002:a00:1::", True),  # 6to4 of 10.0.0.1
         ("2002:5db8:d822::1", False),  # 6to4 of 93.184.216.34
         ("::a00:1", True),  # IPv4-compatible 10.0.0.1

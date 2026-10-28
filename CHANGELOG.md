@@ -29,6 +29,18 @@
 
 - Backend stderr is no longer returned to clients on startup failure; it stays in the server log. The 404 for an unknown model no longer reveals the server's models directory.
 
+## [Unreleased]
+
+### Fixed
+
+- Chat sessions are now saved atomically, so a crash or full disk mid-save keeps the previous copy of the conversation instead of leaving a truncated file.
+- An unreadable or malformed session file no longer breaks `drove chat --resume` or `/sessions`; it is skipped with a warning and left on disk for repair.
+- New conversations started within the same second (with `/new`, `/clear`, or in two windows) now get their own session files instead of overwriting each other.
+
+### Security
+
+- A session id read from a stored session file can no longer direct a save outside the sessions directory.
+
 ## v0.13.1 (2026-10-27)
 
 ### Bug Fixes

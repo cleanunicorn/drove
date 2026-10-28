@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,8 +13,8 @@ from textual.widgets import OptionList
 
 from drove.chat_models import CatalogError, ChatModel
 from drove.model_picker import ModelPicker
-from drove.sessions import list_sessions, new_session
-from drove.tui import ChatApp, ChatInput
+from drove.sessions import latest_session, list_sessions, new_session, save_session
+from drove.tui import ChatApp, ChatInput, SessionPicker
 
 
 def chat(tmp_path: Path) -> ChatApp:
@@ -21,6 +23,20 @@ def chat(tmp_path: Path) -> ChatApp:
     return ChatApp(
         "https://example.test", "a", tmp_path, None, resume_session=session, api_key="secret"
     )
+
+
+def ticking_clock(start: datetime):
+    """``datetime`` stand-in whose ``now`` advances one microsecond per call."""
+
+    class Clock:
+        current = start
+
+        @classmethod
+        def now(cls) -> datetime:
+            cls.current += timedelta(microseconds=1)
+            return cls.current
+
+    return Clock
 
 
 async def open_picker(app: ChatApp, pilot):
@@ -164,17 +180,14 @@ async def test_generation_after_picker_open_cannot_switch(tmp_path: Path) -> Non
 
 
 async def test_rapid_switch_back_never_overwrites_previous_conversation(tmp_path: Path) -> None:
-    app = chat(tmp_path)
+    clock = ticking_clock(datetime(2026, 1, 1, 12))
+    with patch("drove.sessions.datetime", clock):
+        app = chat(tmp_path)
     old = app._session
-
-    def same_timestamp(model, system_prompt):
-        result = new_session(model, system_prompt)
-        result.id = old.id
-        return result
 
     with (
         patch("drove.tui.fetch_models_async", return_value=[ChatModel("a"), ChatModel("b")]),
-        patch("drove.tui.new_session", side_effect=same_timestamp),
+        patch("drove.sessions.datetime", clock),
     ):
         async with app.run_test() as pilot:
             worker = await open_picker(app, pilot)
@@ -184,6 +197,7 @@ async def test_rapid_switch_back_never_overwrites_previous_conversation(tmp_path
             await pilot.press("up", "enter")
             await worker.wait()
             assert app._model == "a" and app._session.id != old.id
+            assert app._session.id[:15] == old.id[:15]  # all within one second
             first_return_id = app._session.id
             await app._dispatch_command("/save")
             # Two returns within the same timestamp stay ordered as well as
@@ -213,3 +227,72 @@ async def test_pending_picker_keeps_unsent_input_and_does_not_start_request(tmp_
             send.assert_not_called()
         assert field.text == "keep this draft"
         app._model_picker_open = False
+
+
+@pytest.mark.parametrize("command", ["/new", "/clear"])
+async def test_new_conversation_in_the_same_second_gets_its_own_file(
+    tmp_path: Path, command: str
+) -> None:
+    clock = ticking_clock(datetime(2026, 1, 1, 12))
+    with patch("drove.sessions.datetime", clock):
+        app = chat(tmp_path)
+        async with app.run_test():
+            first = app._session
+            await app._dispatch_command("/save")
+            await app._dispatch_command(command)
+            assert app._session.id > first.id and app._session.id[:15] == first.id[:15]
+            app._session.messages.append({"role": "user", "content": "second"})
+            await app._dispatch_command("/save")
+    assert [s.id for s in list_sessions(tmp_path, "a")] == [app._session.id, first.id]
+
+
+async def test_sessions_picker_skips_corrupt_file_without_printing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    app = chat(tmp_path)
+    saved = new_session("a")
+    saved.messages.append({"role": "user", "content": "keep me"})
+    save_session(tmp_path, saved)
+    (tmp_path / "a" / "20990101-000000.json").write_text("{")
+    with caplog.at_level(logging.WARNING):
+        async with app.run_test() as pilot:
+            worker = app.run_worker(app._dispatch_command("/sessions"))
+            await pilot.pause()
+            assert isinstance(app.screen, SessionPicker)
+            assert [s.id for s in app.screen._sessions] == [saved.id]
+            await pilot.press("enter")
+            await worker.wait()
+            assert app._session.id == saved.id
+    # Root logging writes to the terminal Textual owns; diagnostics go to app.log.
+    assert [r for r in caplog.records if r.name == "drove.sessions"] == []
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"role": "tool", "content": "no call id"},
+        {"role": "bad role", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "1", "function": {"name": "f", "arguments": None}}],
+        },
+    ],
+)
+async def test_resume_skips_session_replay_cannot_show(tmp_path: Path, broken: dict) -> None:
+    saved = new_session("a")
+    saved.messages += [
+        {"role": "user", "content": "keep me"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "function": {}}]},
+        {"role": "tool", "tool_call_id": "1", "content": "ok"},
+    ]
+    save_session(tmp_path, saved)
+    (tmp_path / "a" / "20990101-000000.json").write_text(
+        json.dumps({"id": "20990101-000000", "model": "a", "messages": [broken]})
+    )
+    resumed = latest_session(tmp_path, "a", warn=lambda _: None)
+    assert resumed is not None and resumed.id == saved.id
+    app = ChatApp("https://example.test", "a", tmp_path, None, resume_session=resumed)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._session.id == saved.id

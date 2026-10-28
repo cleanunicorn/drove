@@ -4,14 +4,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
+import tempfile
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from drove.model_store import is_within, validate_model_name
 
+logger = logging.getLogger(__name__)
+
 _SLUG_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+# Generated ids are timestamps with optional suffixes; anything else could
+# name a path outside the model's session directory.
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+# Every role drove has ever saved; chat replay renders user/assistant and
+# turns the role into a CSS class, so any other string would crash it.
+_MESSAGE_ROLES = frozenset({"system", "user", "assistant", "tool"})
+
+Warn = Callable[[str], None]
 
 
 class Session:
@@ -57,7 +73,9 @@ class Session:
 
 
 def new_session(model: str, system_prompt: str | None = None) -> Session:
-    session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Microseconds keep ids in chronological order; the random suffix keeps two
+    # chats started at the same instant (e.g. in two windows) in separate files.
+    session_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-{uuid4().hex[:8]}"
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -86,39 +104,108 @@ def _session_dir(sessions_dir: Path, model: str) -> Path:
     return directory
 
 
+def _validate_session_id(session_id: str) -> str:
+    if not _SESSION_ID_RE.fullmatch(session_id) or ".." in session_id:
+        raise ValueError(f"Invalid session id {session_id!r}.")
+    return session_id
+
+
 def _session_path(sessions_dir: Path, model: str, session_id: str) -> Path:
-    return _session_dir(sessions_dir, model) / f"{session_id}.json"
+    directory = _session_dir(sessions_dir, model)
+    path = directory / f"{_validate_session_id(session_id)}.json"
+    if not is_within(directory, path):
+        raise ValueError(f"Session file {path} is outside {directory}.")
+    return path
 
 
 def save_session(sessions_dir: Path, session: Session) -> None:
-    d = _session_dir(sessions_dir, session.model)
-    d.mkdir(parents=True, exist_ok=True)
+    """Write *session* atomically: readers see the old file or the new one, never a mix."""
+    path = _session_path(sessions_dir, session.model, session.id)
+    path.parent.mkdir(parents=True, exist_ok=True)
     session.updated_at = datetime.now().isoformat(timespec="seconds")
-    _session_path(sessions_dir, session.model, session.id).write_text(
-        json.dumps(session.to_dict(), indent=2, ensure_ascii=False)
-    )
+    text = json.dumps(session.to_dict(), indent=2, ensure_ascii=False)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
+def _optional_str(data: dict[str, Any], key: str) -> str | None:
+    value = data.get(key)
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"'{key}' must be a string")
+    return value
+
+
+def _check_message(message: Any) -> None:
+    """Reject a message the chat TUI could not replay (see ``ChatApp._replay_history``)."""
+    role = message.get("role") if isinstance(message, dict) else None
+    if not isinstance(role, str) or role not in _MESSAGE_ROLES:
+        raise ValueError(f"each message needs a 'role' from {sorted(_MESSAGE_ROLES)}")
+    if role == "user" and not isinstance(message.get("content"), str):
+        raise ValueError("user messages need text 'content'")
+    if role == "tool" and not isinstance(message.get("tool_call_id"), str):
+        raise ValueError("tool messages need a string 'tool_call_id'")
+    _optional_str(message, "content")
+    _optional_str(message, "thinking")
+    tool_calls = message.get("tool_calls", [])
+    if not isinstance(tool_calls, list):
+        raise ValueError("'tool_calls' must be a list")
+    for call in tool_calls:
+        function = call.get("function", {}) if isinstance(call, dict) else None
+        if not isinstance(function, dict):
+            raise ValueError("each tool call must be an object with an object 'function'")
+        _optional_str(call, "id")
+        # Replay defaults a missing name/arguments to "" but renders a present one
+        # as text, so an explicit null is as unusable as a number here.
+        for key in ("name", "arguments"):
+            if key in function and not isinstance(function[key], str):
+                raise ValueError(f"tool call '{key}' must be a string")
 
 
 def load_session(path: Path) -> Session:
-    data = json.loads(path.read_text())
+    """Load one session file; raise ``ValueError`` or ``OSError`` if it is unusable."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    model, session_id, messages = data.get("model"), data.get("id"), data.get("messages")
+    if not isinstance(model, str) or not isinstance(session_id, str):
+        raise ValueError("'model' and 'id' must be strings")
+    _validate_session_id(session_id)
+    if not isinstance(messages, list):
+        raise ValueError("'messages' must be a list")
+    for message in messages:
+        _check_message(message)
     return Session(
-        model=data["model"],
-        session_id=data["id"],
-        messages=data["messages"],
-        system_prompt=data.get("system_prompt"),
-        created_at=data.get("created_at"),
-        updated_at=data.get("updated_at"),
+        model=model,
+        session_id=session_id,
+        messages=messages,
+        system_prompt=_optional_str(data, "system_prompt"),
+        created_at=_optional_str(data, "created_at"),
+        updated_at=_optional_str(data, "updated_at"),
     )
 
 
-def list_sessions(sessions_dir: Path, model: str) -> list[Session]:
-    """Return sessions for a model, newest first."""
+def _iter_sessions(sessions_dir: Path, model: str, warn: Warn | None) -> Iterator[Session]:
+    """Yield a model's readable sessions newest first, skipping unusable files."""
     d = _session_dir(sessions_dir, model)
     if not d.exists():
-        return []
-    return [load_session(p) for p in sorted(d.glob("*.json"), reverse=True)]
+        return
+    for path in sorted(d.glob("*.json"), reverse=True):
+        try:
+            yield load_session(path)
+        except (OSError, ValueError) as e:
+            (warn or logger.warning)(f"Skipping unreadable session file {path}: {e}")
 
 
-def latest_session(sessions_dir: Path, model: str) -> Session | None:
-    sessions = list_sessions(sessions_dir, model)
-    return sessions[0] if sessions else None
+def list_sessions(sessions_dir: Path, model: str, *, warn: Warn | None = None) -> list[Session]:
+    """Return sessions for a model, newest first; *warn* receives skipped-file notes."""
+    return list(_iter_sessions(sessions_dir, model, warn))
+
+
+def latest_session(sessions_dir: Path, model: str, *, warn: Warn | None = None) -> Session | None:
+    return next(_iter_sessions(sessions_dir, model, warn), None)

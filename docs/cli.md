@@ -83,7 +83,8 @@ available through `/sessions` when using their model.
 from configuration, or opens the existing model picker when no default is set.
 The same order applies with `--endpoint`; an explicit model overrides the
 configured identifier for remote APIs too. `--resume` looks up sessions for
-the selected model.
+the selected model. Session files that cannot be read are skipped with a warning and
+left on disk, so a repaired file shows up again.
 
 ```bash
 drove config default_model "org/model:Q4_K_M"

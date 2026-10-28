@@ -134,3 +134,21 @@ def test_chat_picker_cancellation_without_default(tmp_path: Path) -> None:
         result = CliRunner().invoke(app, ["-c", str(config), "chat"])
         assert result.exit_code == 0
         chat.assert_not_called()
+
+
+def test_resume_skips_corrupt_newest_session(tmp_path: Path) -> None:
+    from drove.sessions import new_session, save_session
+
+    config = tmp_path / "config.toml"
+    sessions = tmp_path / "sessions"
+    config.write_text(f'default_model = "remote-id"\nsessions_dir = "{sessions}"\n')
+    saved = new_session("remote-id")
+    saved.messages.append({"role": "user", "content": "resume me"})
+    save_session(sessions, saved)
+    (sessions / "remote-id" / "20990101-000000.json").write_text("{")
+    with patch("drove.tui.ChatApp") as chat:
+        result = CliRunner().invoke(
+            app, ["-c", str(config), "chat", "--endpoint", "https://example.test/v1/", "--resume"]
+        )
+    assert result.exit_code == 0, result.output
+    assert chat.call_args.kwargs["resume_session"].id == saved.id

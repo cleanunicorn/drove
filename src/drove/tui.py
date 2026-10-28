@@ -12,7 +12,6 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import httpx
 from markdown_it import MarkdownIt
@@ -992,7 +991,8 @@ class ChatApp(App[None]):
             self._update_status()
 
         elif cmd == "/sessions":
-            sessions = list_sessions(self._sessions_dir, self._model)
+            # Skipped-file notes go to the Textual log, not the terminal it owns.
+            sessions = list_sessions(self._sessions_dir, self._model, warn=self.log.warning)
             if not sessions:
                 await self._show_note("No saved sessions for this model.")
                 return
@@ -1059,18 +1059,14 @@ class ChatApp(App[None]):
                 await self._show_note("Could not save this conversation. Model was not changed.")
                 return
             system_prompt = self._session.system_prompt
-            session = new_session(selected, system_prompt)
-            # Switches can revisit a model in the same second. Do not reuse
-            # the timestamp-only ID and overwrite its previous conversation.
-            session.id += f"-{time.time_ns()}-{uuid4().hex}"
-            self._session = session
+            self._session = new_session(selected, system_prompt)
             self._model = selected
             self._context_request += 1
             self._context_length = next(
                 (model.context_length for model in models if model.id == selected), None
             )
             self._system_prompt = system_prompt
-            self._history = list(session.messages)
+            self._history = list(self._session.messages)
             self._session_allowed_tools.clear()
             self._last_speed = self._last_ttft = None
             self._last_usage = {}

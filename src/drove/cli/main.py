@@ -6,7 +6,7 @@ import logging
 import sys
 from importlib.metadata import version as _package_version
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -68,12 +68,17 @@ def _root(
     try:
         ctx.obj["config_path"] = resolve_config_path(config_file)
     except ConfigError as exc:
-        error(str(exc), next_step=exc.next_step)
-        raise typer.Exit(1) from exc
+        _exit_config_error(exc)
     # `config` and `init` load on their own terms, so they can repair or replace a
     # broken config file instead of failing on it.
     if ctx.invoked_subcommand not in ("config", "init"):
         ctx.obj["config"] = _load_or_exit(ctx.obj["config_path"])
+
+
+def _exit_config_error(exc: ConfigError) -> NoReturn:
+    """Print a ConfigError and its next step, then exit 1."""
+    error(str(exc), next_step=exc.next_step)
+    raise typer.Exit(1) from exc
 
 
 def _load_or_exit(config_path: Path) -> Config:
@@ -81,8 +86,7 @@ def _load_or_exit(config_path: Path) -> Config:
     try:
         return load_config(config_path)
     except ConfigError as exc:
-        error(str(exc), next_step=exc.next_step)
-        raise typer.Exit(1) from exc
+        _exit_config_error(exc)
 
 
 def _complete_config_key(ctx: typer.Context, incomplete: str) -> list[str]:
@@ -166,8 +170,7 @@ def _config_set_command(ctx: typer.Context, cfg_path: Path, key: str | None, val
     try:
         _config_set(cfg_path, key, value)
     except ConfigError as exc:
-        error(str(exc), next_step=exc.next_step)
-        raise typer.Exit(1) from exc
+        _exit_config_error(exc)
     except ValueError as exc:
         error(str(exc))
         raise typer.Exit(1) from exc

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 import pytest
 
-from drove.stats import MAX_SAMPLES, ProxyStats
+from drove.stats import ProxyStats
 
 
 def test_samples_stay_bounded_and_averages_match_lifetime() -> None:
@@ -17,8 +19,9 @@ def test_samples_stay_bounded_and_averages_match_lifetime() -> None:
         stats.record_completion_speed(t, d)
         stats.record_ttft(f)
 
-    assert len(stats._completion_speeds) <= MAX_SAMPLES
-    assert len(stats._ttft_samples) <= MAX_SAMPLES
+    # Memory stays bounded: no per-request sample collection is retained.
+    collections = [v for v in vars(stats).values() if isinstance(v, Collection)]
+    assert all(len(v) <= 2 for v in collections if not isinstance(v, str))
     assert stats.avg_tokens_per_second == pytest.approx(sum(tokens) / sum(durations))
     assert stats.avg_ttft == pytest.approx(sum(ttfts) / len(ttfts))
     assert stats.last_tokens_per_second == pytest.approx(tokens[-1] / durations[-1])

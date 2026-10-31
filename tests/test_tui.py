@@ -14,7 +14,7 @@ from textual.widgets import OptionList
 from drove.chat_models import CatalogError, ChatModel
 from drove.model_picker import ModelPicker
 from drove.sessions import latest_session, list_sessions, new_session, save_session
-from drove.tui import ChatApp, ChatInput, SessionPicker
+from drove.tui import ChatApp, ChatInput, LegacySessionConfirmation, SessionPicker
 
 
 def chat(tmp_path: Path) -> ChatApp:
@@ -250,7 +250,7 @@ async def test_sessions_picker_skips_corrupt_file_without_printing(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     app = chat(tmp_path)
-    saved = new_session("a")
+    saved = new_session("a", endpoint=app._endpoint)
     saved.messages.append({"role": "user", "content": "keep me"})
     save_session(tmp_path, saved)
     (tmp_path / "a" / "20990101-000000.json").write_text("{")
@@ -265,6 +265,109 @@ async def test_sessions_picker_skips_corrupt_file_without_printing(
             assert app._session.id == saved.id
     # Root logging writes to the terminal Textual owns; diagnostics go to app.log.
     assert [r for r in caplog.records if r.name == "drove.sessions"] == []
+
+
+@pytest.mark.parametrize("command", ["/new", "/clear"])
+@pytest.mark.parametrize("from_picker", [False, True])
+async def test_resumed_system_prompt_is_used_for_the_next_conversation(
+    tmp_path: Path, command: str, from_picker: bool
+) -> None:
+    saved = new_session("a", "saved prompt", endpoint="https://example.test")
+    if from_picker:
+        app = ChatApp("https://example.test", "a", tmp_path, None, system_prompt="stale prompt")
+    else:
+        app = ChatApp("https://example.test", "a", tmp_path, None, resume_session=saved)
+    async with app.run_test():
+        if from_picker:
+            await app._load_session(saved)
+        await app._dispatch_command(command)
+        assert app._history == [{"role": "system", "content": "saved prompt"}]
+        assert app._session.system_prompt == "saved prompt"
+        assert app._session.endpoint == "https://example.test"
+
+
+@pytest.mark.parametrize("accept", [False, True])
+async def test_legacy_session_assignment_requires_a_choice_and_persists_it(
+    tmp_path: Path, accept: bool
+) -> None:
+    app = chat(tmp_path)
+    original = app._session
+    legacy = new_session("a", "legacy prompt")
+    legacy.messages.append({"role": "user", "content": "older conversation"})
+    save_session(tmp_path, legacy)
+    foreign = new_session("a", endpoint="https://other.test")
+    save_session(tmp_path, foreign)
+    async with app.run_test() as pilot:
+        worker = app.run_worker(app._dispatch_command("/sessions"))
+        await pilot.pause()
+        assert isinstance(app.screen, SessionPicker)
+        assert [s.id for s in app.screen._sessions] == [legacy.id]
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, LegacySessionConfirmation)
+        assert app._session is original
+        assert app.focused.id == "cancel-legacy"
+        await pilot.press("y" if accept else "escape")
+        await worker.wait()
+        if accept:
+            assert app._session.id == legacy.id
+            assert app._system_prompt == "legacy prompt"
+        else:
+            assert app._session is original
+    assigned = latest_session(tmp_path, "a", endpoint=app._endpoint)
+    assert (assigned is not None) == accept
+    if accept:
+        assert assigned.id == legacy.id
+    else:
+        assert next(s for s in list_sessions(tmp_path, "a") if s.id == legacy.id).endpoint is None
+
+
+async def test_failed_legacy_assignment_keeps_the_current_conversation(tmp_path: Path) -> None:
+    app = chat(tmp_path)
+    original = app._session
+    legacy = new_session("a")
+    app._session_allowed_tools.add("keep grant")
+    async with app.run_test():
+        with patch("drove.tui.save_session", side_effect=OSError("disk full")):
+            await app._load_session(legacy)
+        assert app._session is original
+        assert legacy.endpoint is None
+        assert app._session_allowed_tools == {"keep grant"}
+
+
+async def test_loading_a_foreign_endpoint_is_refused(tmp_path: Path) -> None:
+    app = chat(tmp_path)
+    original = app._session
+    foreign = new_session("a", endpoint="https://other.test")
+    async with app.run_test():
+        await app._load_session(foreign)
+        assert app._session is original
+        assert app._history == original.messages
+
+
+@pytest.mark.parametrize(
+    "model,endpoint", [("other-model", "https://example.test"), ("a", "https://other.test")]
+)
+def test_startup_refuses_mismatched_saved_identity(
+    tmp_path: Path, model: str, endpoint: str
+) -> None:
+    saved = new_session(model, endpoint=endpoint)
+    with pytest.raises(ValueError, match="different"):
+        ChatApp("https://example.test", "a", tmp_path, None, resume_session=saved)
+
+
+@pytest.mark.parametrize("size", [(44, 20), (80, 24)])
+async def test_legacy_assignment_keeps_both_choices_visible(tmp_path: Path, size) -> None:
+    app = chat(tmp_path)
+    async with app.run_test(size=size) as pilot:
+        app.push_screen(LegacySessionConfirmation("https://example.test/" + "long-path/" * 10))
+        await pilot.pause()
+        for selector in ["#cancel-legacy", "#assign-legacy"]:
+            button = app.screen.query_one(selector)
+            assert button.region.width > 0 and button.region.height == 1
+            assert button.region.right <= size[0]
+            assert button.region.bottom <= size[1]
+        await pilot.press("escape")
 
 
 @pytest.mark.parametrize(

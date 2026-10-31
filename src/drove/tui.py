@@ -997,7 +997,26 @@ class ChatApp(App[None]):
         "/save": "Save session now (auto-saves after each reply)",
     }
 
+    def _command_error(self, text: str) -> str | None:
+        parts = text.split(None, 1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        if cmd not in self._COMMANDS:
+            return f"Unknown command '{cmd}'. Try /help, or start with // to send literal text."
+        if arg and cmd not in {"/theme", "/tips"}:
+            return f"{cmd} takes no arguments. Start with // to send literal slash-prefixed text."
+        if cmd == "/tips" and arg not in {"", "off"}:
+            return "Use /tips to restart guidance or /tips off to hide it."
+        if cmd == "/theme" and len(arg.split()) > 1:
+            return "Use /theme to list themes, or /theme NAME to choose one."
+        if cmd == "/theme" and arg and arg not in self.available_themes:
+            return f"Unknown theme '{arg}'. Run /theme to list available."
+        return None
+
     async def _dispatch_command(self, text: str) -> None:
+        if error := self._command_error(text):
+            await self._show_note(error)
+            return
         parts = text.split(None, 1)
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1011,9 +1030,6 @@ class ChatApp(App[None]):
         if cmd == "/info":
             self.action_show_details()
         elif cmd == "/tips":
-            if arg not in {"", "off"}:
-                await self._show_note("Use /tips to restart guidance or /tips off to hide it.")
-                return
             self._completed_hints = set(self._HINTS) if arg == "off" else set()
             self._save_hint_progress()
             self._update_guidance()
@@ -1024,7 +1040,8 @@ class ChatApp(App[None]):
                 f"Available commands:\n{lines}\n\n"
                 "Enter send · Shift+Enter newline · Esc stop reply\n"
                 "Ctrl+C / Ctrl+Q quit · Tab focus messages and controls\n"
-                "Ctrl+Y copy focused message · Ctrl+B copy its code"
+                "Ctrl+Y copy focused message · Ctrl+B copy its code\n"
+                "Start with // to send literal text beginning with /"
             )
 
         elif cmd == "/model":
@@ -1170,13 +1187,19 @@ class ChatApp(App[None]):
 
         self._learn_hint("send")
         self._hide_autocomplete()
-        textarea.clear()
 
-        if text.startswith("/"):
+        if text.startswith("//"):
+            text = text[1:]  # Escape one leading slash; the remainder is an ordinary prompt.
+        elif text.startswith("/"):
             self._learn_hint("commands")
+            if error := self._command_error(text):
+                self.run_worker(self._show_note(error))
+                return
+            textarea.clear()
             self.run_worker(self._dispatch_command(text), exclusive=False)
             return
 
+        textarea.clear()
         if self.is_generating or self._queue:
             self._enqueue(text)
         else:

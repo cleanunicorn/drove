@@ -194,6 +194,13 @@ stream does not guarantee that a remote backend immediately stops computation.
 Use `/save` to save a partial reply without stopping it. `/new`, `/clear`, and
 `/sessions` require the current reply (and any running tool) to finish or stop.
 
+To send text beginning with `/`, add an extra leading slash: `//tmp/example`
+sends `/tmp/example`, and `//new implementation plan` sends `/new implementation
+plan` as a message. Unknown commands and invalid command arguments leave your
+draft in the composer and show how to correct it. Commands other than `/theme`
+and `/tips` take no arguments; `/new implementation plan` is rejected without
+changing the conversation.
+
 ## Chat presentation and copying
 
 Assistant replies render Markdown headings, lists and highlighted code blocks while

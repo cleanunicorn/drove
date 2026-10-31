@@ -474,8 +474,10 @@ and eviction or configuration changes can unload a model sooner. Busy models sho
 partial files; the actual transfer may vary with cache reuse or retries.
 
 `--watch` refreshes the screen only in a terminal; redirected watch output appends
-snapshots. Its interval must be positive and finite; bare `--watch` uses two
-seconds. Stop watching with Ctrl+C. An unused server stays concise:
+snapshots. Its interval must be positive, finite and within the platform's timeout
+range; bare `--watch` uses two seconds. If repeated, the last `--watch` value wins,
+including the two-second default for a final bare flag. Stop watching with Ctrl+C.
+An unused server stays concise:
 
 ```text
 drove / Server

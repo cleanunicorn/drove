@@ -217,7 +217,17 @@ def test_watch_rejects_invalid_intervals_before_any_request(
     fetch.assert_not_called()
 
 
-@pytest.mark.parametrize("args,seconds", [(["--watch"], 2.0), (["-w", "0.25"], 0.25)])
+@pytest.mark.parametrize(
+    "args,seconds",
+    [
+        (["--watch"], 2.0),
+        (["-w", "0.25"], 0.25),
+        (["--watch", "5", "--watch"], 2.0),
+        (["-w", "5", "-w"], 2.0),
+        (["--watch", "--watch", "0.25"], 0.25),
+        (["--watch", "5", "--watch", "-V"], 2.0),
+    ],
+)
 def test_watch_defaults_and_fractional_intervals(monkeypatch, args, seconds) -> None:
     snapshots = Mock()
     sleep = Mock(side_effect=KeyboardInterrupt)
@@ -227,6 +237,18 @@ def test_watch_defaults_and_fractional_intervals(monkeypatch, args, seconds) -> 
     assert result.exit_code == 0, result.output
     snapshots.assert_called_once()
     sleep.assert_called_once_with(seconds)
+
+
+def test_watch_rejects_finite_interval_that_would_overflow_sleep(monkeypatch) -> None:
+    snapshots = Mock()
+    sleep = Mock()
+    monkeypatch.setattr("drove.cli.server._print_status", snapshots)
+    monkeypatch.setattr("drove.cli.server.time.sleep", sleep)
+    result = CliRunner().invoke(app, ["server", "status", "--watch", "1e300"])
+    assert result.exit_code == 2, result.output
+    assert "maximum" in result.output
+    snapshots.assert_not_called()
+    sleep.assert_not_called()
 
 
 def _watch_status(monkeypatch: pytest.MonkeyPatch, *, terminal: bool) -> tuple[Mock, str]:

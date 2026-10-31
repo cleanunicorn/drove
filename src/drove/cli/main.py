@@ -284,8 +284,11 @@ def chat(
 
     try:
         endpoint_identity = session_endpoint(base_url)
-    except ValueError:
-        error("Invalid chat endpoint URL.", next_step="Use an HTTP or HTTPS endpoint with a host.")
+    except ValueError as exc:
+        error(
+            f"Invalid chat endpoint URL: {exc}",
+            next_step="Use an HTTP or HTTPS base URL without a query string or fragment.",
+        )
         raise typer.Exit(2) from None
 
     if model is None:

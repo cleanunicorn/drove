@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Matched chat endpoint identities to the HTTP client's URL normalization,
+  including international domains and encoded paths, and rejected unsupported
+  query strings, fragments and invalid URLs before model lookup.
 - Scoped chat resume and session selection to the active endpoint, with explicit
   assignment for older conversations that had no endpoint metadata.
 - Restored saved system prompts when resuming conversations and cleared temporary

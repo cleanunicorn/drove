@@ -86,8 +86,10 @@ configured identifier for remote APIs too. `--resume` looks up sessions for
 the selected model and endpoint. Endpoint identity includes the scheme, host,
 port and base path. The CLI accepts endpoint URLs with or without the final `/v1`;
 trailing slashes and explicit default ports are normalized in session identity.
-URL credentials, query strings and fragments are not saved in session
-metadata. The `--api-key` value is not added to session metadata. Sessions at another endpoint are
+International domain names and encoded paths follow the HTTP client's URL rules.
+Endpoint URLs with a query string or fragment are rejected before model lookup:
+they cannot be used as the prefix for chat routes. URL credentials and the
+`--api-key` value are not added to session metadata. Sessions at another endpoint are
 not offered or automatically resumed, even when its model ID is the same.
 
 Older sessions without an endpoint remain available through `/sessions`, labeled

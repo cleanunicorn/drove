@@ -189,10 +189,23 @@ def test_resume_rejects_system_override_before_selecting_or_loading() -> None:
     chat.assert_not_called()
 
 
-@pytest.mark.parametrize("endpoint", ["not-a-url", "ftp://example.test", "http://host:bad"])
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "not-a-url",
+        "ftp://example.test",
+        "http://host:bad",
+        "https://example.test/a\nb",
+        "https://example.test/?",
+        "https://example.test/#",
+        "https://example.test/?token=secret",
+        "https://example.test/#section",
+    ],
+)
 def test_invalid_endpoint_is_reported_before_model_lookup(endpoint: str) -> None:
     with patch("drove.cli.main._select_model_from_endpoint") as picker:
         result = CliRunner().invoke(app, ["chat", "-e", endpoint])
     assert result.exit_code == 2, result.output
     assert "Invalid chat endpoint" in result.output
+    assert "secret" not in result.output
     picker.assert_not_called()

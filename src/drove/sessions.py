@@ -12,8 +12,9 @@ from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
+
+import httpx
 
 from drove.model_store import is_within, validate_model_name
 from drove.tool_policy import cap_tool_messages
@@ -33,18 +34,19 @@ Warn = Callable[[str], None]
 
 
 def session_endpoint(base_url: str) -> str:
-    """Normalize endpoint identity without storing URL credentials or query secrets."""
-    parts = urlsplit(base_url)
-    if parts.scheme not in {"http", "https"} or not parts.hostname:
+    """Use the client's URL rules, preserving deployment paths and omitting credentials."""
+    try:
+        url = httpx.URL(base_url)
+    except httpx.InvalidURL as exc:
+        raise ValueError("Chat endpoint must be a valid HTTP or HTTPS URL.") from exc
+    if url.scheme not in {"http", "https"} or not url.host:
         raise ValueError("Chat endpoint must be an HTTP or HTTPS URL with a host.")
-    host = parts.hostname.lower()
-    if ":" in host:
-        host = f"[{host}]"
-    port = parts.port
-    if port is not None and port != (443 if parts.scheme == "https" else 80):
-        host = f"{host}:{port}"
-    path = parts.path.rstrip("/")
-    return urlunsplit((parts.scheme, host, path, "", ""))
+    # Routes are appended to the base URL. Even an empty ? or # would place
+    # those routes in a query/fragment rather than in the request path.
+    if "?" in base_url or "#" in base_url:
+        raise ValueError("Chat endpoint must not contain a query string or fragment.")
+    # Keep the raw path: decoding it would conflate /a%2Fb with /a/b.
+    return str(url.copy_with(username=None, password=None, raw_path=url.raw_path.rstrip(b"/")))
 
 
 class Session:

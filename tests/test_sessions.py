@@ -83,7 +83,9 @@ def test_distinct_unsafe_labels_do_not_share_a_directory(tmp_path: Path) -> None
         ("https://example.test:8443/api/v1", "https://example.test:8443/api/v1"),
         ("http://[::1]:8080/v1", "http://[::1]:8080/v1"),
         ("https://example.test/api/v1/v1", "https://example.test/api/v1/v1"),
-        ("https://user:secret@example.test/v1?key=secret#secret", "https://example.test/v1"),
+        ("https://user:secret@example.test/v1", "https://example.test/v1"),
+        ("https://täst.test/café/", "https://xn--tst-qla.test/caf%C3%A9"),
+        ("https://example.test/a%2Fb", "https://example.test/a%2Fb"),
     ],
 )
 def test_endpoint_identity_normalizes_without_credentials(url: str, expected: str) -> None:
@@ -109,11 +111,37 @@ def test_endpoint_history_is_filtered_and_legacy_requires_opt_in(tmp_path: Path)
 
 
 def test_endpoint_survives_round_trip_without_url_secrets(tmp_path: Path) -> None:
-    session = new_session("m", endpoint="https://user:secret@example.test/v1?token=secret")
+    session = new_session("m", endpoint="https://user:secret@example.test/v1")
     save_session(tmp_path, session)
     path = tmp_path / "m" / f"{session.id}.json"
     assert "secret" not in path.read_text()
     assert load_session(path).endpoint == "https://example.test/v1"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://example.test/a\nb",
+        "https://example.test/?token=secret",
+        "https://example.test/#section",
+        "https://example.test/?",
+        "https://example.test/#",
+    ],
+)
+def test_endpoint_rejects_urls_that_cannot_be_used_as_a_route_prefix(endpoint: str) -> None:
+    with pytest.raises(ValueError, match="Chat endpoint"):
+        session_endpoint(endpoint)
+
+
+def test_endpoint_lookup_uses_the_same_international_url_as_the_client(tmp_path: Path) -> None:
+    saved = new_session("m", endpoint="https://täst.test/café")
+    save_session(tmp_path, saved)
+    assert (
+        latest_session(tmp_path, "m", endpoint="https://xn--tst-qla.test/caf%C3%A9").id == saved.id
+    )
+    assert session_endpoint("https://example.test/a%2Fb") != session_endpoint(
+        "https://example.test/a/b"
+    )
 
 
 def test_legacy_json_remains_readable_but_is_not_auto_resumed(tmp_path: Path) -> None:

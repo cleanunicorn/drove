@@ -221,7 +221,12 @@ def _coerce(annotation: object, raw: str) -> object:
             annotation = non_none[0]
 
     if annotation is bool:
-        return raw.lower() in ("1", "true", "yes")
+        normalized = raw.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError("Invalid boolean value. Use true/false, yes/no, on/off, or 1/0.")
     if annotation is int:
         return int(raw)
     if annotation is float:
@@ -361,7 +366,7 @@ def _observe_default(
 
         drove observe web                # web UI
 
-        drove observe web -m mymodel     # web UI, filter by model
+        drove observe -m mymodel web     # web UI, filter by model
     """
     ctx.ensure_object(dict)
     ctx.obj["observe_model"] = model

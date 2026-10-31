@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 import shutil
 import time
 from pathlib import Path
@@ -109,10 +110,23 @@ class _OptionalValueCommand(TyperCommand):
         for i, arg in enumerate(new_args):
             if arg in ("--watch", "-w"):
                 next_idx = i + 1
+                if next_idx < len(new_args):
+                    try:
+                        float(new_args[next_idx])
+                    except ValueError:
+                        pass
+                    else:
+                        break  # Negative numeric values belong to the option's validator.
                 if next_idx >= len(new_args) or new_args[next_idx].startswith("-"):
                     new_args.insert(next_idx, "2.0")
                 break
         return super().parse_args(ctx, new_args)
+
+
+def _validate_watch_interval(value: float | None) -> float | None:
+    if value is not None and (not math.isfinite(value) or value <= 0):
+        raise typer.BadParameter("Watch interval must be a finite number greater than zero.")
+    return value
 
 
 @server_app.command(cls=_OptionalValueCommand)
@@ -128,7 +142,8 @@ def status(
         typer.Option(
             "--watch",
             "-w",
-            help="Continuously refresh every N seconds (default 2).",
+            help="Refresh every N seconds; N must be positive and finite (default 2).",
+            callback=_validate_watch_interval,
         ),
     ] = None,
 ) -> None:

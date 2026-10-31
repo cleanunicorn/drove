@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Rejected invalid boolean configuration values without changing the saved file,
+  and accepted explicit true/false, yes/no, on/off and 1/0 forms.
+- Rejected zero, negative and non-finite server-status watch intervals before
+  polling, and corrected the model-filtered observe web example.
+
 
 ## v0.14.0 (2026-10-28)
 

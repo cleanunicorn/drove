@@ -233,6 +233,10 @@ Setting a value writes only that key to the config file; `DROVE_*` overrides
 are never saved. It also works when the file holds an invalid value, so it can
 repair one; a file with broken TOML syntax is refused unchanged. See [Sources and precedence](configuration.md#sources-and-precedence).
 
+Boolean settings accept `true`/`false`, `yes`/`no`, `on`/`off`, and `1`/`0`,
+ignoring case and surrounding whitespace. Other values are rejected without
+changing the file.
+
 ## Models management
 
 ```bash
@@ -470,7 +474,8 @@ and eviction or configuration changes can unload a model sooner. Busy models sho
 partial files; the actual transfer may vary with cache reuse or retries.
 
 `--watch` refreshes the screen only in a terminal; redirected watch output appends
-snapshots. Stop watching with Ctrl+C. An unused server stays concise:
+snapshots. Its interval must be positive and finite; bare `--watch` uses two
+seconds. Stop watching with Ctrl+C. An unused server stays concise:
 
 ```text
 drove / Server

@@ -41,7 +41,7 @@ from textual.worker import Worker
 from drove.chat_models import CatalogError, fetch_context_length, fetch_models_async
 from drove.config import ChatHint, load_config, save_tui_completed_hints
 from drove.model_picker import ModelPicker
-from drove.sessions import Session, list_sessions, new_session, save_session
+from drove.sessions import Session, list_sessions, new_session, save_session, session_endpoint
 from drove.tool_policy import (
     Decision,
     Grant,
@@ -229,7 +229,7 @@ CodePicker {
 }
 
 /* Session picker modal */
-SessionPicker {
+SessionPicker, LegacySessionConfirmation {
     align: center middle;
 }
 
@@ -245,6 +245,17 @@ SessionPicker {
     text-style: bold;
     margin-bottom: 1;
     color: $accent;
+}
+
+#legacy-session-dialog {
+    width: 90%; max-width: 90; height: 70%; max-height: 16;
+    background: $surface; border: round $accent; padding: 0 1;
+}
+#legacy-session-dialog .title { height: 1; text-style: bold; }
+#legacy-session-explanation { height: 1fr; }
+#legacy-session-actions { height: 1; }
+#legacy-session-actions Button {
+    width: auto; min-width: 0; height: 1; border: none; margin-right: 2;
 }
 
 #session-table {
@@ -683,10 +694,12 @@ class SessionPicker(ModalScreen[Session | None]):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("Date", "Turns", "First message")
+        table.add_columns("Date", "Turns", "First message", "Endpoint")
         for s in self._sessions:
             date = s.updated_at[:16].replace("T", " ")
-            table.add_row(date, str(s.message_count), s.title)
+            table.add_row(
+                date, str(s.message_count), Text(s.title), Text(s.endpoint or "Unassigned (legacy)")
+            )
         if self._sessions:
             table.focus()
 
@@ -702,6 +715,45 @@ class SessionPicker(ModalScreen[Session | None]):
         idx = table.cursor_row
         if 0 <= idx < len(self._sessions):
             self.dismiss(self._sessions[idx])
+
+
+class LegacySessionConfirmation(ModalScreen[bool]):
+    """Require an explicit destination for a conversation saved before endpoint tracking."""
+
+    BINDINGS = [
+        Binding("escape,n", "cancel", "Cancel", priority=True),
+        Binding("y", "assign", "Assign and load", priority=True),
+    ]
+
+    def __init__(self, endpoint: str) -> None:
+        super().__init__()
+        self._endpoint = endpoint
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="legacy-session-dialog"):
+            yield Label("Assign saved conversation", classes="title")
+            with ScrollableContainer(id="legacy-session-explanation"):
+                yield Label(
+                    "This older conversation has no saved endpoint. Loading it assigns it to "
+                    f"{self._endpoint}. Future messages send its history to this endpoint.",
+                    markup=False,
+                )
+            with Horizontal(id="legacy-session-actions"):
+                yield Button("Cancel · Esc", id="cancel-legacy", compact=True)
+                yield Button("Assign · y", id="assign-legacy", compact=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#cancel-legacy", Button).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_assign(self) -> None:
+        self.dismiss(True)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.dismiss(event.button.id == "assign-legacy")
 
 
 @dataclass
@@ -841,6 +893,7 @@ class ChatApp(App[None]):
     ) -> None:
         super().__init__()
         self._base_url = base_url.rstrip("/")
+        self._endpoint = session_endpoint(self._base_url)
         self._model = model
         self._sessions_dir = sessions_dir
         self._config_path = config_path
@@ -874,10 +927,18 @@ class ChatApp(App[None]):
         self._call_grant: Grant | None = None  # the scope approved for the next tool run
 
         if resume_session:
+            if resume_session.model != model:
+                raise ValueError("Saved conversation belongs to a different model.")
+            if resume_session.endpoint not in {None, self._endpoint}:
+                raise ValueError("Saved conversation belongs to a different endpoint.")
+            # Callers explicitly supplying an unassigned session own its assignment.
+            # CLI auto-resume excludes it; /sessions asks before loading it.
+            resume_session.endpoint = self._endpoint
             self._session = resume_session
+            self._system_prompt = resume_session.system_prompt
             self._history = cap_tool_messages(resume_session.messages)
         else:
-            self._session = new_session(model, system_prompt)
+            self._session = new_session(model, system_prompt, endpoint=self._endpoint)
             self._history = list(self._session.messages)
 
     def compose(self) -> ComposeResult:
@@ -1032,7 +1093,7 @@ class ChatApp(App[None]):
 
         elif cmd in ("/clear", "/new"):
             await self.query_one("#messages").remove_children()
-            self._session = new_session(self._model, self._system_prompt)
+            self._session = new_session(self._model, self._system_prompt, endpoint=self._endpoint)
             self._history = list(self._session.messages)
             self._clear_queue()
             self._session_allowed_tools.clear()
@@ -1042,12 +1103,22 @@ class ChatApp(App[None]):
 
         elif cmd == "/sessions":
             # Skipped-file notes go to the Textual log, not the terminal it owns.
-            sessions = list_sessions(self._sessions_dir, self._model, warn=self.log.warning)
+            sessions = list_sessions(
+                self._sessions_dir,
+                self._model,
+                endpoint=self._endpoint,
+                include_legacy=True,
+                warn=self.log.warning,
+            )
             if not sessions:
-                await self._show_note("No saved sessions for this model.")
+                await self._show_note("No saved sessions for this model and endpoint.")
                 return
             result = await self.push_screen_wait(SessionPicker(sessions))
             if result is not None:
+                if result.endpoint is None and not await self.push_screen_wait(
+                    LegacySessionConfirmation(self._endpoint)
+                ):
+                    return
                 await self._load_session(result)
 
         elif cmd == "/theme":
@@ -1109,7 +1180,7 @@ class ChatApp(App[None]):
                 await self._show_note("Could not save this conversation. Model was not changed.")
                 return
             system_prompt = self._session.system_prompt
-            self._session = new_session(selected, system_prompt)
+            self._session = new_session(selected, system_prompt, endpoint=self._endpoint)
             self._model = selected
             self._context_request += 1
             self._context_length = next(
@@ -1136,7 +1207,23 @@ class ChatApp(App[None]):
         if self.is_generating:
             await self._show_note("Stop the reply before changing sessions.")
             return
+        if session.model != self._model or session.endpoint not in {None, self._endpoint}:
+            await self._show_note("This conversation belongs to a different model or endpoint.")
+            return
+        if session.endpoint is None:
+            session.endpoint = self._endpoint
+            try:
+                save_session(self._sessions_dir, session)
+            except OSError, ValueError:
+                session.endpoint = None
+                await self._show_note(
+                    "Could not assign this conversation. Session was not changed."
+                )
+                return
         self._session = session
+        self._system_prompt = session.system_prompt
+        self._session_allowed_tools.clear()
+        self._call_grant = None
         self._history = cap_tool_messages(session.messages)
         self._last_speed = self._last_ttft = None
         self._last_usage = {}

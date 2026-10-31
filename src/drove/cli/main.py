@@ -261,10 +261,17 @@ def chat(
     Use /help inside the chat to see available commands (/sessions, /theme, …).
     """
     from drove.cli.tui_logging import textual_logging
-    from drove.sessions import latest_session
+    from drove.sessions import latest_session, session_endpoint
     from drove.tui import ChatApp
 
     config = ctx.obj["config"]
+
+    if resume and system is not None:
+        error(
+            "--system cannot be combined with --resume; the saved system prompt is preserved.",
+            next_step="Omit --system to resume, or omit --resume to start a new conversation.",
+        )
+        raise typer.Exit(2)
 
     if endpoint:
         base_url = endpoint.rstrip("/")
@@ -274,6 +281,12 @@ def chat(
     else:
         base_url = f"http://{host or config.listen_host}:{port or config.listen_port}"
         base_url = base_url.replace("//0.0.0.0:", "//127.0.0.1:")
+
+    try:
+        endpoint_identity = session_endpoint(base_url)
+    except ValueError:
+        error("Invalid chat endpoint URL.", next_step="Use an HTTP or HTTPS endpoint with a host.")
+        raise typer.Exit(2) from None
 
     if model is None:
         model = config.default_model
@@ -287,11 +300,14 @@ def chat(
 
     resume_session = None
     if resume:
-        resume_session = latest_session(config.sessions_dir, model)
+        resume_session = latest_session(config.sessions_dir, model, endpoint=endpoint_identity)
         if resume_session is None:
             warning(
-                f"No saved sessions found for model '{model}'.",
-                next_step="Start a new chat without --resume.",
+                f"No saved sessions found for model '{model}' at this endpoint.",
+                next_step=(
+                    "Start without --resume. Use /sessions to assign an older conversation "
+                    "with no saved endpoint."
+                ),
             )
             raise typer.Exit(1)
 

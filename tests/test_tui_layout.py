@@ -89,7 +89,7 @@ async def test_send_and_stop_buttons_preserve_partial_reply(tmp_path, monkeypatc
 
 async def test_header_actions_open_model_and_session_pickers(tmp_path):
     app = chat(tmp_path)
-    session = new_session(app._model)
+    session = new_session(app._model, endpoint=app._endpoint)
     session.messages = [{"role": "user", "content": "Saved conversation"}]
     save_session(tmp_path, session)
     with patch("drove.tui.fetch_models_async", return_value=[ChatModel(app._model)]):

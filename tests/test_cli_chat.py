@@ -117,7 +117,7 @@ def test_chat_default_endpoint_and_resume(tmp_path: Path) -> None:
         )
         assert result.exit_code == 0, result.output
         picker.assert_not_called()
-        latest.assert_called_once_with(tmp_path, "remote-id")
+        latest.assert_called_once_with(tmp_path, "remote-id", endpoint="https://example.test")
         assert chat.call_args.kwargs["base_url"] == "https://example.test"
         assert chat.call_args.kwargs["api_key"] == "test-key"
         assert chat.call_args.kwargs["resume_session"] is session
@@ -142,7 +142,7 @@ def test_resume_skips_corrupt_newest_session(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     sessions = tmp_path / "sessions"
     config.write_text(f'default_model = "remote-id"\nsessions_dir = "{sessions}"\n')
-    saved = new_session("remote-id")
+    saved = new_session("remote-id", endpoint="https://example.test")
     saved.messages.append({"role": "user", "content": "resume me"})
     save_session(sessions, saved)
     (sessions / "remote-id" / "20990101-000000.json").write_text("{")
@@ -152,3 +152,47 @@ def test_resume_skips_corrupt_newest_session(tmp_path: Path) -> None:
         )
     assert result.exit_code == 0, result.output
     assert chat.call_args.kwargs["resume_session"].id == saved.id
+
+
+def test_resume_never_selects_another_endpoint_or_unassigned_history(tmp_path: Path) -> None:
+    from drove.sessions import new_session, save_session
+
+    config = tmp_path / "config.toml"
+    config.write_text(f'sessions_dir = "{tmp_path / "sessions"}"\n')
+    for endpoint in ["https://private.test", None]:
+        saved = new_session("shared-model", endpoint=endpoint)
+        saved.messages.append({"role": "user", "content": "private conversation"})
+        save_session(tmp_path / "sessions", saved)
+
+    with patch("drove.tui.ChatApp") as chat:
+        result = CliRunner().invoke(
+            app,
+            ["-c", str(config), "chat", "shared-model", "-e", "https://other.test", "-r"],
+        )
+    assert result.exit_code == 1, result.output
+    assert "at this endpoint" in result.output
+    assert "/sessions" in result.output
+    chat.assert_not_called()
+
+
+def test_resume_rejects_system_override_before_selecting_or_loading() -> None:
+    with (
+        patch("drove.cli.main._select_model_from_endpoint") as picker,
+        patch("drove.sessions.latest_session") as latest,
+        patch("drove.tui.ChatApp") as chat,
+    ):
+        result = CliRunner().invoke(app, ["chat", "--resume", "--system", "override"])
+    assert result.exit_code == 2, result.output
+    assert "saved system prompt is preserved" in " ".join(result.output.split())
+    picker.assert_not_called()
+    latest.assert_not_called()
+    chat.assert_not_called()
+
+
+@pytest.mark.parametrize("endpoint", ["not-a-url", "ftp://example.test", "http://host:bad"])
+def test_invalid_endpoint_is_reported_before_model_lookup(endpoint: str) -> None:
+    with patch("drove.cli.main._select_model_from_endpoint") as picker:
+        result = CliRunner().invoke(app, ["chat", "-e", endpoint])
+    assert result.exit_code == 2, result.output
+    assert "Invalid chat endpoint" in result.output
+    picker.assert_not_called()

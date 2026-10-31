@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Scoped chat resume and session selection to the active endpoint, with explicit
+  assignment for older conversations that had no endpoint metadata.
+- Restored saved system prompts when resuming conversations and cleared temporary
+  tool approvals when loading another session; rejected `--resume --system`
+  instead of silently ignoring the supplied prompt.
+
 
 ## v0.14.0 (2026-10-28)
 

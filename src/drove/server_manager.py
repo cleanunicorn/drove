@@ -368,11 +368,18 @@ class ServerManager:
         exceeded, least-recently-used models are drained (wait for their active
         requests to finish) and evicted before starting the new one.
 
+        A model that is running, ready and on its current config is returned
+        without taking the manager lock, so another model's cold start never
+        delays it. A model another request is starting is waited for and then
+        shared; starting, restarting and evicting run under the lock, which is
+        released while a backend waits for health and restores its cache.
+
         If *claim* is True, atomically increment ``active_requests`` before
-        releasing the lock.  This prevents a race where a concurrent
-        ``ensure_running`` call for a different model could evict and kill
-        this server between the time ``ensure_running`` returns and the
-        caller records the request as in-flight.  Callers passing
+        returning: with no await between choosing the instance and claiming
+        it, and with every stop either unregistering the instance before its
+        first await or re-checking ``active_requests`` under the lock, a
+        concurrent eviction or idle stop cannot kill this server between the
+        time ``ensure_running`` returns and the request is forwarded.  Callers passing
         ``claim=True`` must pair it with a later ``request_finished`` call,
         passing the slot this returns (None when *claim* is False).
         Raises ValueError for an unsafe or non-canonical model name, before
@@ -473,8 +480,11 @@ class ServerManager:
         return model_path, model_cfg, detect_backend(model_path, model_cfg)
 
     def _claim_slot(self, model_name: str) -> _ModelInstance | None:
-        """Increment active_requests for a model (caller must hold the lock).
+        """Increment active_requests for a model, synchronously.
 
+        Needs no lock as long as the caller does not await between selecting
+        the instance and calling this: stops unregister an instance before
+        their first await, and the idle watcher re-checks under the lock.
         Returns the claimed instance, which identifies the slot to release.
         """
         inst = self._instances.get(model_name)

@@ -1706,3 +1706,123 @@ async def test_fallback_model_prefers_ready_and_waits_out_a_start(tmp_path: Path
             assert await asyncio.wait_for(waiter, 1) == "model-c"
         finally:
             await gate.close()
+
+
+async def test_cancelled_start_cleans_up_and_frees_waiters(tmp_path: Path) -> None:
+    """Cancelling the starter mid-health stops C, settles the start and frees the lock."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    with gate.patched():
+        try:
+            leader = gate.request("model-c")
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            follower = gate.request("model-c")
+            await asyncio.sleep(0)
+            leader.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(leader, 1)
+            gate.spawned[0][1].send_signal.assert_called_once()
+            # The follower is not stranded: it starts model-c itself.
+            await gate.until(lambda: len(gate.spawned) == 2, "the follower's start")
+            gate.gates["model-c"].set()
+            slot = await asyncio.wait_for(follower, 1)
+            assert slot is manager._instances["model-c"]
+            assert manager._instances["model-c"].process is gate.spawned[1][1]
+            assert manager._starting == {}
+            assert set(manager._idle_tasks) == {"model-c"}
+            assert not manager._lock.locked()
+        finally:
+            await gate.close()
+
+
+async def test_cancel_while_relocking_never_releases_another_tasks_lock(tmp_path: Path) -> None:
+    """A starter cancelled while queued to re-take the lock waits for it, then cleans up."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    with gate.patched():
+        try:
+            leader = gate.request("model-c")
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            await manager._lock.acquire()  # another task holds the lock
+            gate.gates["model-c"].set()  # C is healthy; the starter queues for the lock
+            for _ in range(20):
+                await asyncio.sleep(0)
+            leader.cancel()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            # The holder's lock is untouched and the starter is still waiting for it.
+            assert manager._lock.locked()
+            assert not leader.done()
+            assert "model-c" in manager._starting
+
+            manager._lock.release()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(leader, 1)
+            assert "model-c" not in manager._instances
+            gate.spawned[0][1].send_signal.assert_called_once()
+            assert manager._starting == {}
+            assert manager._idle_tasks == {}
+            assert not manager._lock.locked()
+        finally:
+            if manager._lock.locked():
+                manager._lock.release()
+            await gate.close()
+
+
+async def test_cancelled_follower_does_not_disturb_the_start(tmp_path: Path) -> None:
+    """A request waiting on a peer's start can be cancelled without affecting it."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    with gate.patched():
+        try:
+            leader = gate.request("model-c")
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            follower = gate.request("model-c")
+            other = gate.request("model-c")
+            await asyncio.sleep(0)
+            follower.cancel()
+            await asyncio.gather(follower, return_exceptions=True)
+
+            gate.gates["model-c"].set()
+            slot, other_slot = await asyncio.wait_for(asyncio.gather(leader, other), 1)
+            inst_c = manager._instances["model-c"]
+            assert slot is inst_c and other_slot is inst_c
+            assert inst_c.active_requests == 2
+            assert len(gate.spawned) == 1
+        finally:
+            await gate.close()
+
+
+async def test_drain_cancelled_while_relocking_keeps_lock_ownership(tmp_path: Path) -> None:
+    """Eviction's drain wait cancelled while queued for the lock never frees a held lock."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, max_loaded_models=1)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+    busy = make_fake_instance("model-a", make_model(config, "model-a"), (0.0, 0.0), 1)
+    manager._instances["model-a"] = busy
+    make_model(config, "model-b")
+    request = asyncio.create_task(manager.ensure_running("model-b"))
+    try:
+        await asyncio.sleep(0.1)  # the request is now polling model-a's drain
+        assert not manager._lock.locked()  # the drain released the lock
+        await manager._lock.acquire()  # another task takes it
+        busy.active_requests = 0
+        await asyncio.sleep(0.6)  # the drain poll ends and queues for the lock
+        request.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert manager._lock.locked()
+        assert not request.done()
+        manager._lock.release()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, 1)
+        assert not manager._lock.locked()
+        assert manager._instances["model-a"] is busy
+    finally:
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        if manager._lock.locked():
+            manager._lock.release()

@@ -569,7 +569,7 @@ class ServerManager:
                 while victim.active_requests > 0:
                     await asyncio.sleep(0.5)
             finally:
-                await self._lock.acquire()
+                await self._relock()
             # The victim may have been re-claimed (or capacity freed) while the
             # lock was released; loop back to re-evaluate before stopping anything.
 
@@ -582,7 +582,32 @@ class ServerManager:
         finally:
             for waiter in waits:
                 waiter.cancel()
-            await self._lock.acquire()
+            await self._relock()
+
+    async def _reacquire_lock(self) -> bool:
+        """Take back the lock this task released, even if cancelled meanwhile.
+
+        Callers released the lock inside an ``async with self._lock`` block,
+        which releases it again on exit. Giving up on a cancelled acquire
+        would make that exit release a lock held by another task, so the
+        acquire is shielded and always completed. Returns True when the task
+        was cancelled while waiting; the caller must re-raise it.
+        """
+        acquire = asyncio.ensure_future(self._lock.acquire())
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(acquire)
+                return cancelled
+            except asyncio.CancelledError:
+                if acquire.cancelled():
+                    raise  # the loop itself is shutting down
+                cancelled = True
+
+    async def _relock(self) -> None:
+        """``_reacquire_lock``, re-raising a cancellation once the lock is held."""
+        if await self._reacquire_lock():
+            raise asyncio.CancelledError
 
     async def stop(self) -> None:
         """Gracefully stop all running llama-server processes."""
@@ -666,8 +691,8 @@ class ServerManager:
                     await self._restore_prompt_cache(inst, slot_save_path)
             except BaseException as e:
                 failure = e
-            finally:
-                await self._lock.acquire()
+            if await self._reacquire_lock() and failure is None:
+                failure = asyncio.CancelledError()
 
             tracked = self._instances.get(model_name) is inst
             if failure is not None:

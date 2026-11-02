@@ -109,6 +109,28 @@ def test_failed_replace_leaves_no_temp_and_keeps_the_target(tmp_path: Path) -> N
     assert [p.name for p in tmp_path.iterdir()] == ["f.json"]
 
 
+@pytest.mark.parametrize("error", [OSError("no file object"), KeyboardInterrupt()])
+def test_failed_fdopen_closes_the_descriptor(tmp_path: Path, error: BaseException) -> None:
+    opened: list[int] = []
+    real_open = os.open
+
+    def recording_open(*args: object, **kwargs: object) -> int:
+        fd = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        opened.append(fd)
+        return fd
+
+    with (
+        patch("drove.atomic_write.os.open", recording_open),
+        patch("drove.atomic_write.os.fdopen", side_effect=error),
+        pytest.raises(type(error)),
+    ):
+        write_text_atomic(tmp_path / "f.json", "new")
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_interrupt_during_write_leaves_no_temp(tmp_path: Path) -> None:
     target = tmp_path / "f.json"
     with patch("drove.atomic_write.os.fdopen", side_effect=KeyboardInterrupt):

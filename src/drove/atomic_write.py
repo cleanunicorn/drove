@@ -30,7 +30,12 @@ def stage_text(target: Path, text: str, *, mode: int = 0o600, keep_mode: bool = 
     """
     fd, tmp = _create_temp(target, mode)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(fd)  # no file object owns the descriptor yet
+            raise
+        with f:
             f.write(text)
         if keep_mode and target.exists():
             os.chmod(tmp, stat.S_IMODE(target.stat().st_mode))

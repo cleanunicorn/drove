@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 HEALTH_CHECK_INTERVAL = 0.5  # seconds between health poll attempts
 STOP_TIMEOUT_SECONDS = 10.0
+IDLE_CHECK_INTERVAL_SECONDS = 30.0  # how often each idle watcher re-evaluates its model
 
 
 _STDERR_MAX_BYTES = 256 * 1024  # keep last 256 KB of stderr
@@ -101,6 +102,10 @@ def _estimate_model_memory(model_path: Path, model_cfg: ModelConfig | None = Non
         return model_path.stat().st_size
     except OSError:
         return 0
+
+
+# Returned by ServerManager._ensure_running_locked: release the lock and retry.
+_RETRY = object()
 
 
 class BackendUnavailableError(RuntimeError):
@@ -209,7 +214,12 @@ class ServerManager:
         self._config = config
         self._instances: dict[str, _ModelInstance] = {}
         self._idle_tasks: dict[str, asyncio.Task[None]] = {}
+        # Guards registry changes and eviction decisions. Never held while a
+        # backend waits for health or restores its prompt cache (see _start).
         self._lock = asyncio.Lock()
+        # Models spawned but not yet ready (healthy and cache restored). Each
+        # event fires when that start settles: ready, failed, or stopped.
+        self._starting: dict[str, asyncio.Event] = {}
         # (path, mtime) → whether that GGUF uses sliding-window attention.
         self._swa_cache: dict[tuple[str, float], bool | None] = {}
 
@@ -223,9 +233,30 @@ class ServerManager:
 
     @property
     def current_model(self) -> str | None:
-        """For backwards compatibility — returns the first loaded model, or None."""
+        """The fallback model: the first ready loaded model, else the first loaded one.
+
+        A model still starting is returned only when no loaded model is ready;
+        ``fallback_model`` waits for it before it is claimed.
+        """
         models = self.loaded_models
-        return models[0] if models else None
+        ready = [name for name in models if name not in self._starting]
+        candidates = ready or models
+        return candidates[0] if candidates else None
+
+    async def fallback_model(self) -> str | None:
+        """The model to serve a request that names none, once it is ready.
+
+        Waits out a start in progress, so a model-less request is never sent
+        to a backend that is not yet healthy or still restoring its prompt
+        cache. Returns None when no model is loaded (for instance, the only
+        start failed). Claim the result with ``request_started`` without an
+        await in between.
+        """
+        while True:
+            model = self.current_model
+            if model is None or (starting := self._starting.get(model)) is None:
+                return model
+            await starting.wait()
 
     @property
     def model_loaded_at(self) -> float | None:
@@ -308,11 +339,9 @@ class ServerManager:
         Returns the claimed slot to pass to ``request_finished``, or None when
         the model is not loaded.
         """
-        inst = self._instances.get(model_name)
-        if inst:
-            inst.active_requests += 1
-            inst.last_request_time = time.monotonic()
-        return inst
+        # Claims synchronously, with no await between lookup and increment, so
+        # no stop can interleave; the idle watcher re-checks under the lock.
+        return self._claim_slot(model_name)
 
     def request_finished(self, model_name: str, slot: object | None = None) -> None:
         """Mark a request as complete and reset the idle timer for a model.
@@ -350,52 +379,88 @@ class ServerManager:
         any instance lookup, so alternate spellings never become new keys.
         """
         validate_model_name(model_name)
-        async with self._lock:
+        while True:
             inst = self._instances.get(model_name)
-            if inst is not None and inst.is_running:
-                # Check whether the config changed since this instance was started.
-                current_mtimes = self._get_config_mtimes(inst.model_path)
-                if current_mtimes != inst.config_mtimes:
-                    if inst.active_requests == 0:
-                        # A broken replacement config must not cost us the
-                        # healthy instance we are about to stop.
-                        self._prepare_start(model_name)
-                        logger.info(
-                            "Config changed for model=%s, restarting with new config",
-                            model_name,
-                        )
-                        await self._stop_instance(model_name)
-                        # Fall through to _evict_if_needed + _start
-                    else:
-                        logger.info(
-                            "Config changed for model=%s, will restart when requests finish",
-                            model_name,
-                        )
-                        inst.needs_restart = True
-                        return self._claim_slot(model_name) if claim else None
-                else:
-                    # Running with current config, nothing to do.
-                    return self._claim_slot(model_name) if claim else None
-            elif inst is not None:
-                # Clean up stale instance if process died
-                await self._stop_instance(model_name)
-            # Resolve before evicting so an unknown model cannot evict anything.
-            # Validate the config (and backend choice) first too, so a broken
-            # sidecar cannot evict healthy models for a start that must fail.
-            model_path, model_cfg, _ = self._prepare_start(model_name)
-            incoming_bytes = _estimate_model_memory(model_path, model_cfg)
-            await self._evict_if_needed(incoming_bytes, model_name=model_name)
-            # Eviction may have released the lock to drain a busy model, and a
-            # concurrent request for this model may have started it meanwhile.
-            inst = self._instances.get(model_name)
-            if inst is not None and inst.is_running:
+            if self._is_ready(model_name, inst):
+                # Fast path, no lock: the check and the claim run without an
+                # await between them, and every stop removes the instance from
+                # the registry before its first await, so a model cannot be
+                # stopped between this check and the claim. A cold start of
+                # another model never delays a request for a loaded one.
                 return self._claim_slot(model_name) if claim else None
-            if inst is not None:
-                await self._stop_instance(model_name)
-            # _start re-reads the config: a sidecar edited while eviction waited
-            # must be what launches (and what the recorded mtimes describe).
-            await self._start(model_name)
+            if (starting := self._starting.get(model_name)) is not None:
+                # Another request is starting this model: reuse its instance.
+                await starting.wait()
+                continue
+            async with self._lock:
+                if model_name in self._starting:
+                    continue  # a start began while we waited for the lock
+                slot = await self._ensure_running_locked(model_name, claim=claim)
+            if slot is not _RETRY:
+                return slot
+
+    def _is_ready(self, model_name: str, inst: _ModelInstance | None) -> bool:
+        """Whether *inst* is running, fully started, and on its current config."""
+        return (
+            inst is not None
+            and inst.is_running
+            and model_name not in self._starting
+            and self._get_config_mtimes(inst.model_path) == inst.config_mtimes
+        )
+
+    async def _ensure_running_locked(self, model_name: str, *, claim: bool) -> object | None:
+        """The slow path of ``ensure_running``: restart, evict, start (lock held).
+
+        Returns ``_RETRY`` when a concurrent request began starting this model
+        while eviction had the lock released: the caller waits for that start.
+        """
+        inst = self._instances.get(model_name)
+        if inst is not None and inst.is_running:
+            # Check whether the config changed since this instance was started.
+            current_mtimes = self._get_config_mtimes(inst.model_path)
+            if current_mtimes != inst.config_mtimes:
+                if inst.active_requests == 0:
+                    # A broken replacement config must not cost us the
+                    # healthy instance we are about to stop.
+                    self._prepare_start(model_name)
+                    logger.info(
+                        "Config changed for model=%s, restarting with new config",
+                        model_name,
+                    )
+                    await self._stop_instance(model_name)
+                    # Fall through to _evict_if_needed + _start
+                else:
+                    logger.info(
+                        "Config changed for model=%s, will restart when requests finish",
+                        model_name,
+                    )
+                    inst.needs_restart = True
+                    return self._claim_slot(model_name) if claim else None
+            else:
+                # Running with current config, nothing to do.
+                return self._claim_slot(model_name) if claim else None
+        elif inst is not None:
+            # Clean up stale instance if process died
+            await self._stop_instance(model_name)
+        # Resolve before evicting so an unknown model cannot evict anything.
+        # Validate the config (and backend choice) first too, so a broken
+        # sidecar cannot evict healthy models for a start that must fail.
+        model_path, model_cfg, _ = self._prepare_start(model_name)
+        incoming_bytes = _estimate_model_memory(model_path, model_cfg)
+        await self._evict_if_needed(incoming_bytes, model_name=model_name)
+        # Eviction may have released the lock to drain a busy model, and a
+        # concurrent request for this model may have started it meanwhile.
+        if model_name in self._starting:
+            return _RETRY
+        inst = self._instances.get(model_name)
+        if inst is not None and inst.is_running:
             return self._claim_slot(model_name) if claim else None
+        if inst is not None:
+            await self._stop_instance(model_name)
+        # _start re-reads the config: a sidecar edited while eviction waited
+        # must be what launches (and what the recorded mtimes describe).
+        await self._start(model_name)
+        return self._claim_slot(model_name) if claim else None
 
     def _prepare_start(self, model_name: str) -> tuple[Path, ModelConfig, str]:
         """Resolve the model and validate its config and backend, touching nothing.
@@ -468,10 +533,17 @@ class ServerManager:
             if not over_count and not over_memory:
                 return
 
+            # A starting model counts toward the budgets but is never a victim:
+            # its starter is about to claim it. With only starting models left,
+            # release the lock until one settles, then re-evaluate.
+            evictable = {n: i for n, i in running.items() if n not in self._starting}
+            if not evictable:
+                await self._wait_for_a_start()
+                continue
             # Prefer an idle model (no active connections); pick LRU among those.
             # Fall back to the LRU of all running models only when all are busy.
-            idle = {n: i for n, i in running.items() if i.active_requests == 0}
-            candidates = idle or running
+            idle = {n: i for n, i in evictable.items() if i.active_requests == 0}
+            candidates = idle or evictable
             victim_name = min(candidates, key=lambda n: candidates[n].last_request_time)
             victim = running[victim_name]
 
@@ -501,6 +573,17 @@ class ServerManager:
             # The victim may have been re-claimed (or capacity freed) while the
             # lock was released; loop back to re-evaluate before stopping anything.
 
+    async def _wait_for_a_start(self) -> None:
+        """Release the lock until any in-progress start settles (lock held)."""
+        waits = [asyncio.ensure_future(event.wait()) for event in self._starting.values()]
+        self._lock.release()
+        try:
+            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waits:
+                waiter.cancel()
+            await self._lock.acquire()
+
     async def stop(self) -> None:
         """Gracefully stop all running llama-server processes."""
         async with self._lock:
@@ -516,10 +599,19 @@ class ServerManager:
     async def _start(self, model_name: str) -> None:
         """Spawn a backend for a model that has no tracked instance or watcher.
 
-        Must be called while holding ``self._lock``. Refuses rather than
-        overwrite an existing entry, which would leave its process untracked.
+        Must be called while holding ``self._lock``, and returns with it held.
+        The lock is released while the backend becomes healthy and its prompt
+        cache is restored, so requests for other models are not held up. The
+        instance stays registered meanwhile (it counts toward capacity) and is
+        marked in ``_starting``: it is neither claimed nor evicted until ready.
+        Refuses rather than overwrite an existing entry, which would leave its
+        process untracked.
         """
-        if model_name in self._instances or model_name in self._idle_tasks:
+        if (
+            model_name in self._instances
+            or model_name in self._idle_tasks
+            or model_name in self._starting
+        ):
             raise RuntimeError(f"Model {model_name!r} is already registered; not starting it again")
         model_path, model_cfg, backend = self._prepare_start(model_name)
 
@@ -563,25 +655,40 @@ class ServerManager:
         inst.est_memory_bytes = _estimate_model_memory(model_path, model_cfg)
         inst.start_stderr_reader()
         self._instances[model_name] = inst
+        settled = self._starting[model_name] = asyncio.Event()
 
         try:
-            await self._wait_for_health(inst)
-        except asyncio.CancelledError:
-            # No idle watcher exists yet. A cancelled request/startup must not
-            # leave its model process running indefinitely.
-            await self._stop_instance(model_name)
-            raise
-        except Exception as e:
-            # stderr rides on the exception's notes; the proxy logs them once with
-            # the traceback and keeps them out of anything a client gets.
-            logger.error("Backend failed to start for model=%s: %s", model_name, e)
-            await self._stop_instance(model_name)
-            raise
+            failure: BaseException | None = None
+            self._lock.release()
+            try:
+                await self._wait_for_health(inst)
+                if slot_save_path is not None:
+                    await self._restore_prompt_cache(inst, slot_save_path)
+            except BaseException as e:
+                failure = e
+            finally:
+                await self._lock.acquire()
 
-        if slot_save_path is not None:
-            await self._restore_prompt_cache(inst, slot_save_path)
-
-        self._start_idle_watcher(model_name)
+            tracked = self._instances.get(model_name) is inst
+            if failure is not None:
+                if not isinstance(failure, asyncio.CancelledError):
+                    # stderr rides on the exception's notes; the proxy logs them
+                    # once with the traceback and keeps them out of any response.
+                    logger.error("Backend failed to start for model=%s: %s", model_name, failure)
+                # No idle watcher exists yet. A failed or cancelled start must
+                # not leave its model process running indefinitely.
+                if tracked:
+                    await self._stop_instance(model_name)
+                raise failure
+            if not tracked or not inst.is_running:
+                # Stopped (shutdown, stop_model) while it was starting.
+                if tracked:
+                    await self._stop_instance(model_name)
+                raise RuntimeError(f"Model {model_name!r} was stopped while starting")
+            self._start_idle_watcher(model_name)
+        finally:
+            del self._starting[model_name]
+            settled.set()
         logger.info("Backend ready (model=%s, backend=%s, port=%d)", model_name, backend, port)
 
     async def _stop_instance(self, model_name: str) -> None:
@@ -595,17 +702,21 @@ class ServerManager:
         inst = self._instances.pop(model_name, None)
         if inst is None:
             return
+        # A model that never became ready has served nothing: saving its slots
+        # now would overwrite (or, for empty slots, delete) the prompt cache
+        # files its start was about to restore.
+        save_cache = model_name not in self._starting
         # The stderr reader is left running: it ends on EOF, and until then it
         # drains any descendant still holding the pipe so it cannot block.
         try:
-            await self._terminate(inst)
+            await self._terminate(inst, save_cache=save_cache)
         except BaseException:
             # Interrupted (e.g. cancelled mid-grace-wait): the instance is no
             # longer tracked, so never leave its process running.
             _kill_now(inst)
             raise
 
-    async def _terminate(self, inst: _ModelInstance) -> None:
+    async def _terminate(self, inst: _ModelInstance, *, save_cache: bool = True) -> None:
         if inst.backend == BACKEND_TTS:
             # uv supervises the Python worker. Signal its isolated process group,
             # including when the supervisor has already exited but a child remains.
@@ -630,7 +741,8 @@ class ServerManager:
         if not inst.is_running:
             return
 
-        await self._save_prompt_cache(inst)
+        if save_cache:
+            await self._save_prompt_cache(inst)
 
         logger.info("Stopping llama-server (model=%s, pid=%d)", inst.model_name, inst.process.pid)
         try:
@@ -1015,33 +1127,52 @@ class ServerManager:
     def _start_idle_watcher(self, model_name: str) -> None:
         self._idle_tasks[model_name] = asyncio.create_task(self._idle_watcher(model_name))
 
+    def _idle_stop_reason(self, inst: _ModelInstance) -> str | None:
+        """Why the idle watcher should stop *inst* now, or None to keep it.
+
+        Never stops a model with requests in flight. A config change seen while
+        idle flags the instance for restart.
+        """
+        if inst.active_requests > 0:
+            return None
+        if self._get_config_mtimes(inst.model_path) != inst.config_mtimes:
+            inst.needs_restart = True
+        if inst.needs_restart:
+            return "config"
+        if inst.idle_seconds >= self._config.idle_timeout_seconds:
+            return "idle"
+        return None
+
     async def _idle_watcher(self, model_name: str) -> None:
+        inst = self._instances.get(model_name)
         while True:
-            await asyncio.sleep(30)  # check every 30 seconds
-            inst = self._instances.get(model_name)
-            if inst is None or not inst.is_running:
+            await asyncio.sleep(IDLE_CHECK_INTERVAL_SECONDS)
+            if inst is None or self._instances.get(model_name) is not inst or not inst.is_running:
                 return
-            if inst.active_requests > 0:
-                continue  # never shut down while requests are in-flight
-            # Detect config changes even when idle (no incoming requests)
-            current_mtimes = self._get_config_mtimes(inst.model_path)
-            if current_mtimes != inst.config_mtimes:
-                inst.needs_restart = True
-            # Stop immediately when a config change was detected
-            if inst.needs_restart:
-                logger.info(
-                    "Stopping model=%s to apply config changes (will restart on next request)",
-                    model_name,
-                )
-                async with self._lock:
-                    await self._stop_instance(model_name)
-                return
-            idle = time.monotonic() - inst.last_request_time
-            if idle >= self._config.idle_timeout_seconds:
-                logger.info("Idle timeout reached for model=%s (%.0fs), stopping", model_name, idle)
-                async with self._lock:
-                    await self._stop_instance(model_name)
-                return
+            if self._idle_stop_reason(inst) is None:
+                continue
+            async with self._lock:
+                # A request may have claimed the model while we waited for the
+                # lock (the fast path and request_started claim without it), or
+                # the instance may have been stopped or replaced: decide again.
+                if self._instances.get(model_name) is not inst or not inst.is_running:
+                    return
+                reason = self._idle_stop_reason(inst)
+                if reason is None:
+                    continue
+                if reason == "config":
+                    logger.info(
+                        "Stopping model=%s to apply config changes (will restart on next request)",
+                        model_name,
+                    )
+                else:
+                    logger.info(
+                        "Idle timeout reached for model=%s (%.0fs), stopping",
+                        model_name,
+                        inst.idle_seconds,
+                    )
+                await self._stop_instance(model_name)
+            return
 
 
 def _onnx_asr_available() -> bool:

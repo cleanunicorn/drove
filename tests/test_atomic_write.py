@@ -130,6 +130,7 @@ def test_planted_link_at_the_temp_name_is_skipped_not_followed(
     tokens = _tokens("aaaaaaaaaaaa", "bbbbbbbbbbbb")
     with patch("drove.atomic_write.secrets.token_hex", lambda _n: next(tokens)):
         write_text_atomic(target, "new")
+    assert next(tokens, None) is None  # the planted name was tried first
     assert target.read_text() == "new"
     assert planted.is_symlink()
     if dangling:

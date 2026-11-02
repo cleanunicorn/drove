@@ -389,6 +389,7 @@ def test_planted_link_at_a_temp_name_is_not_written_through(tmp_path: Path) -> N
     session.messages.append({"role": "user", "content": "more"})
     with patch("drove.atomic_write.secrets.token_hex", lambda _n: next(tokens)):
         save_session(tmp_path, session)
+    assert next(tokens, None) is None  # the shared writer tried the planted name first
     assert victim.read_text() == "keep me"
     assert load_session(path).messages[-1] == {"role": "user", "content": "more"}
     assert sorted(p.name for p in path.parent.iterdir()) == sorted([path.name, planted.name])

@@ -536,6 +536,7 @@ def test_write_configs_skips_a_planted_link_at_a_random_temp_name(
     tokens = iter(["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
     monkeypatch.setattr("drove.atomic_write.secrets.token_hex", lambda _n: next(tokens))
     write_configs([(path, {"x": 1})])
+    assert next(tokens, None) is None  # the shared writer tried the planted name first
     assert victim.read_text() == "keep me"
     assert json.loads(path.read_text()) == {"x": 1}
     assert sorted(p.name for p in tmp_path.iterdir()) == [

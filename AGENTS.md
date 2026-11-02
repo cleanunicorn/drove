@@ -298,6 +298,8 @@ src/drove/
                        lists and serves only complete downloads
   download_state.py    Per-model .drove-download.json record (incomplete/complete,
                        expected files and sizes)
+  atomic_write.py      The one atomic file writer: exclusive temp file beside the
+                       target, rename into place, cleanup on failure
   backend.py           Picks the backend per model: .gguf → llama-server,
                        .onnx → built-in ASR worker, .tts → TTS worker
                        (overridable via `backend`); known TTS repos → engine

@@ -24,6 +24,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Collapsible,
@@ -441,6 +442,9 @@ class ToolCallEntry(Vertical):
 
 
 class Message(Static, can_focus=True):
+    # Reachable with Tab for Ctrl+Y / Ctrl+B, but a click keeps the composer focused.
+    FOCUS_ON_CLICK = False
+
     BINDINGS = [
         Binding("ctrl+y", "copy_message", "Copy message"),
         Binding("ctrl+b", "copy_code", "Copy code block"),
@@ -711,6 +715,12 @@ class QueuedPrompt:
     bubble: QueuedMessage
 
 
+class Transcript(ScrollableContainer):
+    """The message list: Tab still focuses it for keyboard scrolling, a click does not."""
+
+    FOCUS_ON_CLICK = False
+
+
 class QueuedMessage(Static):
     def __init__(self, prompt_id: int, text: str) -> None:
         super().__init__(classes="message queued")
@@ -906,7 +916,7 @@ class ChatApp(App[None]):
                         yield Button("Choose model", id="welcome-model", compact=True)
                         yield Button("Resume session", id="welcome-sessions", compact=True)
                         yield Button("Commands", id="welcome-help", compact=True)
-            yield ScrollableContainer(id="messages")
+            yield Transcript(id="messages")
         with Horizontal(id="status-bar"):
             yield Label("", id="activity-label", markup=False)
             yield Label("", id="status-label", markup=False)
@@ -928,6 +938,15 @@ class ChatApp(App[None]):
             self.query_one("#user-input", ChatInput).focus()
 
         self.push_screen(ChatDetails(self._details_text()), focus_input)
+
+    def on_click(self, event: events.Click) -> None:
+        """Return focus to the composer after a click on anything but a control."""
+        if self.screen is not self.screen_stack[0] or event.widget is None:
+            return  # modal screens keep their own focus handling
+        for node in event.widget.ancestors_with_self:
+            if isinstance(node, Widget) and node.focusable and node.focus_on_click():
+                return  # a real control: the composer, autocomplete, a collapsible title…
+        self.query_one("#user-input", ChatInput).focus(scroll_visible=False)
 
     def on_resize(self, event: events.Resize) -> None:
         self.set_class(event.size.width < 50, "narrow")

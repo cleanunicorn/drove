@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Changed
+
+- Kept the `drove chat` message input focused when clicking a message, empty transcript
+  space or header text, so typing always goes to the composer; Tab still reaches messages
+  for Ctrl+Y / Ctrl+B, and clicks on buttons, pickers and dialogs behave as before.
+
 
 ## v0.14.0 (2026-10-28)
 

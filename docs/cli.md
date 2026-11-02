@@ -204,7 +204,9 @@ Tab to a message, then press **Ctrl+Y** to copy its original text (including Mar
 source), or **Ctrl+B** to choose a code block with the arrow keys and Enter. The code
 picker copies the current block without its fences, preserving code whitespace;
 Esc closes the picker. These keys apply only while a message is focused. Return to
-the input with Tab to continue typing.
+the input with Tab, or click anywhere outside a button or dialog, to continue typing.
+Clicking a message never moves focus off the input, so mouse text selection and
+scrolling leave your draft ready to type into.
 
 Copying sends an OSC52 clipboard request to the terminal. The terminal must support
 and allow clipboard writes; macOS Terminal does not. The confirmation means the

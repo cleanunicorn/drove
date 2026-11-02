@@ -1708,6 +1708,54 @@ async def test_fallback_model_prefers_ready_and_waits_out_a_start(tmp_path: Path
             await gate.close()
 
 
+async def test_drain_resuming_while_peer_starts_target_waits_for_it(tmp_path: Path) -> None:
+    """R2's drain resumes while R1's model-c is spawned but unhealthy (#115 plan PC2).
+
+    R2 must neither claim the starting instance nor stop it, and only one
+    process is spawned; once model-c is ready both requests share it.
+    """
+    race = ColdStartRace(tmp_path)
+    manager = race.manager
+    health_gate = asyncio.Event()
+    real_sleep = asyncio.sleep  # the race parks every other sleep while patched
+
+    async def health(_inst: _ModelInstance) -> None:
+        await health_gate.wait()
+
+    with race.patched(), patch.object(manager, "_wait_for_health", new=health):
+        try:
+            r1 = asyncio.create_task(manager.ensure_running("model-c", claim=True))
+            race.requests.append(r1)
+            await asyncio.wait_for(race.draining[0].wait(), 5)
+            r2 = asyncio.create_task(manager.ensure_running("model-c", claim=True))
+            race.requests.append(r2)
+            await asyncio.wait_for(race.draining[1].wait(), 5)
+
+            race.inst_a.active_requests = 0
+            race.drain_gates[0].set()  # R1 evicts A, spawns C, waits for health
+            for _ in range(50):
+                await real_sleep(0)
+            assert "model-c" in manager._starting
+            race.drain_gates[1].set()  # R2's drain resumes with C still starting
+            for _ in range(50):
+                await real_sleep(0)
+            inst_c = manager._instances["model-c"]
+            assert not r1.done() and not r2.done()
+            assert inst_c.active_requests == 0
+            inst_c.process.send_signal.assert_not_called()
+            assert len(race.spawned) == 1
+
+            health_gate.set()
+            slot_1, slot_2 = await asyncio.wait_for(asyncio.gather(r1, r2), 5)
+            assert slot_1 is inst_c and slot_2 is inst_c
+            assert inst_c.active_requests == 2
+            assert len(race.spawned) == 1
+            race.assert_no_orphans()
+        finally:
+            health_gate.set()
+            await race.close()
+
+
 async def test_cancelled_start_cleans_up_and_frees_waiters(tmp_path: Path) -> None:
     """Cancelling the starter mid-health stops C, settles the start and frees the lock."""
     gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))

@@ -508,6 +508,17 @@ def test_write_configs_ignores_planted_files_at_staging_names(tmp_path: Path) ->
     assert json.loads(path.read_text()) == {"x": 1}
 
 
+def test_write_configs_bytes_are_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "c.json"
+    write_configs([(path, {"name": "héllo", "nested": {"a": [1, 2]}})])
+    assert (
+        path.read_bytes()
+        == (
+            '{\n  "name": "héllo",\n  "nested": {\n    "a": [\n      1,\n      2\n    ]\n  }\n}\n'
+        ).encode()
+    )
+
+
 def test_write_configs_keeps_a_shared_config_mode_and_makes_new_ones_private(
     tmp_path: Path,
 ) -> None:

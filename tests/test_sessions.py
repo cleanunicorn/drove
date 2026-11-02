@@ -370,6 +370,27 @@ def test_outward_session_file_symlink_is_not_written_through(tmp_path: Path) -> 
     assert outside.read_text() == "untouched"
 
 
+def test_saved_session_bytes_are_unchanged(tmp_path: Path) -> None:
+    session = Session(
+        "m",
+        "20260101-000000-000000-abcdef12",
+        [{"role": "user", "content": "héllo"}],
+        created_at="2026-01-01T00:00:00",
+    )
+    with frozen(datetime(2026, 1, 2, 3, 4, 5)):
+        save_session(tmp_path, session)
+    path = tmp_path / "m" / "20260101-000000-000000-abcdef12.json"
+    assert (
+        path.read_bytes()
+        == (
+            '{\n  "id": "20260101-000000-000000-abcdef12",\n  "model": "m",\n'
+            '  "created_at": "2026-01-01T00:00:00",\n  "updated_at": "2026-01-02T03:04:05",\n'
+            '  "system_prompt": null,\n  "messages": [\n    {\n      "role": "user",\n'
+            '      "content": "héllo"\n    }\n  ]\n}'
+        ).encode()
+    )
+
+
 def test_saved_session_is_private(tmp_path: Path) -> None:
     previous = os.umask(0o022)
     try:

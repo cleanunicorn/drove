@@ -45,8 +45,10 @@ def _progress_adapter(
 ) -> type:
     """Implement Hub's public tqdm_class protocol without rendering a second bar.
 
-    Hub supplies display kwargs plus initial/total, then calls update and the
-    context-manager methods. Counting must work even when disable=True.
+    Count payload bytes even when disable=True. Xet's aggregated-bar protocol
+    routes reconstruction and network counters to this single instance; only
+    reconstruction advances payload progress, since network bytes may differ
+    due to compression/deduplication. Rich owns all display and speed rendering.
     """
 
     class TransferProgress:
@@ -61,6 +63,15 @@ def _progress_adapter(
             amount = max(0, amount)
             self.n += amount
             report(self.n, amount, False)
+
+        def update_transfer(self, amount: float) -> None:
+            """Accept Xet network progress without counting payload bytes twice."""
+
+        def set_postfix_str(self, s: str = "", refresh: bool = True) -> None:
+            """Accept Hub display updates; Rich renders the progress bar."""
+
+        def set_transfer_postfix_str(self, s: str = "", refresh: bool = True) -> None:
+            """Accept Xet's separate network-speed display updates."""
 
         def close(self) -> None:
             pass

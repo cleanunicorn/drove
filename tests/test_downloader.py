@@ -195,6 +195,37 @@ def test_download_events_track_resume_skip_and_cache_hits(tmp_path, monkeypatch)
     ]
 
 
+def test_xet_download_progress_counts_reconstruction_once(tmp_path, monkeypatch):
+    plan = DownloadPlan("org/repo", {"model.gguf": 10}, "model", False)
+    events = []
+
+    def download(*, repo_id, filename, local_dir, tqdm_class):
+        # Newer Hub Xet reporters route both counters to one bar when the
+        # custom class exposes update_transfer. Reproduce that callback contract
+        # without depending on Hub's private reporter (absent in older versions).
+        assert callable(getattr(tqdm_class, "update_transfer", None))
+        with tqdm_class(total=10, desc=filename, disable=True) as bar:
+            previous_reconstructed = previous_transferred = 0
+            for reconstructed, transferred in [(0, 3), (4, 6), (10, 8)]:
+                if reconstructed > previous_reconstructed:
+                    bar.update(reconstructed - previous_reconstructed)
+                    bar.set_postfix_str("2B/s", refresh=False)
+                bar.update_transfer(transferred - previous_transferred)
+                bar.set_transfer_postfix_str("3B/s", refresh=False)
+                previous_reconstructed, previous_transferred = reconstructed, transferred
+                assert events[-1].completed == reconstructed
+                assert sum(e.transferred for e in events) == reconstructed
+        path = plan.destination(tmp_path) / filename
+        path.write_bytes(b"x" * 10)
+        return str(path)
+
+    monkeypatch.setattr("drove.downloader.hf_hub_download", download)
+    plan.execute(tmp_path, event_cb=events.append)
+    assert events[-1].state == "complete"
+    assert events[-1].completed == 10
+    assert sum(e.transferred for e in events) == 10
+
+
 def test_failed_transfer_never_emits_complete(tmp_path, monkeypatch):
     import pytest
 

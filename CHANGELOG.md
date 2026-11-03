@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed Xet model downloads raising progress callback errors and counting network and reconstructed bytes twice.
+
 
 ## v0.15.0 (2026-11-03)
 

@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import httpx
+
 from drove.model_store import is_within, validate_model_name
 from drove.tool_policy import cap_tool_messages
 
@@ -31,6 +33,22 @@ _MESSAGE_ROLES = frozenset({"system", "user", "assistant", "tool"})
 Warn = Callable[[str], None]
 
 
+def session_endpoint(base_url: str) -> str:
+    """Use the client's URL rules, preserving deployment paths and omitting credentials."""
+    try:
+        url = httpx.URL(base_url)
+    except httpx.InvalidURL as exc:
+        raise ValueError("Chat endpoint must be a valid HTTP or HTTPS URL.") from exc
+    if url.scheme not in {"http", "https"} or not url.host:
+        raise ValueError("Chat endpoint must be an HTTP or HTTPS URL with a host.")
+    # Routes are appended to the base URL. Even an empty ? or # would place
+    # those routes in a query/fragment rather than in the request path.
+    if "?" in base_url or "#" in base_url:
+        raise ValueError("Chat endpoint must not contain a query string or fragment.")
+    # Keep the raw path: decoding it would conflate /a%2Fb with /a/b.
+    return str(url.copy_with(username=None, password=None, raw_path=url.raw_path.rstrip(b"/")))
+
+
 class Session:
     def __init__(
         self,
@@ -40,11 +58,13 @@ class Session:
         system_prompt: str | None = None,
         created_at: str | None = None,
         updated_at: str | None = None,
+        endpoint: str | None = None,
     ) -> None:
         self.model = model
         self.id = session_id
         self.messages = messages
         self.system_prompt = system_prompt
+        self.endpoint = session_endpoint(endpoint) if endpoint is not None else None
         now = datetime.now().isoformat(timespec="seconds")
         self.created_at = created_at or now
         self.updated_at = updated_at or now
@@ -69,12 +89,15 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "system_prompt": self.system_prompt,
+            "endpoint": self.endpoint,
             # Tool results are capped here too, so a saved session never holds a larger one.
             "messages": cap_tool_messages(self.messages),
         }
 
 
-def new_session(model: str, system_prompt: str | None = None) -> Session:
+def new_session(
+    model: str, system_prompt: str | None = None, *, endpoint: str | None = None
+) -> Session:
     # Microseconds keep ids in chronological order; the random suffix keeps two
     # chats started at the same instant (e.g. in two windows) in separate files.
     session_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-{uuid4().hex[:8]}"
@@ -82,7 +105,11 @@ def new_session(model: str, system_prompt: str | None = None) -> Session:
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     return Session(
-        model=model, session_id=session_id, messages=messages, system_prompt=system_prompt
+        model=model,
+        session_id=session_id,
+        messages=messages,
+        system_prompt=system_prompt,
+        endpoint=endpoint,
     )
 
 
@@ -189,26 +216,53 @@ def load_session(path: Path) -> Session:
         system_prompt=_optional_str(data, "system_prompt"),
         created_at=_optional_str(data, "created_at"),
         updated_at=_optional_str(data, "updated_at"),
+        endpoint=_optional_str(data, "endpoint"),
     )
 
 
-def _iter_sessions(sessions_dir: Path, model: str, warn: Warn | None) -> Iterator[Session]:
+def _iter_sessions(
+    sessions_dir: Path,
+    model: str,
+    warn: Warn | None,
+    endpoint: str | None = None,
+    include_legacy: bool = False,
+) -> Iterator[Session]:
     """Yield a model's readable sessions newest first, skipping unusable files."""
     d = _session_dir(sessions_dir, model)
     if not d.exists():
         return
+    endpoint = session_endpoint(endpoint) if endpoint is not None else None
     for path in sorted(d.glob("*.json"), reverse=True):
         try:
-            yield load_session(path)
+            session = load_session(path)
+            if session.model != model:
+                raise ValueError("session model does not match its directory")
+            if endpoint is None or session.endpoint == endpoint:
+                yield session
+            elif include_legacy and session.endpoint is None:
+                yield session
         except (OSError, ValueError) as e:
             (warn or logger.warning)(f"Skipping unreadable session file {path}: {e}")
 
 
-def list_sessions(sessions_dir: Path, model: str, *, warn: Warn | None = None) -> list[Session]:
-    """Return sessions for a model, newest first; *warn* receives skipped-file notes."""
-    return list(_iter_sessions(sessions_dir, model, warn))
+def list_sessions(
+    sessions_dir: Path,
+    model: str,
+    *,
+    endpoint: str | None = None,
+    include_legacy: bool = False,
+    warn: Warn | None = None,
+) -> list[Session]:
+    """Return a model's sessions, optionally scoped to an endpoint, newest first.
+
+    Unassigned legacy sessions are opt-in when filtering by endpoint. Omitting
+    endpoint retains unfiltered access for storage inspection and migration.
+    """
+    return list(_iter_sessions(sessions_dir, model, warn, endpoint, include_legacy))
 
 
-def latest_session(sessions_dir: Path, model: str, *, warn: Warn | None = None) -> Session | None:
+def latest_session(
+    sessions_dir: Path, model: str, *, endpoint: str | None = None, warn: Warn | None = None
+) -> Session | None:
     """Return the newest readable session for *model*, or None; *warn* as in list_sessions."""
-    return next(_iter_sessions(sessions_dir, model, warn), None)
+    return next(_iter_sessions(sessions_dir, model, warn, endpoint), None)

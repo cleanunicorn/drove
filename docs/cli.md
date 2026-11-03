@@ -83,7 +83,29 @@ available through `/sessions` when using their model.
 from configuration, or opens the existing model picker when no default is set.
 The same order applies with `--endpoint`; an explicit model overrides the
 configured identifier for remote APIs too. `--resume` looks up sessions for
-the selected model. Session files that cannot be read are skipped with a warning and
+the selected model and endpoint. Endpoint identity includes the scheme, host,
+port and base path. The CLI accepts endpoint URLs with or without the final `/v1`;
+trailing slashes and explicit default ports are normalized in session identity.
+International domain names and encoded paths follow the HTTP client's URL rules.
+Endpoint URLs with a query string or fragment are rejected before model lookup:
+they cannot be used as the prefix for chat routes. URL credentials and the
+`--api-key` value are not added to session metadata. Sessions at another endpoint are
+not offered or automatically resumed, even when its model ID is the same.
+
+Older sessions without an endpoint remain available through `/sessions`, labeled
+**Unassigned (legacy)**. Selecting one asks before assigning it to the current
+endpoint, where future messages will send its conversation history. Cancel leaves
+the file and current conversation unchanged. Assignment is saved before the
+conversation is loaded; a failed save leaves the current conversation in place.
+`--resume` skips unassigned sessions. Start without `--resume` and use `/sessions`
+to assign one explicitly.
+
+Resuming preserves the saved system prompt, including for subsequent `/new` and
+`/clear` conversations. `--resume --system` is rejected; omit `--resume` to start
+with a different prompt. Loading another conversation clears temporary tool
+approvals; persistent grants in `allowed_tools` remain available.
+
+Session files that cannot be read are skipped with a warning and
 left on disk, so a repaired file shows up again.
 
 ```bash

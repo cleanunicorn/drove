@@ -1,50 +1,140 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Fixed
+## v0.15.0 (2026-11-03)
 
-- Preserved chat drafts for unknown slash commands and invalid command arguments,
-  preventing accidental conversation resets from messages such as `/new plan`.
-- Allowed literal slash-prefixed chat messages through a `//` escape and documented
-  it in chat help.
-- Applied the last status-watch option consistently, including bare repeated
-  flags, and rejected finite intervals that exceeded the platform timeout range.
-- Rejected invalid boolean configuration values without changing the saved file,
-  and accepted explicit true/false, yes/no, on/off and 1/0 forms.
-- Rejected zero, negative and non-finite server-status watch intervals before
-  polling, and corrected the model-filtered observe web example.
-- Matched chat endpoint identities to the HTTP client's URL normalization,
-  including international domains and encoded paths, and rejected unsupported
-  query strings, fragments and invalid URLs before model lookup.
-- Scoped chat resume and session selection to the active endpoint, with explicit
-  assignment for older conversations that had no endpoint metadata.
-- Restored saved system prompts when resuming conversations and cleared temporary
-  tool approvals when loading another session; rejected `--resume --system`
-  instead of silently ignoring the supplied prompt.
-- Requests for a loaded model were held up while another model cold-started (up to the startup
-  timeout); they are now served at once, because the manager lock is no longer held while a
-  starting backend waits for health or restores its prompt cache. A starting model still counts
-  toward `max_loaded_models` and `max_memory`, is never evicted, and serves no request until its
-  prompt cache is restored.
-- The idle watcher could stop a model that a request had just claimed, cutting off the response;
-  it now re-checks that the model is still idle once it holds the manager lock, for model-less
-  requests (such as `GET /props`) too.
+### Bug Fixes
 
-### Security
+- **chat**: Align session identities with HTTP URL parsing
+  ([`977a1bb`](https://github.com/cleanunicorn/drove/commit/977a1bba875589748550067cbd5d1e8364f195b5))
 
-- Download records (`.drove-download.json`) were written through a fixed temporary name that a
-  planted file or symlink could redirect; they are now written as safely as chat sessions and agent
-  configs, and a failed write no longer leaves a temporary file behind (#156).
+- **chat**: Isolate session history and restore conversation state
+  ([`3f40c76`](https://github.com/cleanunicorn/drove/commit/3f40c76e6825a481d80f91d3c565a0ee1e56e580))
 
-### Changed
+- **chat**: Preserve drafts and escape literal slash messages
+  ([`6517905`](https://github.com/cleanunicorn/drove/commit/6517905d96b69db49769b7abeead495eace0b869))
 
-- Updated session persistence regression checks to cover saved endpoint metadata.
-- Chat sessions, download records and agent config writes now share one atomic writer, so all three
-  get the same crash and symlink safety; file contents and permissions are unchanged (#156).
-- Kept the `drove chat` message input focused when clicking a message, empty transcript
-  space or header text, so typing always goes to the composer; Tab still reaches messages
-  for Ctrl+Y / Ctrl+B, and clicks on buttons, pickers and dialogs behave as before.
+- **cli**: Handle repeated and oversized watch intervals
+  ([`380ba69`](https://github.com/cleanunicorn/drove/commit/380ba69a120794fc0804240cd951e9a7763066b0))
+
+- **cli**: Reject invalid boolean values and watch intervals
+  ([`ccf2082`](https://github.com/cleanunicorn/drove/commit/ccf208266ed91ee5b35221e94cb3b21985d2496e))
+
+- **downloads**: Write records and sessions through the atomic writer
+  ([`492c3ab`](https://github.com/cleanunicorn/drove/commit/492c3ab6c815a2c5320d8789df851650a77bdced))
+
+write_state used a fixed temp name that write_text would follow and never cleaned up. The record
+  keeps its umask-default mode and exact bytes. The downloader's link check drops the old temp name:
+  the record's directory is still vetted via the record path, and the temp file relies on exclusive
+  creation.
+
+Refs #156.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: Keep cold starts off the manager lock and re-check idle stops
+  ([`8153fe8`](https://github.com/cleanunicorn/drove/commit/8153fe894dcc3a81a872a22cb4633662d6f65502))
+
+A cold start held the global manager lock through the health wait and the prompt-cache restore, so
+  requests for already-loaded models queued behind another model's startup. The idle watcher also
+  checked idleness without the lock and stopped the model after acquiring it without re-checking, so
+  a request claimed in between was cut off.
+
+- Claim a running, up-to-date model without the lock (no await between the check and the claim;
+  every stop unregisters before its first await). - Release the lock while a started backend waits
+  for health and restores its cache; the model stays registered and marked starting, counts toward
+  capacity, is never evicted, and is not claimable until ready. Further requests for it wait and
+  share it. - Skip the prompt-cache save when stopping a model that never became ready. - Re-check
+  under the lock in the idle watcher before stopping. - Make the model-less fallback wait out a
+  start instead of forwarding to an unready backend.
+
+Refs #115
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: Never release another task's lock when cancelled mid-relock
+  ([`9778ce6`](https://github.com/cleanunicorn/drove/commit/9778ce657c514d52a7a3e08a9c056d3d17451a03))
+
+A start or eviction drain that released the manager lock and was cancelled while queued to take it
+  back left without it, and the enclosing async-with then released the lock held by another task.
+  Shield the re-acquire and re-raise the cancellation once the lock is held; a cancelled start still
+  stops its process and settles its waiters.
+
+Plan review finding PC3 on #115.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **storage**: Close the temp descriptor when fdopen fails
+  ([`2076e68`](https://github.com/cleanunicorn/drove/commit/2076e6890fb06415655249e4e3993f17b113087c))
+
+Cleanup only unlinked the path, leaving the exclusively created descriptor open; this shape was
+  copied from the old session and integration writers. Search: grep -rn 'os.fdopen' src -> 2 found,
+  1 fixed, 1 left
+
+(observe.py:424, the observe record writer, outside #156's scope; deferred).
+
+Refs #156, review B-correctness-1.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Documentation
+
+- Consolidate unreleased batch changelog entries
+  ([`eb9b99b`](https://github.com/cleanunicorn/drove/commit/eb9b99bc092dd4a76d79a44e7e09952fc8773199))
+
+- Record the shared atomic writer
+  ([`c5ac2dd`](https://github.com/cleanunicorn/drove/commit/c5ac2dd19011c9ba5f01df930fca7aed63a3d668))
+
+Refs #156.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **server**: State the lock-free claim contract in ensure_running
+  ([`e544351`](https://github.com/cleanunicorn/drove/commit/e544351188e0ecba9951f67309afd4cb40356869))
+
+The ensure_running and _claim_slot docstrings still said a claim needs the manager lock, though the
+  fast path and request_started now claim without it. Describe the no-await rule and the stop-side
+  safeguards.
+
+Code review finding docs-1 on #115.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Features
+
+- **chat**: Keep the message input focused on transcript clicks
+  ([`115000b`](https://github.com/cleanunicorn/drove/commit/115000b3df38f06458c81a7efc000865cc5946cc))
+
+Clicking a message focused it and clicking empty transcript space focused the scroll container, so
+  typing stopped reaching the composer. Message and the transcript no longer take focus on click
+  (they stay Tab-reachable for Ctrl+Y / Ctrl+B and keyboard scrolling), and a click on the main chat
+  screen that hits no control returns focus to the input. Modal screens and real controls keep their
+  own focus handling; wheel scrolling and mouse text selection are unaffected.
+
+Closes #140
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Refactoring
+
+- **integrate**: Stage agent configs through the atomic writer
+  ([`23245d2`](https://github.com/cleanunicorn/drove/commit/23245d276a22fa11182234e24626b043019079b7))
+
+_stage keeps its mkdir and copied permissions; stage, commit, backup and rollback are unchanged.
+
+Refs #156.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **storage**: Add one exclusive-create atomic text writer
+  ([`c3fffa3`](https://github.com/cleanunicorn/drove/commit/c3fffa324fb42cfdcf3b20261b639cf107e16258))
+
+Readers see the old file or the new one; the temp file has a random, exclusively created name, so a
+  planted file or symlink cannot redirect it, and it is removed on any failure.
+
+Refs #156.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 
 ## v0.14.0 (2026-10-28)

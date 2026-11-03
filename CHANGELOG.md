@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Preserved chat drafts for unknown slash commands and invalid command arguments,
+  preventing accidental conversation resets from messages such as `/new plan`.
+- Allowed literal slash-prefixed chat messages through a `//` escape and documented
+  it in chat help.
+
 
 ## v0.14.0 (2026-10-28)
 

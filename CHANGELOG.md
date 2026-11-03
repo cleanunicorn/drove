@@ -1,10 +1,12 @@
 # CHANGELOG
 
-## [Unreleased]
 
-### Fixed
+## v0.15.1 (2026-11-03)
 
-- Fixed Xet model downloads raising progress callback errors and counting network and reconstructed bytes twice.
+### Bug Fixes
+
+- **downloads**: Support Xet progress callbacks
+  ([`a75b947`](https://github.com/cleanunicorn/drove/commit/a75b947cfbe542a356e9c6863ef617c851750109))
 
 
 ## v0.15.0 (2026-11-03)

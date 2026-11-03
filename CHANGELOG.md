@@ -23,6 +23,17 @@
   tool approvals when loading another session; rejected `--resume --system`
   instead of silently ignoring the supplied prompt.
 
+### Security
+
+- Download records (`.drove-download.json`) were written through a fixed temporary name that a
+  planted file or symlink could redirect; they are now written as safely as chat sessions and agent
+  configs, and a failed write no longer leaves a temporary file behind (#156).
+
+### Changed
+
+- Chat sessions, download records and agent config writes now share one atomic writer, so all three
+  get the same crash and symlink safety; file contents and permissions are unchanged (#156).
+
 
 ## v0.14.0 (2026-10-28)
 

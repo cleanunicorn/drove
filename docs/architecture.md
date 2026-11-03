@@ -28,6 +28,7 @@ Client → FastAPI proxy (drove port)
   Chatterbox, Fish, and KittenTTS 2 engines (`engines.py`), and one pinned requirements file per engine
 - [`config.py`](../src/drove/config.py) — global config loading + defaults
 - [`model_config.py`](../src/drove/model_config.py) — per-model config parsing
+- [`atomic_write.py`](../src/drove/atomic_write.py) — the one atomic file writer (exclusive temp file beside the target, then rename) behind chat sessions, download records and agent configs
 - [`cli/`](../src/drove/cli/) — Typer CLI
 
 ## Process model

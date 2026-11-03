@@ -978,6 +978,7 @@ def _outward(tmp_path: Path, label: str) -> Path:
         "cache-inward-root",
         "cache-inward-child",
         "cache-loop",
+        "record",
     ],
 )
 def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeypatch, layout):
@@ -1008,6 +1009,8 @@ def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeyp
         download = dest / ".cache" / "huggingface" / "download"
         download.mkdir(parents=True)
         (download / "m.gguf.metadata").symlink_to(outside / "metadata")
+    elif layout == "record":
+        (dest / ".drove-download.json").symlink_to(sentinel)
     elif layout == "cache-inward-root":
         # Reviewer A/B layout 1: an inward link hides an outward one below it.
         (models / "shared-cache").mkdir()
@@ -1039,6 +1042,32 @@ def test_download_refuses_targets_that_escape_through_symlinks(tmp_path, monkeyp
         plan.execute(models)
     assert sorted(p.name for p in outside.iterdir()) == ["keep"]
     assert sentinel.read_text() == "keep"
+
+
+def test_download_ignores_a_link_at_the_old_record_temp_name(tmp_path, monkeypatch):
+    """The record's temp file has a random, exclusively created name now (#156).
+
+    A link planted at the old fixed name is neither vetted nor written through.
+    """
+    from drove.download_state import read_state
+
+    models = tmp_path / "models"
+    dest = models / "real"
+    dest.mkdir(parents=True)
+    sentinel = _outward(tmp_path, "temp") / "keep"
+    sentinel.write_text("keep")
+    (dest / ".drove-download.json.tmp").symlink_to(sentinel)
+    plan = DownloadPlan("org/repo", {"m.gguf": 4}, "real", False)
+
+    def fetch(*, filename, local_dir, **kwargs):
+        path = Path(local_dir) / filename
+        path.write_bytes(b"x" * 4)
+        return str(path)
+
+    monkeypatch.setattr("drove.downloader.hf_hub_download", fetch)
+    plan.execute(models)
+    assert sentinel.read_text() == "keep"
+    assert read_state(dest).complete
 
 
 def test_download_accepts_inward_cache_links_and_loops(tmp_path):

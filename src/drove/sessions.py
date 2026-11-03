@@ -5,9 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
-import tempfile
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +14,7 @@ from uuid import uuid4
 
 import httpx
 
+from drove.atomic_write import write_text_atomic
 from drove.model_store import is_within, validate_model_name
 from drove.tool_policy import cap_tool_messages
 
@@ -153,14 +152,7 @@ def save_session(sessions_dir: Path, session: Session) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     session.updated_at = datetime.now().isoformat(timespec="seconds")
     text = json.dumps(session.to_dict(), indent=2, ensure_ascii=False)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        os.replace(tmp_name, path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
+    write_text_atomic(path, text)
 
 
 def _optional_str(data: dict[str, Any], key: str) -> str | None:

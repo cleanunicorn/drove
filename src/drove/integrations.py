@@ -16,13 +16,12 @@ import json
 import os
 import re
 import shutil
-import stat
-import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from drove.atomic_write import stage_text
 from drove.backend import BACKEND_LLAMA, BACKEND_TTS, detect_backend
 from drove.config import Config
 from drove.gguf import read_model_metadata
@@ -319,22 +318,12 @@ def dump_json(data: dict[str, Any]) -> str:
 def _stage(target: Path, text: str) -> Path:
     """Write *text* to a fresh private temp file beside *target* and return it.
 
-    mkstemp creates the file exclusively with mode 0600, so a planted file or
+    The temp file is created exclusively (mode 0600), so a planted file or
     symlink at a predictable name cannot redirect the write. The original's
     permissions are copied over so a private config stays private.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        if target.exists():
-            os.chmod(tmp, stat.S_IMODE(target.stat().st_mode))
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    return tmp
+    return stage_text(target, text, keep_mode=True)
 
 
 def _backup(path: Path, target: Path) -> Path:

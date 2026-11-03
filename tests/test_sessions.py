@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -454,6 +455,52 @@ def test_outward_session_file_symlink_is_not_written_through(tmp_path: Path) -> 
     with pytest.raises(ValueError):
         save_session(sessions, session)
     assert outside.read_text() == "untouched"
+
+
+def test_saved_session_bytes_are_unchanged(tmp_path: Path) -> None:
+    session = Session(
+        "m",
+        "20260101-000000-000000-abcdef12",
+        [{"role": "user", "content": "héllo"}],
+        created_at="2026-01-01T00:00:00",
+    )
+    with frozen(datetime(2026, 1, 2, 3, 4, 5)):
+        save_session(tmp_path, session)
+    path = tmp_path / "m" / "20260101-000000-000000-abcdef12.json"
+    assert (
+        path.read_bytes()
+        == (
+            '{\n  "id": "20260101-000000-000000-abcdef12",\n  "model": "m",\n'
+            '  "created_at": "2026-01-01T00:00:00",\n  "updated_at": "2026-01-02T03:04:05",\n'
+            '  "system_prompt": null,\n  "messages": [\n    {\n      "role": "user",\n'
+            '      "content": "héllo"\n    }\n  ]\n}'
+        ).encode()
+    )
+
+
+def test_saved_session_is_private(tmp_path: Path) -> None:
+    previous = os.umask(0o022)
+    try:
+        session, path, _ = _saved(tmp_path)
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_planted_link_at_a_temp_name_is_not_written_through(tmp_path: Path) -> None:
+    session, path, _ = _saved(tmp_path)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    planted = path.with_name(f".{path.name}.aaaaaaaaaaaa.tmp")
+    planted.symlink_to(victim)
+    tokens = iter(["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
+    session.messages.append({"role": "user", "content": "more"})
+    with patch("drove.atomic_write.secrets.token_hex", lambda _n: next(tokens)):
+        save_session(tmp_path, session)
+    assert next(tokens, None) is None  # the shared writer tried the planted name first
+    assert victim.read_text() == "keep me"
+    assert load_session(path).messages[-1] == {"role": "user", "content": "more"}
+    assert sorted(p.name for p in path.parent.iterdir()) == sorted([path.name, planted.name])
 
 
 def test_saved_tool_results_are_capped_and_other_messages_kept(tmp_path: Path) -> None:

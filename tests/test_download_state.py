@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from drove.download_state import (
     MANIFEST_NAME,
-    MANIFEST_TEMP_NAME,
     UNREADABLE,
     DownloadState,
     read_state,
@@ -37,7 +39,7 @@ def test_write_then_read_round_trips_with_sorted_files(tmp_path: Path) -> None:
         "a/x.gguf",
         "b.gguf",
     ]
-    assert not (tmp_path / MANIFEST_TEMP_NAME).exists()
+    assert [p.name for p in tmp_path.iterdir()] == [MANIFEST_NAME]
 
 
 def test_rewrite_replaces_the_previous_record(tmp_path: Path) -> None:
@@ -103,3 +105,54 @@ def test_invalid_record_fails_closed(tmp_path: Path, data: object) -> None:
     state = read_state(tmp_path)
     assert state is UNREADABLE
     assert not state.complete
+
+
+# --- write_state goes through the shared atomic writer (#156) -----------------
+
+
+def test_record_bytes_are_unchanged(tmp_path: Path) -> None:
+    write_state(tmp_path, "complete", {"b.gguf": 2, "a.gguf": 1})
+    assert (tmp_path / MANIFEST_NAME).read_text(encoding="utf-8") == (
+        '{\n  "version": 1,\n  "state": "complete",\n'
+        '  "files": {\n    "a.gguf": 1,\n    "b.gguf": 2\n  }\n}\n'
+    )
+
+
+def test_record_keeps_the_umask_default_mode(tmp_path: Path) -> None:
+    previous = os.umask(0o027)
+    try:
+        write_state(tmp_path, "incomplete", {"m.gguf": 4})
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE((tmp_path / MANIFEST_NAME).stat().st_mode) == 0o640
+
+
+def test_failed_record_write_leaves_no_temp_and_keeps_the_old_record(tmp_path: Path) -> None:
+    write_state(tmp_path, "incomplete", {"m.gguf": 4})
+    before = (tmp_path / MANIFEST_NAME).read_bytes()
+    with patch("drove.atomic_write.os.replace", side_effect=OSError("boom")):
+        with pytest.raises(OSError, match="boom"):
+            write_state(tmp_path, "complete", {"m.gguf": 4})
+    assert (tmp_path / MANIFEST_NAME).read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == [MANIFEST_NAME]
+
+
+def test_planted_link_at_the_old_temp_name_is_not_written_through(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    (tmp_path / f"{MANIFEST_NAME}.tmp").symlink_to(victim)
+    write_state(tmp_path, "complete", {"m.gguf": 4})
+    assert victim.read_text() == "keep me"
+    state = read_state(tmp_path)
+    assert state is not None and state.complete
+
+
+def test_planted_link_at_the_record_is_replaced_not_written_through(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    (tmp_path / MANIFEST_NAME).symlink_to(victim)
+    write_state(tmp_path, "complete", {"m.gguf": 4})
+    assert victim.read_text() == "keep me"
+    assert not (tmp_path / MANIFEST_NAME).is_symlink()
+    state = read_state(tmp_path)
+    assert state is not None and state.complete

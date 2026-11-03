@@ -22,7 +22,6 @@
 - Restored saved system prompts when resuming conversations and cleared temporary
   tool approvals when loading another session; rejected `--resume --system`
   instead of silently ignoring the supplied prompt.
-
 - Requests for a loaded model were held up while another model cold-started (up to the startup
   timeout); they are now served at once, because the manager lock is no longer held while a
   starting backend waits for health or restores its prompt cache. A starting model still counts
@@ -40,6 +39,7 @@
 
 ### Changed
 
+- Updated session persistence regression checks to cover saved endpoint metadata.
 - Chat sessions, download records and agent config writes now share one atomic writer, so all three
   get the same crash and symlink safety; file contents and permissions are unchanged (#156).
 - Kept the `drove chat` message input focused when clicking a message, empty transcript

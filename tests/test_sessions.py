@@ -472,7 +472,8 @@ def test_saved_session_bytes_are_unchanged(tmp_path: Path) -> None:
         == (
             '{\n  "id": "20260101-000000-000000-abcdef12",\n  "model": "m",\n'
             '  "created_at": "2026-01-01T00:00:00",\n  "updated_at": "2026-01-02T03:04:05",\n'
-            '  "system_prompt": null,\n  "messages": [\n    {\n      "role": "user",\n'
+            '  "system_prompt": null,\n  "endpoint": null,\n  "messages": [\n'
+            '    {\n      "role": "user",\n'
             '      "content": "héllo"\n    }\n  ]\n}'
         ).encode()
     )

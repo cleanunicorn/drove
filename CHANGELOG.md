@@ -1,6 +1,12 @@
 # CHANGELOG
 
 
+## [Unreleased]
+
+### Fixed
+
+- **downloads**: Implemented tqdm-compatible methods in TransferProgress to prevent crashes during Xet-backed downloads and suppressed httpx/huggingface_hub INFO logs that were interleaving with Rich progress bars.
+
 ## v0.15.0 (2026-11-03)
 
 ### Bug Fixes

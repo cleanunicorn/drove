@@ -62,6 +62,24 @@ def _progress_adapter(
             self.n += amount
             report(self.n, amount, False)
 
+        def set_postfix_str(self, s: str = "", refresh: bool = True) -> None:
+            """No-op: drove uses Rich for progress display."""
+            pass
+
+        def set_postfix(
+            self, ordered_dict: object = None, refresh: bool = True, **kwargs: object
+        ) -> None:
+            """No-op: drove uses Rich for progress display."""
+            pass
+
+        def set_description(self, desc: str | None = None, refresh: bool = True) -> None:
+            """No-op: drove uses Rich for progress display."""
+            pass
+
+        def set_description_str(self, desc: str | None = None, refresh: bool = True) -> None:
+            """No-op: drove uses Rich for progress display."""
+            pass
+
         def close(self) -> None:
             pass
 

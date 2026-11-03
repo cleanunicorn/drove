@@ -5,7 +5,7 @@ from io import StringIO
 from rich.console import Console
 
 from drove.cli.download_progress import DownloadDisplay
-from drove.downloader import DownloadEvent
+from drove.downloader import DownloadEvent, _progress_adapter
 
 
 def test_plain_progress_is_bounded_literal_and_excludes_existing_bytes():
@@ -71,3 +71,39 @@ def test_no_color_redirected_output_is_plain(monkeypatch):
         display.update(DownloadEvent("[red]file", 1, 1, "complete", 1, 1))
     assert "[red]file" in output.getvalue()
     assert "\x1b" not in output.getvalue() and "\r" not in output.getvalue()
+
+
+def test_transfer_progress_implements_tqdm_interface():
+    """Regression test: TransferProgress must implement tqdm methods for Xet downloads."""
+    calls = []
+
+    def report(position: float, transferred: float, resumed: bool) -> None:
+        calls.append(("report", position, transferred, resumed))
+
+    ProgressClass = _progress_adapter(report)
+    progress = ProgressClass(initial=0, total=1000)
+
+    # Test basic tqdm attributes
+    assert hasattr(progress, "n")
+    assert hasattr(progress, "total")
+    assert progress.n == 0
+    assert progress.total == 1000
+
+    # Test update method
+    progress.update(100)
+    assert progress.n == 100
+    assert len(calls) == 2  # initial report + update
+
+    # Test Xet-specific methods that must not crash
+    progress.set_postfix_str("10 MB/s")  # Called by Xet progress reporter
+    progress.set_postfix(speed="10 MB/s", eta="5s")
+    progress.set_description("Uploading")
+    progress.set_description_str("Downloading")
+
+    # Test context manager protocol
+    with ProgressClass(initial=0, total=100) as p:
+        p.update(50)
+        assert p.n == 50
+
+    # Test close method
+    progress.close()

@@ -735,8 +735,23 @@ def download_model(
 
     display = DownloadDisplay(plan.total_bytes)
     try:
-        with display:
-            primary = plan.execute(models_dir, event_cb=display.update)
+        # Suppress httpx and huggingface_hub INFO logs during downloads to prevent
+        # them from interleaving with Rich progress bars
+        import logging
+        httpx_level = logging.getLogger("httpx").level
+        httpx2_level = logging.getLogger("httpx2").level
+        hf_level = logging.getLogger("huggingface_hub").level
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpx2").setLevel(logging.WARNING)
+        logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+        try:
+            with display:
+                primary = plan.execute(models_dir, event_cb=display.update)
+        finally:
+            # Restore original logging levels
+            logging.getLogger("httpx").setLevel(httpx_level)
+            logging.getLogger("httpx2").setLevel(httpx2_level)
+            logging.getLogger("huggingface_hub").setLevel(hf_level)
         display.stage = "configuration"
         _finish_download(plan, primary, quant, missing_only=repair_config)
         _download_summary(plan, models_dir)

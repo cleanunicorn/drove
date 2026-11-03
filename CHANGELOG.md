@@ -33,6 +33,9 @@
 
 - Chat sessions, download records and agent config writes now share one atomic writer, so all three
   get the same crash and symlink safety; file contents and permissions are unchanged (#156).
+- Kept the `drove chat` message input focused when clicking a message, empty transcript
+  space or header text, so typing always goes to the composer; Tab still reaches messages
+  for Ctrl+Y / Ctrl+B, and clicks on buttons, pickers and dialogs behave as before.
 
 
 ## v0.14.0 (2026-10-28)

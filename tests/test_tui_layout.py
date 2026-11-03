@@ -3,16 +3,17 @@
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
-from textual.widgets import Button, Label
+from textual.events import MouseScrollDown
+from textual.widgets import Button, DataTable, Label, OptionList
 
 from drove.chat_models import ChatModel
 from drove.model_picker import ModelPicker
 from drove.sessions import new_session, save_session
-from drove.tui import ChatApp, ChatInput, Message, SessionPicker
+from drove.tui import ChatApp, ChatInput, CodePicker, Message, SessionPicker, Transcript
 
 
 def chat(tmp_path: Path, theme: str = "textual-dark") -> ChatApp:
@@ -254,3 +255,159 @@ async def test_stream_usage_feeds_info_and_the_context_meter(tmp_path, monkeypat
         assert app._last_usage == {}
         assert "Last prompt tokens: Not reported" in app._details_text()
         assert not app.query_one("#ctx-meter").has_class("visible")
+
+
+# ── Mouse focus (#140): clicks outside controls keep the composer focused ──────
+
+TRANSCRIPT = [
+    {"role": "user", "content": "First question"},
+    {"role": "assistant", "content": "Answer\n\n```python\nprint('copied')\n```\n"},
+]
+
+
+def resumed_chat(tmp_path: Path, messages: list[dict[str, str]] = TRANSCRIPT) -> ChatApp:
+    session = new_session("a")
+    session.messages = list(messages)
+    save_session(tmp_path, session)  # so the session picker has a row to click
+    return ChatApp("http://localhost:8080", "a", tmp_path, None, resume_session=session)
+
+
+async def wait_for_messages(pilot, app: ChatApp, count: int) -> list[Message]:
+    for _ in range(50):
+        await pilot.pause()
+        bubbles = list(app.query(Message))
+        if len(bubbles) == count:
+            return bubbles
+    raise AssertionError("transcript was not replayed")
+
+
+async def click_inside(pilot, message: Message) -> None:
+    """Click the message body; the hit lands on a child, so pilot.click reports False."""
+    x, y = message.region.offset + (2, 1)
+    hit, _ = pilot.app.screen.get_widget_at(x, y)
+    assert message in hit.ancestors_with_self
+    await pilot.click(offset=(x, y))
+
+
+async def test_clicking_messages_empty_transcript_and_header_keeps_input_focused(tmp_path):
+    app = resumed_chat(tmp_path)
+    async with app.run_test(size=(100, 40)) as pilot:
+        user, assistant = await wait_for_messages(pilot, app, 2)
+        await click_inside(pilot, user)
+        assert isinstance(app.focused, ChatInput)
+        await click_inside(pilot, assistant)
+        assert isinstance(app.focused, ChatInput)
+
+        transcript = app.query_one("#messages", Transcript)
+        empty = (2, 0)  # messages are bottom-aligned, so the top row is empty
+        x, y = transcript.region.offset + empty
+        assert app.screen.get_widget_at(x, y)[0] is transcript  # really empty space
+        assert await pilot.click(transcript, offset=empty)
+        assert isinstance(app.focused, ChatInput)
+
+
+async def test_click_returns_focus_from_a_keyboard_focused_message(tmp_path, monkeypatch):
+    copied = Mock()
+    app = resumed_chat(tmp_path)
+    async with app.run_test(size=(100, 40)) as pilot:
+        user, assistant = await wait_for_messages(pilot, app, 2)
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        for _ in range(10):  # Shift+Tab still walks back into the transcript
+            await pilot.press("shift+tab")
+            if isinstance(app.focused, Message):
+                break
+        assert app.focused is assistant
+        await pilot.press("ctrl+y")
+        copied.assert_called_once_with(TRANSCRIPT[1]["content"])
+
+        assert await pilot.click("#brand")
+        assert isinstance(app.focused, ChatInput)
+        app.set_focus(user)
+        await click_inside(pilot, assistant)
+        assert isinstance(app.focused, ChatInput)
+
+
+async def test_tab_reaches_messages_and_code_copy_still_works(tmp_path, monkeypatch):
+    copied = Mock()
+    app = resumed_chat(tmp_path)
+    async with app.run_test(size=(100, 40)) as pilot:
+        _, assistant = await wait_for_messages(pilot, app, 2)
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        for _ in range(20):
+            await pilot.press("tab")
+            if app.focused is assistant:
+                break
+        assert app.focused is assistant
+        await pilot.press("ctrl+b")
+        await pilot.pause()
+        assert isinstance(app.screen, CodePicker)
+        await pilot.press("enter")
+        await pilot.pause()
+        copied.assert_called_once_with("print('copied')\n")
+        assert app.focused is assistant
+
+
+async def test_clicks_on_controls_keep_their_focus(tmp_path):
+    app = resumed_chat(tmp_path)
+    async with app.run_test(size=(100, 40)) as pilot:
+        await wait_for_messages(pilot, app, 2)
+        await pilot.press("/", "n")
+        await pilot.pause()
+        autocomplete = app.query_one("#autocomplete", OptionList)
+        assert autocomplete.display and autocomplete.option_count
+        assert await pilot.click(autocomplete, offset=(2, 1))  # row 0 is the border
+        await pilot.pause()
+        assert app.query_one(ChatInput).text.startswith("/n")
+        assert isinstance(app.focused, ChatInput)
+
+        app.query_one(ChatInput).clear()
+        assert await pilot.click("#open-sessions")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionPicker)
+        table = app.screen.query_one("#session-table", DataTable)
+        assert await pilot.click(table)
+        assert app.focused is table  # modal tables keep their own focus
+
+
+async def test_wheel_scrolls_the_transcript_without_moving_focus(tmp_path):
+    long = [{"role": "user", "content": f"line {i}\n\nmore text"} for i in range(30)]
+    app = resumed_chat(tmp_path, long)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await wait_for_messages(pilot, app, 30)
+        transcript = app.query_one("#messages", Transcript)
+        transcript.scroll_home(animate=False)
+        await pilot.pause()
+        x, y = transcript.region.offset + (4, 2)
+        for _ in range(3):
+            app.post_message(MouseScrollDown(None, x, y, 0, 1, 0, False, False, False, x, y))
+            await pilot.pause()
+        assert transcript.scroll_y > 0
+        assert isinstance(app.focused, ChatInput)
+
+
+async def test_transcript_drag_selection_is_copied_with_input_focused(tmp_path, monkeypatch):
+    copied = Mock()
+    app = resumed_chat(tmp_path)
+    async with app.run_test(size=(100, 40)) as pilot:
+        _, assistant = await wait_for_messages(pilot, app, 2)
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        composer = app.query_one(ChatInput)
+        composer.insert("my draft")
+        composer.select_all()
+
+        await pilot.mouse_down(assistant, offset=(2, 1))
+        await pilot.hover(assistant, offset=(6, 1))
+        await pilot.mouse_up(assistant, offset=(6, 1))
+        await pilot.pause()
+        selected = app.screen.get_selected_text()
+        assert selected
+        assert isinstance(app.focused, ChatInput)
+        # Starting the drag dropped the draft selection, so the composer's copy binding
+        # skips and the screen copies the transcript selection.
+        assert not composer.selected_text
+        await pilot.press("super+c")
+        copied.assert_called_once_with(selected)
+
+        composer.select_all()  # a newer draft selection wins over the transcript one
+        await pilot.press("super+c")
+        copied.assert_called_with("my draft")

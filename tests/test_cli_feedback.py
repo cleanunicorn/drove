@@ -141,6 +141,37 @@ def test_init_summary_and_root_mutation(cli) -> None:
     assert "--force" in refused.stderr and "Success:" not in refused.output
 
 
+@pytest.mark.parametrize("value", ["tru", "enabled", "2", "", "flase"])
+def test_invalid_boolean_does_not_change_configuration(cli, value: str) -> None:
+    runner, cfg, _ = cli
+    before = cfg.read_bytes()
+    result = runner.invoke(app, ["-c", str(cfg), "config", "observe", value])
+    assert result.exit_code == 1, result.output
+    assert "Invalid boolean" in result.stderr
+    assert "true/false" in result.stderr
+    assert cfg.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("true", True),
+        (" YES ", True),
+        ("on", True),
+        ("1", True),
+        ("false", False),
+        ("NO", False),
+        ("off", False),
+        ("0", False),
+    ],
+)
+def test_documented_boolean_forms_are_saved(cli, value: str, expected: bool) -> None:
+    runner, cfg, _ = cli
+    result = runner.invoke(app, ["-c", str(cfg), "config", "observe", value])
+    assert result.exit_code == 0, result.output
+    assert runner.invoke(app, ["-c", str(cfg), "config", "observe"]).stdout == f"{expected}\n"
+
+
 def test_delete_confirms_only_after_all_removals(cli, monkeypatch: pytest.MonkeyPatch) -> None:
     runner, cfg, models = cli
     sidecar = models / "coder.toml"

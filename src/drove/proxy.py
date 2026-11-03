@@ -258,10 +258,21 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                         "or load a model first."
                     ),
                 )
-            # Use the first loaded model as fallback for the upstream URL
-            resolved_model = manager.current_model
-            # is_running was just checked above, so a loaded model must exist
-            assert resolved_model is not None
+            # Use the first loaded model as fallback for the upstream URL, once
+            # it is ready: a model still starting is waited for, never forwarded to.
+            fallback = await manager.fallback_model()
+            if fallback is None:
+                # The only loaded model stopped or failed to start meanwhile.
+                stats.request_finished()
+                stats.request_error()
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "No model is loaded. Specify a 'model' field in your request "
+                        "or load a model first."
+                    ),
+                )
+            resolved_model = fallback
         else:
             resolved_model = model_name
             try:
@@ -277,9 +288,9 @@ def create_app(config: Config, config_path: Path | None = None) -> FastAPI:
                 raise _startup_error(model_name, e) from e
 
         # For the "no model_name in body" fallback path, we still need to
-        # claim a slot — but without the lock since ensure_running was skipped.
-        # This path is less racy because nothing competes to evict a model
-        # that was picked as the current fallback.
+        # claim a slot. request_started claims synchronously without the lock,
+        # like ensure_running's fast path: every stop either removes the model
+        # before this runs or re-checks under the lock that it is unclaimed.
         if model_name is None:
             slot = manager.request_started(resolved_model)
         claim.model, claim.slot = resolved_model, slot

@@ -1340,3 +1340,537 @@ def test_vision_model_args_pass_distinct_model_and_mmproj(tmp_path: Path) -> Non
     assert args[args.index("--mmproj") + 1] == str(projector)
     assert args[args.index("--model") + 1] != args[args.index("--mmproj") + 1]
     assert args[args.index("--ctx-size") + 1] == "4096"
+
+
+# ── Lock scope and idle-watcher races (#115) ────────────────────────────────
+
+
+class ColdStartGate:
+    """Real ensure_running/_start/eviction with only the process boundary faked.
+
+    Health for the models in *gated* blocks until ``release(name)``; every other
+    model becomes healthy at once. ``spawned`` records each launched process.
+    """
+
+    def __init__(self, tmp_path: Path, *, max_loaded_models: int, gated: tuple[str, ...]) -> None:
+        config = Config(
+            models_dir=tmp_path / "models",
+            listen_port=8080,
+            max_loaded_models=max_loaded_models,
+            prompt_cache=False,
+        )
+        config.models_dir.mkdir()
+        self.config = config
+        self.manager = ServerManager(config)
+        self.gates = {name: asyncio.Event() for name in gated}
+        self.health_failures: dict[str, int] = {}
+        self.spawned: list[tuple[str, MagicMock]] = []
+        self.tasks: list[asyncio.Task[Any]] = []
+
+    def add_loaded(self, name: str, *, active_requests: int = 0) -> _ModelInstance:
+        inst = make_fake_instance(name, make_model(self.config, name), (0.0, 0.0), active_requests)
+        self.manager._instances[name] = inst
+        return inst
+
+    async def _spawn(self, *args: Any, **_kwargs: Any) -> MagicMock:
+        process = make_fake_process()
+        model_arg = next(str(a) for a in args if str(a).endswith(".gguf"))
+        self.spawned.append((Path(model_arg).stem, process))
+        return process
+
+    async def _health(self, inst: _ModelInstance) -> None:
+        if self.health_failures.get(inst.model_name, 0) > 0:
+            self.health_failures[inst.model_name] -= 1
+            raise RuntimeError("Model server exited unexpectedly during startup")
+        gate = self.gates.get(inst.model_name)
+        if gate is not None:
+            await gate.wait()
+
+    @contextlib.contextmanager
+    def patched(self) -> Iterator[None]:
+        with (
+            patch("drove.server_manager.asyncio.create_subprocess_exec", new=self._spawn),
+            patch("drove.server_manager.shutil.which", return_value="/usr/bin/llama-server"),
+            patch.object(self.manager, "_wait_for_health", new=self._health),
+        ):
+            yield
+
+    def request(self, name: str, *, claim: bool = True) -> asyncio.Task[Any]:
+        task = asyncio.create_task(self.manager.ensure_running(name, claim=claim))
+        self.tasks.append(task)
+        return task
+
+    async def until(self, condition: Any, what: str) -> None:
+        for _ in range(200):
+            if condition():
+                return
+            await asyncio.sleep(0)
+        raise AssertionError(f"timed out waiting for {what}")
+
+    async def close(self) -> None:
+        for gate in self.gates.values():
+            gate.set()
+        for task in self.tasks:
+            task.cancel()
+        watchers = list(self.manager._idle_tasks.values())
+        for watcher in watchers:
+            watcher.cancel()
+        await asyncio.gather(*self.tasks, *watchers, return_exceptions=True)
+
+
+async def test_loaded_model_is_served_while_another_cold_starts_with_start_stubbed(
+    tmp_path: Path,
+) -> None:
+    """AC1 as written in #115: C's whole _start blocks, A is still claimed at once."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, max_loaded_models=2)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+    inst_a = make_fake_instance("model-a", make_model(config, "model-a"), (0.0, 0.0))
+    manager._instances["model-a"] = inst_a
+    make_model(config, "model-c")
+    release_c = asyncio.Event()
+    started_c = asyncio.Event()
+
+    async def blocking_start(_name: str) -> None:
+        started_c.set()
+        await release_c.wait()
+
+    with patch.object(manager, "_start", new_callable=AsyncMock, side_effect=blocking_start):
+        cold = asyncio.create_task(manager.ensure_running("model-c", claim=True))
+        try:
+            await asyncio.wait_for(started_c.wait(), 1)
+            slot = await asyncio.wait_for(manager.ensure_running("model-a", claim=True), 1)
+            assert slot is inst_a
+            assert inst_a.active_requests == 1
+            assert not release_c.is_set()
+            assert not cold.done()
+        finally:
+            release_c.set()
+            cold.cancel()
+            await asyncio.gather(cold, return_exceptions=True)
+
+
+async def test_health_wait_and_cache_restore_run_outside_the_lock(tmp_path: Path) -> None:
+    """While C waits for health or restores its cache, the manager lock is free."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    manager = gate.manager
+    manager._config.prompt_cache = True
+    inst_a = gate.add_loaded("model-a")
+    make_model(gate.config, "model-c")
+    restore_gate = asyncio.Event()
+    lock_held_during_restore: list[bool] = []
+
+    async def restore(_inst: _ModelInstance, _cache_dir: Path) -> None:
+        lock_held_during_restore.append(manager._lock.locked())
+        await restore_gate.wait()
+
+    with (
+        gate.patched(),
+        patch.object(manager, "_prepare_prompt_cache_dir", return_value=tmp_path),
+        patch.object(manager, "_detect_sliding_window", new=AsyncMock(return_value=False)),
+        patch.object(manager, "_restore_prompt_cache", new=restore),
+    ):
+        try:
+            cold = gate.request("model-c")
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            assert not manager._lock.locked()
+            # A loaded model is claimed while C is still unhealthy.
+            slot_a = await asyncio.wait_for(manager.ensure_running("model-a", claim=True), 1)
+            assert slot_a is inst_a
+
+            gate.gates["model-c"].set()
+            await gate.until(lambda: lock_held_during_restore, "the cache restore")
+            assert lock_held_during_restore == [False]
+            # Not claimable before its cache is restored: a second request waits.
+            peer = gate.request("model-c")
+            await asyncio.sleep(0)
+            assert not peer.done()
+            assert manager._instances["model-c"].active_requests == 0
+
+            restore_gate.set()
+            slot_1, slot_2 = await asyncio.wait_for(asyncio.gather(cold, peer), 1)
+            inst_c = manager._instances["model-c"]
+            assert slot_1 is inst_c and slot_2 is inst_c
+            assert inst_c.active_requests == 2
+            assert len(gate.spawned) == 1
+            assert manager._starting == {}
+        finally:
+            restore_gate.set()
+            await gate.close()
+
+
+async def test_starting_model_is_never_evicted(tmp_path: Path) -> None:
+    """At capacity with only a starting model loaded, a new model waits for it."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=1, gated=("model-c",))
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    make_model(gate.config, "model-d")
+    with gate.patched():
+        try:
+            cold = gate.request("model-c", claim=False)
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            proc_c = gate.spawned[0][1]
+            other = gate.request("model-d")
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not other.done()
+            proc_c.send_signal.assert_not_called()
+            assert [name for name, _ in gate.spawned] == ["model-c"]
+
+            gate.gates["model-c"].set()
+            await asyncio.wait_for(cold, 1)
+            # C is ready and idle, so D may now evict it under the usual rules.
+            slot_d = await asyncio.wait_for(other, 1)
+            assert slot_d is manager._instances["model-d"]
+            proc_c.send_signal.assert_called_once()
+            assert set(manager._instances) == {"model-d"}
+        finally:
+            await gate.close()
+
+
+async def test_stop_during_start_fails_the_start_and_keeps_the_cache(tmp_path: Path) -> None:
+    """stop_model while C is starting stops it once, skips the cache save, and settles."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    save = AsyncMock()
+    with gate.patched(), patch.object(manager, "_save_prompt_cache", new=save):
+        try:
+            cold = gate.request("model-c")
+            peer = gate.request("model-c")
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            await asyncio.wait_for(manager.stop_model("model-c"), 1)
+            gate.gates["model-c"].set()
+
+            with pytest.raises(RuntimeError, match="stopped while starting"):
+                await asyncio.wait_for(cold, 1)
+            # The waiting peer is not stranded: it starts the model afresh.
+            slot = await asyncio.wait_for(peer, 1)
+            assert slot is manager._instances["model-c"]
+            assert len(gate.spawned) == 2
+            gate.spawned[0][1].send_signal.assert_called_once()
+            save.assert_not_awaited()
+            assert manager._starting == {}
+        finally:
+            await gate.close()
+
+
+async def test_failed_start_settles_waiting_requests(tmp_path: Path) -> None:
+    """A health failure stops the process, raises to its starter, and frees waiters."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    gate.health_failures["model-c"] = 1
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    with gate.patched():
+        try:
+            gate.gates["model-c"].set()
+            cold = gate.request("model-c")
+            peer = gate.request("model-c")
+            with pytest.raises(RuntimeError, match="exited unexpectedly"):
+                await asyncio.wait_for(cold, 1)
+            slot = await asyncio.wait_for(peer, 1)
+            assert slot is manager._instances["model-c"]
+            assert len(gate.spawned) == 2
+            gate.spawned[0][1].send_signal.assert_called_once()
+            assert manager._starting == {}
+            assert not manager._lock.locked()
+        finally:
+            await gate.close()
+
+
+async def _idle_watcher_race(tmp_path: Path, claim: Any) -> None:
+    """Hold the lock, queue A's watcher on it, claim A, then release the lock."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, idle_timeout_seconds=1)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+    inst = make_fake_instance("model-a", make_model(config, "model-a"), (0.0, 0.0))
+    inst.last_request_time = time.monotonic() - 60  # idle well past the timeout
+    manager._instances["model-a"] = inst
+
+    with (
+        patch("drove.server_manager.IDLE_CHECK_INTERVAL_SECONDS", 0),
+        patch_stop_instance(manager) as mock_stop,
+    ):
+        await manager._lock.acquire()  # e.g. another model's eviction
+        manager._start_idle_watcher("model-a")
+        watcher = manager._idle_tasks["model-a"]
+        try:
+            for _ in range(200):
+                if manager._lock._waiters:  # the watcher queued on the lock
+                    break
+                await asyncio.sleep(0)
+            else:
+                raise AssertionError("watcher never queued on the lock")
+
+            slot = await asyncio.wait_for(claim(manager), 1)
+            assert slot is inst
+            assert inst.active_requests == 1
+
+            manager._lock.release()
+            for _ in range(50):
+                await asyncio.sleep(0)
+            mock_stop.assert_not_awaited()
+            assert manager._instances["model-a"] is inst
+            assert not watcher.done()
+        finally:
+            if manager._lock.locked():
+                manager._lock.release()
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+
+
+async def test_idle_watcher_spares_model_claimed_while_it_waited_for_lock(tmp_path: Path) -> None:
+    """AC2: a request claims A between the watcher's check and its lock."""
+    await _idle_watcher_race(tmp_path, lambda m: m.ensure_running("model-a", claim=True))
+
+
+async def test_idle_watcher_spares_model_claimed_by_model_less_request(tmp_path: Path) -> None:
+    """AC3: the same race through the model-less request_started fallback."""
+
+    async def claim(manager: ServerManager) -> object | None:
+        return manager.request_started("model-a")
+
+    await _idle_watcher_race(tmp_path, claim)
+
+
+async def test_idle_watcher_stops_model_still_idle_after_lock(tmp_path: Path) -> None:
+    """With no claim in the window, the re-check still stops an idle model."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, idle_timeout_seconds=1)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+    inst = make_fake_instance("model-a", make_model(config, "model-a"), (0.0, 0.0))
+    inst.last_request_time = time.monotonic() - 60
+    manager._instances["model-a"] = inst
+
+    with (
+        patch("drove.server_manager.IDLE_CHECK_INTERVAL_SECONDS", 0),
+        patch_stop_instance(manager) as mock_stop,
+    ):
+        await asyncio.wait_for(manager._idle_watcher("model-a"), 1)
+
+    mock_stop.assert_awaited_once_with("model-a")
+
+
+async def test_idle_watcher_leaves_a_replacement_instance_alone(tmp_path: Path) -> None:
+    """A watcher whose instance was replaced exits without stopping the new one."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, idle_timeout_seconds=1)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+    model_path = make_model(config, "model-a")
+    old = make_fake_instance("model-a", model_path, (0.0, 0.0))
+    manager._instances["model-a"] = old
+    with (
+        patch("drove.server_manager.IDLE_CHECK_INTERVAL_SECONDS", 0),
+        patch_stop_instance(manager) as mock_stop,
+    ):
+        await manager._lock.acquire()
+        watcher = asyncio.create_task(manager._idle_watcher("model-a"))
+        old.last_request_time = time.monotonic() - 60
+        for _ in range(200):
+            if manager._lock._waiters:
+                break
+            await asyncio.sleep(0)
+        new = make_fake_instance("model-a", model_path, (0.0, 0.0))
+        new.last_request_time = time.monotonic() - 60
+        manager._instances["model-a"] = new
+        manager._lock.release()
+        await asyncio.wait_for(watcher, 1)
+
+    mock_stop.assert_not_awaited()
+    assert manager._instances["model-a"] is new
+
+
+async def test_fallback_model_prefers_ready_and_waits_out_a_start(tmp_path: Path) -> None:
+    """The model-less fallback skips a starting model, or waits for it when it is the only one."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    with gate.patched():
+        try:
+            cold = gate.request("model-c")
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            waiter = asyncio.create_task(manager.fallback_model())
+            gate.tasks.append(waiter)
+            await asyncio.sleep(0)
+            assert not waiter.done()
+
+            inst_a = gate.add_loaded("model-a")
+            # A ready model is preferred over the starting one.
+            assert manager.current_model == "model-a"
+            assert await manager.fallback_model() == "model-a"
+            assert inst_a.active_requests == 0
+
+            gate.gates["model-c"].set()
+            await asyncio.wait_for(cold, 1)
+            # Once C is ready it is first in load order again.
+            assert await asyncio.wait_for(waiter, 1) == "model-c"
+        finally:
+            await gate.close()
+
+
+async def test_drain_resuming_while_peer_starts_target_waits_for_it(tmp_path: Path) -> None:
+    """R2's drain resumes while R1's model-c is spawned but unhealthy (#115 plan PC2).
+
+    R2 must neither claim the starting instance nor stop it, and only one
+    process is spawned; once model-c is ready both requests share it.
+    """
+    race = ColdStartRace(tmp_path)
+    manager = race.manager
+    health_gate = asyncio.Event()
+    real_sleep = asyncio.sleep  # the race parks every other sleep while patched
+
+    async def health(_inst: _ModelInstance) -> None:
+        await health_gate.wait()
+
+    with race.patched(), patch.object(manager, "_wait_for_health", new=health):
+        try:
+            r1 = asyncio.create_task(manager.ensure_running("model-c", claim=True))
+            race.requests.append(r1)
+            await asyncio.wait_for(race.draining[0].wait(), 5)
+            r2 = asyncio.create_task(manager.ensure_running("model-c", claim=True))
+            race.requests.append(r2)
+            await asyncio.wait_for(race.draining[1].wait(), 5)
+
+            race.inst_a.active_requests = 0
+            race.drain_gates[0].set()  # R1 evicts A, spawns C, waits for health
+            for _ in range(50):
+                await real_sleep(0)
+            assert "model-c" in manager._starting
+            race.drain_gates[1].set()  # R2's drain resumes with C still starting
+            for _ in range(50):
+                await real_sleep(0)
+            inst_c = manager._instances["model-c"]
+            assert not r1.done() and not r2.done()
+            assert inst_c.active_requests == 0
+            inst_c.process.send_signal.assert_not_called()
+            assert len(race.spawned) == 1
+
+            health_gate.set()
+            slot_1, slot_2 = await asyncio.wait_for(asyncio.gather(r1, r2), 5)
+            assert slot_1 is inst_c and slot_2 is inst_c
+            assert inst_c.active_requests == 2
+            assert len(race.spawned) == 1
+            race.assert_no_orphans()
+        finally:
+            health_gate.set()
+            await race.close()
+
+
+async def test_cancelled_start_cleans_up_and_frees_waiters(tmp_path: Path) -> None:
+    """Cancelling the starter mid-health stops C, settles the start and frees the lock."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    with gate.patched():
+        try:
+            leader = gate.request("model-c")
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            follower = gate.request("model-c")
+            await asyncio.sleep(0)
+            leader.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(leader, 1)
+            gate.spawned[0][1].send_signal.assert_called_once()
+            # The follower is not stranded: it starts model-c itself.
+            await gate.until(lambda: len(gate.spawned) == 2, "the follower's start")
+            gate.gates["model-c"].set()
+            slot = await asyncio.wait_for(follower, 1)
+            assert slot is manager._instances["model-c"]
+            assert manager._instances["model-c"].process is gate.spawned[1][1]
+            assert manager._starting == {}
+            assert set(manager._idle_tasks) == {"model-c"}
+            assert not manager._lock.locked()
+        finally:
+            await gate.close()
+
+
+async def test_cancel_while_relocking_never_releases_another_tasks_lock(tmp_path: Path) -> None:
+    """A starter cancelled while queued to re-take the lock waits for it, then cleans up."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    with gate.patched():
+        try:
+            leader = gate.request("model-c")
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            await manager._lock.acquire()  # another task holds the lock
+            gate.gates["model-c"].set()  # C is healthy; the starter queues for the lock
+            for _ in range(20):
+                await asyncio.sleep(0)
+            leader.cancel()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            # The holder's lock is untouched and the starter is still waiting for it.
+            assert manager._lock.locked()
+            assert not leader.done()
+            assert "model-c" in manager._starting
+
+            manager._lock.release()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(leader, 1)
+            assert "model-c" not in manager._instances
+            gate.spawned[0][1].send_signal.assert_called_once()
+            assert manager._starting == {}
+            assert manager._idle_tasks == {}
+            assert not manager._lock.locked()
+        finally:
+            if manager._lock.locked():
+                manager._lock.release()
+            await gate.close()
+
+
+async def test_cancelled_follower_does_not_disturb_the_start(tmp_path: Path) -> None:
+    """A request waiting on a peer's start can be cancelled without affecting it."""
+    gate = ColdStartGate(tmp_path, max_loaded_models=2, gated=("model-c",))
+    manager = gate.manager
+    make_model(gate.config, "model-c")
+    with gate.patched():
+        try:
+            leader = gate.request("model-c")
+            await gate.until(lambda: "model-c" in manager._starting, "model-c to spawn")
+            follower = gate.request("model-c")
+            other = gate.request("model-c")
+            await asyncio.sleep(0)
+            follower.cancel()
+            await asyncio.gather(follower, return_exceptions=True)
+
+            gate.gates["model-c"].set()
+            slot, other_slot = await asyncio.wait_for(asyncio.gather(leader, other), 1)
+            inst_c = manager._instances["model-c"]
+            assert slot is inst_c and other_slot is inst_c
+            assert inst_c.active_requests == 2
+            assert len(gate.spawned) == 1
+        finally:
+            await gate.close()
+
+
+async def test_drain_cancelled_while_relocking_keeps_lock_ownership(tmp_path: Path) -> None:
+    """Eviction's drain wait cancelled while queued for the lock never frees a held lock."""
+    config = Config(models_dir=tmp_path / "models", listen_port=8080, max_loaded_models=1)
+    config.models_dir.mkdir()
+    manager = ServerManager(config)
+    busy = make_fake_instance("model-a", make_model(config, "model-a"), (0.0, 0.0), 1)
+    manager._instances["model-a"] = busy
+    make_model(config, "model-b")
+    request = asyncio.create_task(manager.ensure_running("model-b"))
+    try:
+        await asyncio.sleep(0.1)  # the request is now polling model-a's drain
+        assert not manager._lock.locked()  # the drain released the lock
+        await manager._lock.acquire()  # another task takes it
+        busy.active_requests = 0
+        await asyncio.sleep(0.6)  # the drain poll ends and queues for the lock
+        request.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert manager._lock.locked()
+        assert not request.done()
+        manager._lock.release()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, 1)
+        assert not manager._lock.locked()
+        assert manager._instances["model-a"] is busy
+    finally:
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        if manager._lock.locked():
+            manager._lock.release()

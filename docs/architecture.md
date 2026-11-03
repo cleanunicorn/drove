@@ -53,5 +53,11 @@ Client → FastAPI proxy (drove port)
   backend are validated before any idle restart or eviction.
 - Stopping sends SIGTERM, then SIGKILL after 10 s; the final wait is bounded too, so a process
   whose descendants keep a pipe open cannot hold the manager lock.
+- The manager lock guards only the model registry and eviction decisions. A starting model is
+  registered (it counts toward capacity) and marked as starting; the lock is released while it
+  waits for health and restores its prompt cache. Meanwhile requests for already-loaded models
+  are claimed without the lock, further requests for the starting model wait for it and then
+  share it, and eviction never picks it. The idle watcher re-checks under the lock that a model
+  is still unclaimed and idle before stopping it.
 
 [Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)

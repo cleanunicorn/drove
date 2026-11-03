@@ -38,6 +38,19 @@
   for Ctrl+Y / Ctrl+B, and clicks on buttons, pickers and dialogs behave as before.
 
 
+## [Unreleased]
+
+### Fixed
+
+- Requests for a loaded model were held up while another model cold-started (up to the startup
+  timeout); they are now served at once, because the manager lock is no longer held while a
+  starting backend waits for health or restores its prompt cache. A starting model still counts
+  toward `max_loaded_models` and `max_memory`, is never evicted, and serves no request until its
+  prompt cache is restored.
+- The idle watcher could stop a model that a request had just claimed, cutting off the response;
+  it now re-checks that the model is still idle once it holds the manager lock, for model-less
+  requests (such as `GET /props`) too.
+
 ## v0.14.0 (2026-10-28)
 
 ### Bug Fixes

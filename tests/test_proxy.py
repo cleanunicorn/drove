@@ -1418,3 +1418,58 @@ def test_unservable_and_incomplete_downloads_are_hidden_and_never_started(
     )
     assert str(models) not in resp.json()["detail"]
     start.assert_not_awaited()
+
+
+@pytest.mark.parametrize("outcome", ["ready", "failed"])
+async def test_model_less_request_waits_for_a_starting_model(tmp_path: Path, outcome: str) -> None:
+    """A request naming no model is never forwarded to a backend still starting (#115)."""
+    from drove.server_manager import _ModelInstance
+
+    config = make_config(tmp_path)
+    app = create_app(config)
+    manager = app.state.manager
+    process = MagicMock()
+    process.returncode = None
+    inst = _ModelInstance("model-c", process, 9999, tmp_path / "model-c.gguf", (0.0, 0.0))
+    manager._instances["model-c"] = inst
+    settled = manager._starting["model-c"] = asyncio.Event()
+
+    upstream = MagicMock(spec=httpx.Response)
+    upstream.status_code = 200
+    upstream.headers = httpx.Headers({"content-type": "application/json"})
+
+    async def body():
+        yield b'{"ok": true}'
+
+    upstream.aiter_raw = body
+    try:
+        with patch.object(
+            app.state.client, "send", new_callable=AsyncMock, return_value=upstream
+        ) as send:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://proxy"
+            ) as client:
+                request = asyncio.create_task(client.post("/props"))
+                for _ in range(50):
+                    await asyncio.sleep(0)
+                assert not request.done()
+                send.assert_not_awaited()
+                assert inst.active_requests == 0
+
+                if outcome == "failed":
+                    del manager._instances["model-c"]
+                del manager._starting["model-c"]
+                settled.set()
+                response = await asyncio.wait_for(request, 2)
+
+        if outcome == "ready":
+            assert response.status_code == 200
+            send.assert_awaited_once()
+            assert str(send.call_args.args[0].url) == "http://127.0.0.1:9999/props"
+        else:
+            assert response.status_code == 400
+            send.assert_not_awaited()
+        assert inst.active_requests == 0
+        assert app.state.stats.active_requests == 0
+    finally:
+        await app.state.client.aclose()

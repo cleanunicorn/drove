@@ -1,5 +1,51 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- Preserved chat drafts for unknown slash commands and invalid command arguments,
+  preventing accidental conversation resets from messages such as `/new plan`.
+- Allowed literal slash-prefixed chat messages through a `//` escape and documented
+  it in chat help.
+- Applied the last status-watch option consistently, including bare repeated
+  flags, and rejected finite intervals that exceeded the platform timeout range.
+- Rejected invalid boolean configuration values without changing the saved file,
+  and accepted explicit true/false, yes/no, on/off and 1/0 forms.
+- Rejected zero, negative and non-finite server-status watch intervals before
+  polling, and corrected the model-filtered observe web example.
+- Matched chat endpoint identities to the HTTP client's URL normalization,
+  including international domains and encoded paths, and rejected unsupported
+  query strings, fragments and invalid URLs before model lookup.
+- Scoped chat resume and session selection to the active endpoint, with explicit
+  assignment for older conversations that had no endpoint metadata.
+- Restored saved system prompts when resuming conversations and cleared temporary
+  tool approvals when loading another session; rejected `--resume --system`
+  instead of silently ignoring the supplied prompt.
+- Requests for a loaded model were held up while another model cold-started (up to the startup
+  timeout); they are now served at once, because the manager lock is no longer held while a
+  starting backend waits for health or restores its prompt cache. A starting model still counts
+  toward `max_loaded_models` and `max_memory`, is never evicted, and serves no request until its
+  prompt cache is restored.
+- The idle watcher could stop a model that a request had just claimed, cutting off the response;
+  it now re-checks that the model is still idle once it holds the manager lock, for model-less
+  requests (such as `GET /props`) too.
+
+### Security
+
+- Download records (`.drove-download.json`) were written through a fixed temporary name that a
+  planted file or symlink could redirect; they are now written as safely as chat sessions and agent
+  configs, and a failed write no longer leaves a temporary file behind (#156).
+
+### Changed
+
+- Updated session persistence regression checks to cover saved endpoint metadata.
+- Chat sessions, download records and agent config writes now share one atomic writer, so all three
+  get the same crash and symlink safety; file contents and permissions are unchanged (#156).
+- Kept the `drove chat` message input focused when clicking a message, empty transcript
+  space or header text, so typing always goes to the composer; Tab still reaches messages
+  for Ctrl+Y / Ctrl+B, and clicks on buttons, pickers and dialogs behave as before.
+
 
 ## v0.14.0 (2026-10-28)
 

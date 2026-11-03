@@ -444,6 +444,24 @@ async def test_reads_ask_only_outside_the_working_directory(tmp_path, monkeypatc
     assert all("outside the working directory" in modal._reason for modal in shown)
 
 
+async def test_loading_another_session_revokes_its_predecessors_temporary_grants(
+    tmp_path, monkeypatch
+):
+    app, _, _ = policy_app(tmp_path, monkeypatch)
+    outside = outside_dir(tmp_path)
+    arguments = json.dumps({"path": str(outside / "secret.txt")})
+    shown = answering(app, monkeypatch, "allow-session", "deny-once")
+    async with app.run_test():
+        assert await app._tool_allowed("read_file", arguments)
+        assert app._call_grant is not None
+        assert await app._tool_allowed("read_file", arguments)
+        assert len(shown) == 1
+        await app._load_session(new_session("test-model", endpoint=app._endpoint))
+        assert app._call_grant is None
+        assert not await app._tool_allowed("read_file", arguments)
+        assert len(shown) == 2
+
+
 async def test_every_read_asks_with_a_remote_endpoint(tmp_path, monkeypatch):
     app, _, config = policy_app(tmp_path, monkeypatch, "https://api.example.com")
     config.write_text(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from drove.sessions import (
     load_session,
     new_session,
     save_session,
+    session_endpoint,
 )
 
 
@@ -72,6 +74,92 @@ def test_issue_119_model_labels_stay_inside_sessions_dir(tmp_path: Path, model: 
 def test_distinct_unsafe_labels_do_not_share_a_directory(tmp_path: Path) -> None:
     save_session(tmp_path, new_session("a/b/c"))
     assert list_sessions(tmp_path, "a/b c") == []
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("HTTPS://EXAMPLE.test:443/v1/", "https://example.test/v1"),
+        ("http://example.test:80/", "http://example.test"),
+        ("https://example.test:8443/api/v1", "https://example.test:8443/api/v1"),
+        ("http://[::1]:8080/v1", "http://[::1]:8080/v1"),
+        ("https://example.test/api/v1/v1", "https://example.test/api/v1/v1"),
+        ("https://user:secret@example.test/v1", "https://example.test/v1"),
+        ("https://täst.test/café/", "https://xn--tst-qla.test/caf%C3%A9"),
+        ("https://example.test/a%2Fb", "https://example.test/a%2Fb"),
+    ],
+)
+def test_endpoint_identity_normalizes_without_credentials(url: str, expected: str) -> None:
+    assert session_endpoint(url) == expected
+    assert session_endpoint(session_endpoint(url)) == expected
+
+
+def test_endpoint_history_is_filtered_and_legacy_requires_opt_in(tmp_path: Path) -> None:
+    own = new_session("m", endpoint="https://example.test:443/")
+    other = new_session("m", endpoint="https://other.test")
+    legacy = new_session("m")
+    for session in [own, other, legacy]:
+        save_session(tmp_path, session)
+
+    assert latest_session(tmp_path, "m", endpoint="https://example.test").id == own.id
+    assert [s.id for s in list_sessions(tmp_path, "m", endpoint="https://example.test")] == [own.id]
+    assert {
+        s.id
+        for s in list_sessions(tmp_path, "m", endpoint="https://example.test", include_legacy=True)
+    } == {own.id, legacy.id}
+    assert latest_session(tmp_path, "m", endpoint="https://absent.test") is None
+    assert {s.id for s in list_sessions(tmp_path, "m")} == {own.id, other.id, legacy.id}
+
+
+def test_endpoint_survives_round_trip_without_url_secrets(tmp_path: Path) -> None:
+    session = new_session("m", endpoint="https://user:secret@example.test/v1")
+    save_session(tmp_path, session)
+    path = tmp_path / "m" / f"{session.id}.json"
+    assert "secret" not in path.read_text()
+    assert load_session(path).endpoint == "https://example.test/v1"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://example.test/a\nb",
+        "https://example.test/?token=secret",
+        "https://example.test/#section",
+        "https://example.test/?",
+        "https://example.test/#",
+    ],
+)
+def test_endpoint_rejects_urls_that_cannot_be_used_as_a_route_prefix(endpoint: str) -> None:
+    with pytest.raises(ValueError, match="Chat endpoint"):
+        session_endpoint(endpoint)
+
+
+def test_endpoint_lookup_uses_the_same_international_url_as_the_client(tmp_path: Path) -> None:
+    saved = new_session("m", endpoint="https://täst.test/café")
+    save_session(tmp_path, saved)
+    assert (
+        latest_session(tmp_path, "m", endpoint="https://xn--tst-qla.test/caf%C3%A9").id == saved.id
+    )
+    assert session_endpoint("https://example.test/a%2Fb") != session_endpoint(
+        "https://example.test/a/b"
+    )
+
+
+def test_legacy_json_remains_readable_but_is_not_auto_resumed(tmp_path: Path) -> None:
+    path = tmp_path / "m" / "legacy.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"id": "legacy", "model": "m", "messages": []}))
+    assert load_session(path).endpoint is None
+    assert latest_session(tmp_path, "m", endpoint="http://localhost:8080") is None
+
+
+def test_model_mismatch_is_skipped_without_resuming_wrong_history(tmp_path: Path) -> None:
+    path = tmp_path / "m" / "wrong.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"id": "wrong", "model": "other", "messages": []}))
+    warnings: list[str] = []
+    assert latest_session(tmp_path, "m", warn=warnings.append) is None
+    assert "session model" in warnings[0]
 
 
 def test_outward_symlink_is_not_followed(tmp_path: Path) -> None:
@@ -367,6 +455,53 @@ def test_outward_session_file_symlink_is_not_written_through(tmp_path: Path) -> 
     with pytest.raises(ValueError):
         save_session(sessions, session)
     assert outside.read_text() == "untouched"
+
+
+def test_saved_session_bytes_are_unchanged(tmp_path: Path) -> None:
+    session = Session(
+        "m",
+        "20260101-000000-000000-abcdef12",
+        [{"role": "user", "content": "héllo"}],
+        created_at="2026-01-01T00:00:00",
+    )
+    with frozen(datetime(2026, 1, 2, 3, 4, 5)):
+        save_session(tmp_path, session)
+    path = tmp_path / "m" / "20260101-000000-000000-abcdef12.json"
+    assert (
+        path.read_bytes()
+        == (
+            '{\n  "id": "20260101-000000-000000-abcdef12",\n  "model": "m",\n'
+            '  "created_at": "2026-01-01T00:00:00",\n  "updated_at": "2026-01-02T03:04:05",\n'
+            '  "system_prompt": null,\n  "endpoint": null,\n  "messages": [\n'
+            '    {\n      "role": "user",\n'
+            '      "content": "héllo"\n    }\n  ]\n}'
+        ).encode()
+    )
+
+
+def test_saved_session_is_private(tmp_path: Path) -> None:
+    previous = os.umask(0o022)
+    try:
+        session, path, _ = _saved(tmp_path)
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_planted_link_at_a_temp_name_is_not_written_through(tmp_path: Path) -> None:
+    session, path, _ = _saved(tmp_path)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    planted = path.with_name(f".{path.name}.aaaaaaaaaaaa.tmp")
+    planted.symlink_to(victim)
+    tokens = iter(["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
+    session.messages.append({"role": "user", "content": "more"})
+    with patch("drove.atomic_write.secrets.token_hex", lambda _n: next(tokens)):
+        save_session(tmp_path, session)
+    assert next(tokens, None) is None  # the shared writer tried the planted name first
+    assert victim.read_text() == "keep me"
+    assert load_session(path).messages[-1] == {"role": "user", "content": "more"}
+    assert sorted(p.name for p in path.parent.iterdir()) == sorted([path.name, planted.name])
 
 
 def test_saved_tool_results_are_capped_and_other_messages_kept(tmp_path: Path) -> None:

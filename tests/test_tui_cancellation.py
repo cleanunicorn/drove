@@ -141,7 +141,7 @@ async def test_stopped_reply_replays_and_next_reply_succeeds(tmp_path, monkeypat
         await wait_idle(app, pilot)
         assert [m["content"] for m in app._history] == ["one", "first", "two", "second"]
         saved = load_session(next(tmp_path.rglob("*.json")))
-    resumed = ChatApp("http://localhost", "test-model", tmp_path, None, resume_session=saved)
+    resumed = ChatApp(app._base_url, "test-model", tmp_path, None, resume_session=saved)
     async with resumed.run_test() as pilot:
         await pilot.pause()
         assistants = [m for m in resumed.query(Message) if m._role == "assistant"]

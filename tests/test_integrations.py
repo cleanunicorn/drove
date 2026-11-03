@@ -508,6 +508,80 @@ def test_write_configs_ignores_planted_files_at_staging_names(tmp_path: Path) ->
     assert json.loads(path.read_text()) == {"x": 1}
 
 
+def test_write_configs_bytes_are_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "c.json"
+    write_configs([(path, {"name": "héllo", "nested": {"a": [1, 2]}})])
+    assert (
+        path.read_bytes()
+        == (
+            '{\n  "name": "héllo",\n  "nested": {\n    "a": [\n      1,\n      2\n    ]\n  }\n}\n'
+        ).encode()
+    )
+
+
+def test_write_configs_keeps_a_shared_config_mode_and_makes_new_ones_private(
+    tmp_path: Path,
+) -> None:
+    shared = tmp_path / "shared.json"
+    shared.write_text("{}")
+    shared.chmod(0o644)
+    new = tmp_path / "new.json"
+    previous = os.umask(0o022)
+    try:
+        write_configs([(shared, {"a": 1}), (new, {"b": 2})])
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o644
+    assert stat.S_IMODE(new.stat().st_mode) == 0o600
+
+
+def test_write_configs_skips_a_planted_link_at_a_random_temp_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    planted = tmp_path / ".c.json.aaaaaaaaaaaa.tmp"
+    planted.symlink_to(victim)
+    path = tmp_path / "c.json"
+    path.write_text("{}")
+    tokens = iter(["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
+    monkeypatch.setattr("drove.atomic_write.secrets.token_hex", lambda _n: next(tokens))
+    write_configs([(path, {"x": 1})])
+    assert next(tokens, None) is None  # the shared writer tried the planted name first
+    assert victim.read_text() == "keep me"
+    assert json.loads(path.read_text()) == {"x": 1}
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        ".c.json.aaaaaaaaaaaa.tmp",
+        "c.json",
+        "c.json.bak",
+        "victim.txt",
+    ]
+
+
+def test_write_configs_leaves_no_temp_when_staging_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "a.json"
+    second = tmp_path / "b.json"
+    first.write_text('{"a": "old"}')
+    second.write_text('{"b": "old"}')
+    real_fdopen = os.fdopen
+    calls = {"n": 0}
+
+    def failing_fdopen(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full")
+        return real_fdopen(*args, **kwargs)
+
+    monkeypatch.setattr("drove.atomic_write.os.fdopen", failing_fdopen)
+    with pytest.raises(OSError, match="disk full"):
+        write_configs([(first, {"a": "new"}), (second, {"b": "new"})])
+    assert json.loads(first.read_text()) == {"a": "old"}
+    assert json.loads(second.read_text()) == {"b": "old"}
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.json", "b.json"]
+
+
 def test_write_configs_updates_a_symlinked_config_in_place(tmp_path: Path) -> None:
     dotfiles = tmp_path / "dotfiles" / "opencode.json"
     dotfiles.parent.mkdir()

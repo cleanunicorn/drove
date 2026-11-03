@@ -9,13 +9,13 @@ without the file predates this record and is judged by its files alone.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from drove.atomic_write import write_text_atomic
+
 MANIFEST_NAME = ".drove-download.json"
-MANIFEST_TEMP_NAME = f"{MANIFEST_NAME}.tmp"  # write_state's sibling, renamed into place
 _VERSION = 1
 
 type State = Literal["incomplete", "complete"]
@@ -62,12 +62,12 @@ def read_state(root: Path) -> DownloadState | None:
 
 
 def write_state(root: Path, state: State, files: dict[str, int]) -> None:
-    """Atomically replace the record under *root* (temporary sibling, then rename)."""
-    target = root / MANIFEST_NAME
-    temp = root / MANIFEST_TEMP_NAME
+    """Atomically replace the record under *root* (temporary sibling, then rename).
+
+    The record is not private, so it keeps the umask's default mode.
+    """
     payload = {"version": _VERSION, "state": state, "files": dict(sorted(files.items()))}
-    temp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    os.replace(temp, target)
+    write_text_atomic(root / MANIFEST_NAME, json.dumps(payload, indent=2) + "\n", mode=0o666)
 
 
 def _is_safe_relative(rel: object) -> bool:

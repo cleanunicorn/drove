@@ -24,6 +24,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Collapsible,
@@ -41,7 +42,7 @@ from textual.worker import Worker
 from drove.chat_models import CatalogError, fetch_context_length, fetch_models_async
 from drove.config import ChatHint, load_config, save_tui_completed_hints
 from drove.model_picker import ModelPicker
-from drove.sessions import Session, list_sessions, new_session, save_session
+from drove.sessions import Session, list_sessions, new_session, save_session, session_endpoint
 from drove.tool_policy import (
     Decision,
     Grant,
@@ -229,7 +230,7 @@ CodePicker {
 }
 
 /* Session picker modal */
-SessionPicker {
+SessionPicker, LegacySessionConfirmation {
     align: center middle;
 }
 
@@ -245,6 +246,17 @@ SessionPicker {
     text-style: bold;
     margin-bottom: 1;
     color: $accent;
+}
+
+#legacy-session-dialog {
+    width: 90%; max-width: 90; height: 70%; max-height: 16;
+    background: $surface; border: round $accent; padding: 0 1;
+}
+#legacy-session-dialog .title { height: 1; text-style: bold; }
+#legacy-session-explanation { height: 1fr; }
+#legacy-session-actions { height: 1; }
+#legacy-session-actions Button {
+    width: auto; min-width: 0; height: 1; border: none; margin-right: 2;
 }
 
 #session-table {
@@ -441,6 +453,9 @@ class ToolCallEntry(Vertical):
 
 
 class Message(Static, can_focus=True):
+    # Reachable with Tab for Ctrl+Y / Ctrl+B, but a click keeps the composer focused.
+    FOCUS_ON_CLICK = False
+
     BINDINGS = [
         Binding("ctrl+y", "copy_message", "Copy message"),
         Binding("ctrl+b", "copy_code", "Copy code block"),
@@ -683,10 +698,12 @@ class SessionPicker(ModalScreen[Session | None]):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("Date", "Turns", "First message")
+        table.add_columns("Date", "Turns", "First message", "Endpoint")
         for s in self._sessions:
             date = s.updated_at[:16].replace("T", " ")
-            table.add_row(date, str(s.message_count), s.title)
+            table.add_row(
+                date, str(s.message_count), Text(s.title), Text(s.endpoint or "Unassigned (legacy)")
+            )
         if self._sessions:
             table.focus()
 
@@ -704,11 +721,56 @@ class SessionPicker(ModalScreen[Session | None]):
             self.dismiss(self._sessions[idx])
 
 
+class LegacySessionConfirmation(ModalScreen[bool]):
+    """Require an explicit destination for a conversation saved before endpoint tracking."""
+
+    BINDINGS = [
+        Binding("escape,n", "cancel", "Cancel", priority=True),
+        Binding("y", "assign", "Assign and load", priority=True),
+    ]
+
+    def __init__(self, endpoint: str) -> None:
+        super().__init__()
+        self._endpoint = endpoint
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="legacy-session-dialog"):
+            yield Label("Assign saved conversation", classes="title")
+            with ScrollableContainer(id="legacy-session-explanation"):
+                yield Label(
+                    "This older conversation has no saved endpoint. Loading it assigns it to "
+                    f"{self._endpoint}. Future messages send its history to this endpoint.",
+                    markup=False,
+                )
+            with Horizontal(id="legacy-session-actions"):
+                yield Button("Cancel · Esc", id="cancel-legacy", compact=True)
+                yield Button("Assign · y", id="assign-legacy", compact=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#cancel-legacy", Button).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_assign(self) -> None:
+        self.dismiss(True)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.dismiss(event.button.id == "assign-legacy")
+
+
 @dataclass
 class QueuedPrompt:
     id: int
     text: str
     bubble: QueuedMessage
+
+
+class Transcript(ScrollableContainer):
+    """The message list: Tab still focuses it for keyboard scrolling, a click does not."""
+
+    FOCUS_ON_CLICK = False
 
 
 class QueuedMessage(Static):
@@ -841,6 +903,7 @@ class ChatApp(App[None]):
     ) -> None:
         super().__init__()
         self._base_url = base_url.rstrip("/")
+        self._endpoint = session_endpoint(self._base_url)
         self._model = model
         self._sessions_dir = sessions_dir
         self._config_path = config_path
@@ -874,10 +937,18 @@ class ChatApp(App[None]):
         self._call_grant: Grant | None = None  # the scope approved for the next tool run
 
         if resume_session:
+            if resume_session.model != model:
+                raise ValueError("Saved conversation belongs to a different model.")
+            if resume_session.endpoint not in {None, self._endpoint}:
+                raise ValueError("Saved conversation belongs to a different endpoint.")
+            # Callers explicitly supplying an unassigned session own its assignment.
+            # CLI auto-resume excludes it; /sessions asks before loading it.
+            resume_session.endpoint = self._endpoint
             self._session = resume_session
+            self._system_prompt = resume_session.system_prompt
             self._history = cap_tool_messages(resume_session.messages)
         else:
-            self._session = new_session(model, system_prompt)
+            self._session = new_session(model, system_prompt, endpoint=self._endpoint)
             self._history = list(self._session.messages)
 
     def compose(self) -> ComposeResult:
@@ -906,7 +977,7 @@ class ChatApp(App[None]):
                         yield Button("Choose model", id="welcome-model", compact=True)
                         yield Button("Resume session", id="welcome-sessions", compact=True)
                         yield Button("Commands", id="welcome-help", compact=True)
-            yield ScrollableContainer(id="messages")
+            yield Transcript(id="messages")
         with Horizontal(id="status-bar"):
             yield Label("", id="activity-label", markup=False)
             yield Label("", id="status-label", markup=False)
@@ -928,6 +999,15 @@ class ChatApp(App[None]):
             self.query_one("#user-input", ChatInput).focus()
 
         self.push_screen(ChatDetails(self._details_text()), focus_input)
+
+    def on_click(self, event: events.Click) -> None:
+        """Return focus to the composer after a click on anything but a control."""
+        if self.screen is not self.screen_stack[0] or event.widget is None:
+            return  # modal screens keep their own focus handling
+        for node in event.widget.ancestors_with_self:
+            if isinstance(node, Widget) and node.focusable and node.focus_on_click():
+                return  # a real control: the composer, autocomplete, a collapsible title…
+        self.query_one("#user-input", ChatInput).focus(scroll_visible=False)
 
     def on_resize(self, event: events.Resize) -> None:
         self.set_class(event.size.width < 50, "narrow")
@@ -997,7 +1077,26 @@ class ChatApp(App[None]):
         "/save": "Save session now (auto-saves after each reply)",
     }
 
+    def _command_error(self, text: str) -> str | None:
+        parts = text.split(None, 1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        if cmd not in self._COMMANDS:
+            return f"Unknown command '{cmd}'. Try /help, or start with // to send literal text."
+        if arg and cmd not in {"/theme", "/tips"}:
+            return f"{cmd} takes no arguments. Start with // to send literal slash-prefixed text."
+        if cmd == "/tips" and arg not in {"", "off"}:
+            return "Use /tips to restart guidance or /tips off to hide it."
+        if cmd == "/theme" and len(arg.split()) > 1:
+            return "Use /theme to list themes, or /theme NAME to choose one."
+        if cmd == "/theme" and arg and arg not in self.available_themes:
+            return f"Unknown theme '{arg}'. Run /theme to list available."
+        return None
+
     async def _dispatch_command(self, text: str) -> None:
+        if error := self._command_error(text):
+            await self._show_note(error)
+            return
         parts = text.split(None, 1)
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1011,9 +1110,6 @@ class ChatApp(App[None]):
         if cmd == "/info":
             self.action_show_details()
         elif cmd == "/tips":
-            if arg not in {"", "off"}:
-                await self._show_note("Use /tips to restart guidance or /tips off to hide it.")
-                return
             self._completed_hints = set(self._HINTS) if arg == "off" else set()
             self._save_hint_progress()
             self._update_guidance()
@@ -1024,7 +1120,8 @@ class ChatApp(App[None]):
                 f"Available commands:\n{lines}\n\n"
                 "Enter send · Shift+Enter newline · Esc stop reply\n"
                 "Ctrl+C / Ctrl+Q quit · Tab focus messages and controls\n"
-                "Ctrl+Y copy focused message · Ctrl+B copy its code"
+                "Ctrl+Y copy focused message · Ctrl+B copy its code\n"
+                "Start with // to send literal text beginning with /"
             )
 
         elif cmd == "/model":
@@ -1032,7 +1129,7 @@ class ChatApp(App[None]):
 
         elif cmd in ("/clear", "/new"):
             await self.query_one("#messages").remove_children()
-            self._session = new_session(self._model, self._system_prompt)
+            self._session = new_session(self._model, self._system_prompt, endpoint=self._endpoint)
             self._history = list(self._session.messages)
             self._clear_queue()
             self._session_allowed_tools.clear()
@@ -1042,12 +1139,22 @@ class ChatApp(App[None]):
 
         elif cmd == "/sessions":
             # Skipped-file notes go to the Textual log, not the terminal it owns.
-            sessions = list_sessions(self._sessions_dir, self._model, warn=self.log.warning)
+            sessions = list_sessions(
+                self._sessions_dir,
+                self._model,
+                endpoint=self._endpoint,
+                include_legacy=True,
+                warn=self.log.warning,
+            )
             if not sessions:
-                await self._show_note("No saved sessions for this model.")
+                await self._show_note("No saved sessions for this model and endpoint.")
                 return
             result = await self.push_screen_wait(SessionPicker(sessions))
             if result is not None:
+                if result.endpoint is None and not await self.push_screen_wait(
+                    LegacySessionConfirmation(self._endpoint)
+                ):
+                    return
                 await self._load_session(result)
 
         elif cmd == "/theme":
@@ -1109,7 +1216,7 @@ class ChatApp(App[None]):
                 await self._show_note("Could not save this conversation. Model was not changed.")
                 return
             system_prompt = self._session.system_prompt
-            self._session = new_session(selected, system_prompt)
+            self._session = new_session(selected, system_prompt, endpoint=self._endpoint)
             self._model = selected
             self._context_request += 1
             self._context_length = next(
@@ -1136,7 +1243,23 @@ class ChatApp(App[None]):
         if self.is_generating:
             await self._show_note("Stop the reply before changing sessions.")
             return
+        if session.model != self._model or session.endpoint not in {None, self._endpoint}:
+            await self._show_note("This conversation belongs to a different model or endpoint.")
+            return
+        if session.endpoint is None:
+            session.endpoint = self._endpoint
+            try:
+                save_session(self._sessions_dir, session)
+            except OSError, ValueError:
+                session.endpoint = None
+                await self._show_note(
+                    "Could not assign this conversation. Session was not changed."
+                )
+                return
         self._session = session
+        self._system_prompt = session.system_prompt
+        self._session_allowed_tools.clear()
+        self._call_grant = None
         self._history = cap_tool_messages(session.messages)
         self._last_speed = self._last_ttft = None
         self._last_usage = {}
@@ -1170,13 +1293,19 @@ class ChatApp(App[None]):
 
         self._learn_hint("send")
         self._hide_autocomplete()
-        textarea.clear()
 
-        if text.startswith("/"):
+        if text.startswith("//"):
+            text = text[1:]  # Escape one leading slash; the remainder is an ordinary prompt.
+        elif text.startswith("/"):
             self._learn_hint("commands")
+            if error := self._command_error(text):
+                self.run_worker(self._show_note(error))
+                return
+            textarea.clear()
             self.run_worker(self._dispatch_command(text), exclusive=False)
             return
 
+        textarea.clear()
         if self.is_generating or self._queue:
             self._enqueue(text)
         else:

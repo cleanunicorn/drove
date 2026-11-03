@@ -83,7 +83,29 @@ available through `/sessions` when using their model.
 from configuration, or opens the existing model picker when no default is set.
 The same order applies with `--endpoint`; an explicit model overrides the
 configured identifier for remote APIs too. `--resume` looks up sessions for
-the selected model. Session files that cannot be read are skipped with a warning and
+the selected model and endpoint. Endpoint identity includes the scheme, host,
+port and base path. The CLI accepts endpoint URLs with or without the final `/v1`;
+trailing slashes and explicit default ports are normalized in session identity.
+International domain names and encoded paths follow the HTTP client's URL rules.
+Endpoint URLs with a query string or fragment are rejected before model lookup:
+they cannot be used as the prefix for chat routes. URL credentials and the
+`--api-key` value are not added to session metadata. Sessions at another endpoint are
+not offered or automatically resumed, even when its model ID is the same.
+
+Older sessions without an endpoint remain available through `/sessions`, labeled
+**Unassigned (legacy)**. Selecting one asks before assigning it to the current
+endpoint, where future messages will send its conversation history. Cancel leaves
+the file and current conversation unchanged. Assignment is saved before the
+conversation is loaded; a failed save leaves the current conversation in place.
+`--resume` skips unassigned sessions. Start without `--resume` and use `/sessions`
+to assign one explicitly.
+
+Resuming preserves the saved system prompt, including for subsequent `/new` and
+`/clear` conversations. `--resume --system` is rejected; omit `--resume` to start
+with a different prompt. Loading another conversation clears temporary tool
+approvals; persistent grants in `allowed_tools` remain available.
+
+Session files that cannot be read are skipped with a warning and
 left on disk, so a repaired file shows up again.
 
 ```bash
@@ -194,6 +216,13 @@ stream does not guarantee that a remote backend immediately stops computation.
 Use `/save` to save a partial reply without stopping it. `/new`, `/clear`, and
 `/sessions` require the current reply (and any running tool) to finish or stop.
 
+To send text beginning with `/`, add an extra leading slash: `//tmp/example`
+sends `/tmp/example`, and `//new implementation plan` sends `/new implementation
+plan` as a message. Unknown commands and invalid command arguments leave your
+draft in the composer and show how to correct it. Commands other than `/theme`
+and `/tips` take no arguments; `/new implementation plan` is rejected without
+changing the conversation.
+
 ## Chat presentation and copying
 
 Assistant replies render Markdown headings, lists and highlighted code blocks while
@@ -204,7 +233,9 @@ Tab to a message, then press **Ctrl+Y** to copy its original text (including Mar
 source), or **Ctrl+B** to choose a code block with the arrow keys and Enter. The code
 picker copies the current block without its fences, preserving code whitespace;
 Esc closes the picker. These keys apply only while a message is focused. Return to
-the input with Tab to continue typing.
+the input with Tab, or click anywhere outside a button or dialog, to continue typing.
+Clicking a message never moves focus off the input, so mouse text selection and
+scrolling leave your draft ready to type into.
 
 Copying sends an OSC52 clipboard request to the terminal. The terminal must support
 and allow clipboard writes; macOS Terminal does not. The confirmation means the
@@ -232,6 +263,10 @@ drove config llama_server.n_gpu_layers -1
 Setting a value writes only that key to the config file; `DROVE_*` overrides
 are never saved. It also works when the file holds an invalid value, so it can
 repair one; a file with broken TOML syntax is refused unchanged. See [Sources and precedence](configuration.md#sources-and-precedence).
+
+Boolean settings accept `true`/`false`, `yes`/`no`, `on`/`off`, and `1`/`0`,
+ignoring case and surrounding whitespace. Other values are rejected without
+changing the file.
 
 ## Models management
 
@@ -470,7 +505,10 @@ and eviction or configuration changes can unload a model sooner. Busy models sho
 partial files; the actual transfer may vary with cache reuse or retries.
 
 `--watch` refreshes the screen only in a terminal; redirected watch output appends
-snapshots. Stop watching with Ctrl+C. An unused server stays concise:
+snapshots. Its interval must be positive, finite and within the platform's timeout
+range; bare `--watch` uses two seconds. If repeated, the last `--watch` value wins,
+including the two-second default for a final bare flag. Stop watching with Ctrl+C.
+An unused server stays concise:
 
 ```text
 drove / Server

@@ -59,8 +59,9 @@ fix(proxy): handle a failed backend connection
 and `perf:` trigger patches. Breaking-change titles or footers trigger a major
 release. See [Release process](./deploy.md) before choosing a type.
 
-The PR title and Install CI checks must pass. CI does not run lint, type
-checking, or tests; run those locally. Maintainers squash-merge with the PR
+The PR Title, Check, and Install CI checks must pass. Check runs
+`uv lock --check`, `make lint`, `make typecheck`, and `make test`; run them
+locally first. Releases wait for the same check on `main`. Maintainers squash-merge with the PR
 title as the commit message. Never push directly to `main`, edit the project
 version, or create release tags by hand.
 

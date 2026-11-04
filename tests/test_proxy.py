@@ -62,7 +62,9 @@ def test_proxy_forwards_when_server_running(tmp_path: Path) -> None:
     fake_response = MagicMock(spec=httpx.Response)
     fake_response.status_code = 200
     fake_response.headers = httpx.Headers({"content-type": "application/json"})
-    fake_response.aiter_raw = AsyncMock(return_value=aiter([b'{"ok": true}']))
+    # A plain callable: the proxy iterates aiter_raw() without awaiting it, so an
+    # AsyncMock would hand back a never-awaited coroutine instead of the body.
+    fake_response.aiter_raw = lambda: aiter([b'{"ok": true}'])
 
     async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
         pass
@@ -78,6 +80,8 @@ def test_proxy_forwards_when_server_running(tmp_path: Path) -> None:
             )
 
     assert resp.status_code == 200
+    # The upstream body is streamed through unchanged, not just the status.
+    assert resp.content == b'{"ok": true}'
 
 
 def test_health_endpoint_no_model(tmp_path: Path) -> None:
@@ -177,7 +181,7 @@ def test_proxy_forwards_multipart_body_intact(tmp_path: Path) -> None:
     fake_response = MagicMock(spec=httpx.Response)
     fake_response.status_code = 200
     fake_response.headers = httpx.Headers({"content-type": "application/json"})
-    fake_response.aiter_raw = AsyncMock(return_value=aiter([b'{"text": "hi"}']))
+    fake_response.aiter_raw = lambda: aiter([b'{"text": "hi"}'])
 
     async def fake_ensure_running(model_name: str, *, claim: bool = False) -> None:
         pass
@@ -200,6 +204,7 @@ def test_proxy_forwards_multipart_body_intact(tmp_path: Path) -> None:
             )
 
     assert resp.status_code == 200
+    assert resp.content == b'{"text": "hi"}'
     # The original multipart body (including the audio) reached the upstream
     assert len(sent_requests) == 1
     assert b"RIFF-audio-bytes" in sent_requests[0].content

@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Changed
+
+- Pull requests now get a `check` status that fails on a stale `uv.lock`, a
+  ruff error, a mypy error or a failing test, and releases from `main` wait for
+  the same check, so a red `main` no longer cuts a version.
+- The test suite now fails on a never-awaited coroutine warning instead of
+  printing it; two proxy tests that hid an empty response body this way now
+  assert on the body.
+
+### Fixed
+
+- `uv.lock` records the current drove version again, so `uv run` no longer
+  dirties the working tree.
+
 
 ## v0.15.1 (2026-11-03)
 

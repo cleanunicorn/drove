@@ -209,3 +209,21 @@ def test_invalid_endpoint_is_reported_before_model_lookup(endpoint: str) -> None
     assert "Invalid chat endpoint" in result.output
     assert "secret" not in result.output
     picker.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "flags,expected", [([], False), (["--dangerously-skip-permissions"], True)]
+)
+def test_skip_permissions_flag_is_opt_in_per_run(flags: list[str], expected: bool) -> None:
+    with patch("drove.tui.ChatApp") as chat:
+        result = CliRunner().invoke(app, ["chat", "specific", *flags])
+    assert result.exit_code == 0
+    assert chat.call_args.kwargs["skip_permissions"] is expected
+
+
+def test_help_lists_skip_permissions_with_its_risk() -> None:
+    result = CliRunner().invoke(app, ["chat", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1"})
+    assert result.exit_code == 0
+    assert "--dangerously-skip-permissions" in result.output
+    assert "DANGEROUS: run every tool call without asking" in result.output
+    assert "disposable sandbox" in result.output

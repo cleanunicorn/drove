@@ -15,7 +15,7 @@ the command; subcommand options follow it.
 | `drove init` | Write the config file with defaults | `-f, --force` overwrites |
 | `drove serve` / `drove server` | Start the proxy | `--host`, `--port` |
 | `drove server status` | Inspect the running proxy | `-w, --watch [N]`, `-V, --verbose` |
-| `drove chat [MODEL]` | Open terminal chat | `-r, --resume`, `-s, --system`, `-e, --endpoint`, `-k, --api-key` |
+| `drove chat [MODEL]` | Open terminal chat | `-r, --resume`, `-s, --system`, `-e, --endpoint`, `-k, --api-key`, `--dangerously-skip-permissions` (runs every tool call unasked; sandboxes only, see below) |
 | `drove config [KEY] [VALUE]` | Show, get, or set global settings | Dotted keys, e.g. `llama_server.n_gpu_layers` |
 | `drove models list` | List installed models | `-V, --verbose` |
 | `drove models download REF` | Download `org/repo[:QUANT]` | `-n, --name`, `-y, --yes`, `--tts-engine`, `--repair-config`, `-V, --verbose` |
@@ -198,6 +198,16 @@ What asks for approval:
 below it, for that one read tool (the file's directory for `read_file`), or one exact
 origin for `fetch_url`. **a** saves the grant in `allowed_tools`; bare tool names there
 are ignored.
+
+**`--dangerously-skip-permissions` turns every check above off.** With it, the model
+can run any shell command, write or overwrite any file, read outside the working
+directory and fetch any URL, internal addresses included, without asking. With
+`--endpoint` or a remote `--host`, whatever those tools read or print is sent to that
+server. Use it only in a disposable sandbox (a container, a VM or a scratch
+directory). It lasts for that run only: it still holds after `/new`, a model switch or
+loading a session, it saves nothing to `allowed_tools`, and the chat header shows
+**⚠ permissions off** (shortened to **⚠ auto** in narrow terminals) for as long as it is on. Start `drove chat` without the flag to
+be asked again.
 
 Limits: every tool result is cut to 64 KiB with an `… [output truncated]` notice before
 it reaches the model or a saved session. `read_file` returns 200 lines unless `limit`

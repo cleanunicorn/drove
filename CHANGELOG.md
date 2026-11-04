@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `drove chat --dangerously-skip-permissions` to bypass tool confirmations
+  for one run, with a persistent warning and no saved permission grants.
+
 ### Changed
 
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a

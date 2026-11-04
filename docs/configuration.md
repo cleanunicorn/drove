@@ -74,6 +74,23 @@ not the example budget in the next section.
 | `llama_server.n_gpu_layers` | `-1` | Default GPU layer offload |
 | `llama_server.threads` | unset | Default backend thread count |
 
+### Saved shell command grants
+
+Choosing **a** in the chat approval dialog saves a versioned command grant in
+`allowed_tools`, for example:
+
+```toml
+allowed_tools = ['{"command":"git status","dir":"/home/user/project","tool":"shell_execute","v":1}']
+```
+
+The command matches exactly after removing surrounding spaces, tabs and newlines
+(the same normalization is used to execute it). The resolved chat working directory
+must match exactly, with no subdirectory inheritance. Background calls use the same
+grant. Bare `"shell_execute"`, missing directories, malformed tokens and empty commands
+are ignored. Grants apply with local or remote model endpoints; the command's output
+can be sent to that endpoint. Use the dialog to inspect and save the scope.
+
+
 ## Reload behavior
 
 The proxy watches the selected TOML file and reloads supported settings when it
@@ -370,19 +387,3 @@ drove config startup_timeout_seconds 1800
 ```
 
 [Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)
-
-### Saved shell command grants
-
-Choosing **a** in the chat approval dialog saves a versioned command grant in
-`allowed_tools`, for example:
-
-```toml
-allowed_tools = ['{"command":"git status","dir":"/home/user/project","tool":"shell_execute","v":1}']
-```
-
-The command matches exactly after removing surrounding spaces, tabs and newlines
-(the same normalization is used to execute it). The resolved chat working directory
-must match exactly, with no subdirectory inheritance. Background calls use the same
-grant. Bare `"shell_execute"`, missing directories, malformed tokens and empty commands
-are ignored. Grants apply with local or remote model endpoints; the command's output
-can be sent to that endpoint. Use the dialog to inspect and save the scope.

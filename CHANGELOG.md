@@ -5,11 +5,13 @@
 ### Added
 
 - Added session and saved shell command approvals scoped to an exact command and
-  working directory; commands now trim surrounding spaces, tabs and newlines
-  consistently for approval and execution. Shell commands, including background
-  tasks, now run in the chat’s recorded working directory.
+  working directory.
 
 ### Changed
+
+- Shell commands trimmed surrounding spaces, tabs and newlines consistently for
+  approval and execution, and foreground and background tasks ran in the chat’s
+  recorded working directory.
 
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for

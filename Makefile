@@ -1,5 +1,5 @@
-.PHONY: install completions test test-observe-web-browser lint fmt typecheck \
-        service-install service-uninstall service-start service-stop service-status service-logs
+.PHONY: install completions test test-observe-web-browser cov lint fmt typecheck \
+        service-install service-uninstall service-start service-stop service-restart service-status service-logs
 
 DROVE_BIN := $(HOME)/.local/share/uv/tools/drove/bin/drove
 SERVICE_DIR := $(HOME)/.config/systemd/user
@@ -63,6 +63,10 @@ completions: install
 test:
 	uv run pytest
 
+# Report only; coverage gaps guide regression tests, without a global floor.
+cov:
+	uv run pytest --cov=drove --cov-report=term-missing
+
 # Real DOM/security assertions; requires the BetterWright browser CLI.
 test-observe-web-browser:
 	uv run python tests/browser/run_observe_web_security.py $(BROWSER_TEST_ARGS)
@@ -84,7 +88,8 @@ service-install: install
 		"$(DROVE_BIN)" "$(PATH)" > $(SERVICE_FILE)
 	systemctl --user daemon-reload
 	systemctl --user enable drove.service
-	-pkill -f "drove server" 2>/dev/null || true
+	# Match both aliases, including uv-run and server subcommands; avoid matching pkill itself.
+	-pkill -f "[d]rove server?( |$$)" 2>/dev/null || true
 	systemctl --user start drove.service
 	@echo "Service installed and started."
 	@echo "To start at boot without login: loginctl enable-linger $$USER"
@@ -103,7 +108,7 @@ service-stop:
 	systemctl --user stop drove.service
 
 service-restart:
-	systemctl --user restart drove.service	
+	systemctl --user restart drove.service
 
 service-status:
 	systemctl --user status drove.service

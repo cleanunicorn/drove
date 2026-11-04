@@ -33,6 +33,7 @@ bullet describing the user-visible impact.
 make lint
 make typecheck
 make test
+make cov        # optional, report-only coverage
 ```
 
 For Python formatting, run `make fmt` before lint. Use the make targets rather

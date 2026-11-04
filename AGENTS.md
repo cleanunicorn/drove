@@ -51,6 +51,7 @@ here.
 - **Format:** `make fmt` (`ruff format .`)
 - **Type-check:** `make typecheck` (`mypy src/`, strict)
 - **Test (all):** `make test` (`pytest`)
+- **Coverage (report only):** `make cov` (line coverage with missing lines)
 - **Test (single file / focused):** no make target exists — the one sanctioned
   raw invocation:
 
@@ -187,7 +188,7 @@ type(optional-scope): short imperative description
 ```
 
 Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
-`build`, `ci`, `chore`, `revert`. Add `!` before the colon for a breaking
+`build`, `ci`, `chore`. Add `!` before the colon for a breaking
 change.
 
 ```
@@ -425,6 +426,11 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   never the env-loaded config).
 
 ## Testing
+
+Coverage is report-only: run `make cov` to identify gaps; no global percentage
+floor is enforced. New modules should ship with tests, including TUI modules
+(using Textual pilots where appropriate). Test observable behavior and regression
+paths rather than importing modules only to raise the coverage number.
 
 - **Framework / runner:** pytest (`make test`), asyncio auto mode,
   `testpaths = ["tests"]`.

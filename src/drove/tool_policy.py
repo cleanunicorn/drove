@@ -29,6 +29,11 @@ PER_CALL_TOOLS = frozenset({"shell_execute", "write_file"})
 _GRANT_VERSION = 1
 
 
+def normalize_command(command: str) -> str:
+    """Trim only shell whitespace, identically for execution and command grants."""
+    return command.strip(" \t\n")
+
+
 def cap_output(text: str, limit: int = TOOL_OUTPUT_LIMIT) -> str:
     """Cut *text* to at most *limit* UTF-8 bytes, ending with a truncation notice.
 

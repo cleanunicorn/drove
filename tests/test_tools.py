@@ -795,3 +795,10 @@ def test_fetch_reports_dns_failures_and_http_errors(fake_net) -> None:
 
     assert isinstance(unresolved, ToolFailure) and "resolve" in unresolved
     assert isinstance(missing, ToolFailure) and "404" in missing
+
+
+def test_shell_executes_the_same_normalized_command_used_for_grants():
+    # A trailing backslash-newline changes shell semantics unless execution and
+    # approval normalize identically. The retained backslash is printed literally.
+    result = execute_tool("shell_execute", json.dumps({"command": " echo \\\n"}))
+    assert "STDOUT:\n\\\n" in result

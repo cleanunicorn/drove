@@ -27,6 +27,7 @@ from drove.tool_policy import (
     TRUNCATION_NOTICE,
     canonical_origin,
     cap_output,
+    normalize_command,
     is_blocked_address,
     join_tool_path,
     url_port,
@@ -441,6 +442,8 @@ def _clamp_timeout(value: object) -> float:
 
 def _shell_execute(args: dict[str, Any], on_output: OutputCallback | None = None) -> str:
     command = args.get("command", "")
+    if isinstance(command, str):
+        command = normalize_command(command)
     timeout = _clamp_timeout(args.get("timeout"))
 
     if not command or not isinstance(command, str):

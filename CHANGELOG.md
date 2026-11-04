@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added session and saved shell command approvals scoped to an exact command and
+  working directory; commands now trim surrounding spaces, tabs and newlines
+  consistently for approval and execution.
+
 ### Changed
 
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a

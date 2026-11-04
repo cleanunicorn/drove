@@ -1,0 +1,39 @@
+name: Check
+
+# Lint, type-check and test every pull request. release.yml calls this
+# workflow too, so every push to main is checked before semantic-release runs.
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      # Runs first: every `uv run` behind the make targets would otherwise
+      # rewrite a stale uv.lock and hide the drift.
+      - name: Lockfile in sync with pyproject.toml
+        run: uv lock --check
+
+      - name: Lint
+        run: make lint
+
+      - name: Type-check
+        run: make typecheck
+
+      - name: Test
+        run: make test

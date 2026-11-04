@@ -9,8 +9,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A red main never releases: semantic-release waits for lint, type-check and
+  # tests on this exact commit.
+  check:
+    uses: ./.github/workflows/check.yml
+    permissions:
+      contents: read
+
   release:
     name: Semantic Release
+    needs: check
     runs-on: ubuntu-latest
     permissions:
       contents: write

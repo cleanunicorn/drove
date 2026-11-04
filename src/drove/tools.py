@@ -282,7 +282,7 @@ def _dispatch(
         elif name == "list_files":
             return _list_files(args, context)
         elif name == "shell_execute":
-            return _shell_execute(args, on_output)
+            return _shell_execute(args, context, on_output)
         elif name == "fetch_url":
             return _fetch_url(args, context)
         elif name == "search_files":
@@ -440,7 +440,9 @@ def _clamp_timeout(value: object) -> float:
     return min(max(value, 1), _SHELL_MAX_TIMEOUT)
 
 
-def _shell_execute(args: dict[str, Any], on_output: OutputCallback | None = None) -> str:
+def _shell_execute(
+    args: dict[str, Any], context: ToolContext, on_output: OutputCallback | None = None
+) -> str:
     command = args.get("command", "")
     if isinstance(command, str):
         command = normalize_command(command)
@@ -450,10 +452,10 @@ def _shell_execute(args: dict[str, Any], on_output: OutputCallback | None = None
         return ToolFailure("Error: no command provided")
 
     if args.get("background", False):
-        return _start_background(command, timeout)
+        return _start_background(command, timeout, context.cwd)
 
     try:
-        stdout, stderr, returncode = _run_streaming(command, timeout, on_output)
+        stdout, stderr, returncode = _run_streaming(command, timeout, on_output, context.cwd)
     except subprocess.TimeoutExpired:
         return ToolFailure(f"Error: command timed out after {timeout:g} seconds")
     except Exception as e:
@@ -465,7 +467,7 @@ def _shell_execute(args: dict[str, Any], on_output: OutputCallback | None = None
     return output if returncode == 0 else ToolFailure(output)
 
 
-def _start_background(command: str, timeout: float) -> str:
+def _start_background(command: str, timeout: float, cwd: Path) -> str:
     with _background_lock:
         _prune_background()
         running = sum(1 for task in _background_tasks.values() if task["status"] == "running")
@@ -481,14 +483,14 @@ def _start_background(command: str, timeout: float) -> str:
             "output": "",
             "error": "",
         }
-    threading.Thread(target=_run_background, args=(task_id, command, timeout), daemon=True).start()
+    threading.Thread(target=_run_background, args=(task_id, command, timeout, cwd), daemon=True).start()
     return f"Started background task with ID: {task_id}"
 
 
-def _run_background(task_id: str, command: str, timeout: float) -> None:
+def _run_background(task_id: str, command: str, timeout: float, cwd: Path) -> None:
     update: dict[str, Any]
     try:
-        stdout, stderr, returncode = _run_streaming(command, timeout, None)
+        stdout, stderr, returncode = _run_streaming(command, timeout, None, cwd)
         update = {
             "status": "finished",
             "output": cap_output(stdout, _STDOUT_LIMIT),
@@ -529,7 +531,7 @@ def _prune_background() -> None:
 
 
 def _run_streaming(
-    command: str, timeout: float, on_output: OutputCallback | None
+    command: str, timeout: float, on_output: OutputCallback | None, cwd: Path
 ) -> tuple[str, str, int]:
     """Run *command*, draining stdout and stderr together until it exits or *timeout* passes.
 
@@ -541,6 +543,7 @@ def _run_streaming(
     proc = subprocess.Popen(
         command,
         shell=True,
+        cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,

@@ -6,7 +6,8 @@
 
 - Added session and saved shell command approvals scoped to an exact command and
   working directory; commands now trim surrounding spaces, tabs and newlines
-  consistently for approval and execution.
+  consistently for approval and execution. Shell commands, including background
+  tasks, now run in the chat’s recorded working directory.
 
 ### Changed
 

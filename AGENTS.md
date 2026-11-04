@@ -109,10 +109,13 @@ before every release, but a red check costs a round trip (see
    a version number or date. The entry must be consistent with the commit
    type. The release automation promotes `[Unreleased]` into a versioned
    section when it cuts a release.
-8. **All configuration flows through `src/drove/config.py`.** It is the only
-   place the environment (`DROVE_*`) and the TOML file are read — never read
-   env vars ad hoc in business code. Per-model settings belong in sidecar
-   TOMLs parsed by `model_config.py`, never hardcoded.
+8. **Drove configuration flows through `src/drove/config.py`.** `DROVE_*`
+   settings and the global TOML file are read only there. Reading another
+   tool's documented environment variables in the module that integrates
+   with that tool is allowed: `SHELL` in `cli/completions.py`, and
+   `XDG_CONFIG_HOME`, agent config-path variables (`OPENCODE_CONFIG`,
+   `KILO_CONFIG`) and `PI_CODING_AGENT_DIR` in `integrations.py`. Per-model
+   settings belong in sidecar TOMLs parsed by `model_config.py`, never hardcoded.
 9. **Never manually edit `project.version` in `pyproject.toml`, create
    `vX.Y.Z` tags or GitHub Releases, or add version headings to
    `CHANGELOG.md`.** python-semantic-release owns all of it; hand edits
@@ -296,7 +299,7 @@ Keep it short and useful:
 ```
 src/drove/
   config.py            Global config (pydantic-settings): ~/.config/drove/config.toml
-                       + DROVE_* env overrides — the ONLY place env is read
+                       + DROVE_* env overrides — the only reader of drove settings
   model_config.py      Per-model sidecar TOMLs → llama-server args (ctx_size,
                        n_gpu_layers, cache_*, extra_args passthrough, backend,
                        asr_model, asr_quantization, tts_*)
@@ -316,8 +319,9 @@ src/drove/
                        drove.workers.asr); onnx-asr comes with the optional
                        `drove[asr]` extra
   workers/tts_runtime/ Text-to-speech worker (worker.py) and the Kokoro, Qwen3-TTS,
-                       Chatterbox, Fish engines (engines.py), adapted from Cathy
-                       (CATHY-LICENSE); run by `uv run --python 3.12` with the
+                       Chatterbox, Fish and Kitten engines (engines.py), adapted from
+                       Cathy (CATHY-LICENSE; Kitten: KITTEN-NOTICE);
+                       run by `uv run --python 3.12` with the
                        per-engine <engine>.txt requirements, never imported by drove
   proxy.py             FastAPI reverse proxy: extracts the model from JSON or
                        multipart bodies, ensures the backend is running,
@@ -332,6 +336,8 @@ src/drove/
   observe.py           Request/response record storage
   observe_tui.py       Textual TUI browser for observe logs
   observe_web.py (+ observe_web_static/)   Small web UI for observe logs
+  chat_models.py       Chat catalog metadata and OpenAI-compatible model-list clients
+  model_picker.py      Searchable model picker shared by startup and chat
   sessions.py, tui.py, tools.py, stats.py Chat TUI app, session persistence,
                        tool execution, token/process metrics
   tool_policy.py       Chat tool approvals (cwd/remote reads, scoped grants,
@@ -341,11 +347,13 @@ src/drove/
                        models.py (list, download, add-tts, delete, info, config),
                        server.py (serve — default, status), integrate.py
                        (agent registration), completions.py, tui_logging.py
-                       (logging rerouted while a Textual app runs)
-tests/                 pytest suite, one file per module
-docs/                  architecture.md, configuration.md, deploy.md (release
-                       process), getting-started.md, cli.md, speech-to-text.md,
-                       text-to-speech.md
+                       (logging rerouted while a Textual app runs), output.py
+                       (shared CLI presentation), download_progress.py
+                       (terminal and redirected progress), quant_picker.py
+                       (quantization previews and interactive picker)
+tests/                 pytest module and feature suites — see tests/
+docs/                  User and contributor guides — index in docs/README.md;
+                       proposals/ holds design proposals
 .github/workflows/     check.yml (lock check, lint, typecheck, test), install.yml
                        (make install smoke), pr-title.yml, release.yml (check,
                        then semantic-release), claude.yml (@claude)
@@ -353,8 +361,9 @@ docs/                  architecture.md, configuration.md, deploy.md (release
 
 Layering: `proxy.py` receives requests and delegates lifecycle to
 `server_manager.py`, which picks the command via `backend.py` and resolves
-paths via `model_store.py`; settings come only from `config.py`, per-model
-overrides only from `model_config.py`. The CLI and TUI are thin fronts over
+paths via `model_store.py`; drove settings come only from `config.py`,
+per-model overrides only from `model_config.py`. Integration modules may
+read the third-party environment variables described in golden rule 8. The CLI and TUI are thin fronts over
 the same pieces.
 
 Request flow:
@@ -408,9 +417,10 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   `E`, `F`, `I`, `UP`; `make fmt` formats, `make lint` checks.
 - **Typing:** mypy strict over `src/` (`make typecheck`). `onnx_asr` is the
   only import exemption (optional extra) — don't widen it.
-- **Configuration:** global settings only via `config.py`; per-model settings
-  only via sidecar TOMLs (`drove models config` edits them). No scattered env
-  reads.
+- **Configuration:** `DROVE_*` settings and the global TOML file are read only
+  in `config.py`; per-model settings only via sidecar TOMLs (`drove models
+  config` edits them). Integration modules may read another tool's documented
+  environment variables (see golden rule 8).
 - **Interface design:** prioritize space for active content. Use thin delimiters
   and minimal padding; show diagnostics on demand. Teach one action at a time in
   a single compact guidance area, retire tips after use or dismissal, remember
@@ -428,15 +438,9 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
 
 - **Framework / runner:** pytest (`make test`), asyncio auto mode,
   `testpaths = ["tests"]`.
-- **Location & naming:** `tests/test_<module>.py`, one per source module —
-  `test_proxy.py`, `test_server_manager.py` (lifecycle, eviction races,
-  health checks), `test_config.py`, `test_model_config.py`,
-  `test_model_store.py`, `test_backend.py`, `test_asr_worker.py`,
-  `test_downloader.py`, `test_gguf.py`, `test_prompt_cache.py`,
-  `test_observe.py`, `test_observe_web.py`, `test_proxy_observe.py`,
-  `test_cli_models.py`, and the text-to-speech suites `test_tts_worker.py`,
-  `test_tts_integration.py`, `test_tts_download.py`, plus `test_workflows.py`
-  (the CI check and release-gate contract in `.github/workflows/`).
+- **Location & naming:** see `tests/` for the current suite inventory.
+  Files use `test_<module>.py` for module coverage and `test_<feature>.py`
+  for feature coverage (for example, the `test_tui_*.py` suites).
 - **What to cover:** happy path + error paths; lifecycle and eviction changes
   ship with regression tests for the race they fix (the existing suites set
   the bar).

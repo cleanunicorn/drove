@@ -23,6 +23,8 @@
 
 ### Fixed
 
+- Kept selection-start handling compatible with strict type checking.
+
 - Kept selections spanning multiple chat messages eligible for automatic copying.
 
 - Kept automatic chat copying reliable when a terminal delivered a complete mouse

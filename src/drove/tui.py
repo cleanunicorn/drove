@@ -1010,7 +1010,7 @@ class ChatApp(App[None]):
             and any(isinstance(node, Transcript) for node in widget.ancestors_with_self)
         )
 
-    def _on_selection_started(self, screen: Screen) -> None:
+    def _on_selection_started(self, screen: Screen[Any]) -> None:
         # This immediate signal runs before Textual forwards MouseDown through
         # widget queues, so a fast release cannot overtake the start callback.
         try:

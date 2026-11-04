@@ -51,6 +51,8 @@ here.
 - **Format:** `make fmt` (`ruff format .`)
 - **Type-check:** `make typecheck` (`mypy src/`, strict)
 - **Test (all):** `make test` (`pytest`)
+- **Release rehearsal:** `make release-check` — two pinned PSR releases and
+  original-commit publication retries in a disposable repository; no remote writes.
 - **Test (single file / focused):** no make target exists — the one sanctioned
   raw invocation:
 
@@ -441,7 +443,8 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   `test_downloader.py`, `test_gguf.py`, `test_prompt_cache.py`,
   `test_observe.py`, `test_observe_web.py`, `test_proxy_observe.py`,
   `test_cli_models.py`, and the text-to-speech suites `test_tts_worker.py`,
-  `test_tts_integration.py`, `test_tts_download.py`, plus `test_workflows.py`
+  `test_tts_integration.py`, `test_tts_download.py`, `test_release.py` (reviewed
+  notes promotion and retryable publication), plus `test_workflows.py`
   (the CI check and release-gate contract in `.github/workflows/`).
 - **What to cover:** happy path + error paths; lifecycle and eviction changes
   ship with regression tests for the race they fix (the existing suites set

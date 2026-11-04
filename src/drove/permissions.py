@@ -155,6 +155,23 @@ class PermissionsModal(ModalScreen[tuple[frozenset[Grant], bool] | None]):
         self.query_one("#permission-scope", Input).value = ""
         self.query_one("#permission-error", Label).update("")
 
+    def _has_unsaved_rule(self) -> bool:
+        scope = self.query_one("#permission-scope", Input).value
+        if not scope.strip():
+            return False
+        if self._editing is None:
+            return True
+        try:
+            draft = make_rule(
+                str(self.query_one("#permission-tool", Select).value),
+                scope,
+                self._cwd,
+                self.query_one("#permission-internal", Switch).value,
+            )
+        except ValueError:
+            return True
+        return draft != self.rules[self._editing]
+
     def action_cancel(self) -> None:
         self.dismiss(None)
 
@@ -164,7 +181,7 @@ class PermissionsModal(ModalScreen[tuple[frozenset[Grant], bool] | None]):
         if button == "permissions-cancel":
             self.action_cancel()
         elif button == "permissions-apply":
-            if self.query_one("#permission-scope", Input).value.strip():
+            if self._has_unsaved_rule():
                 self.query_one("#permission-error", Label).update(
                     "Save the rule or clear its scope first."
                 )

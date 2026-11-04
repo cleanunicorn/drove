@@ -20,6 +20,9 @@
 
 ### Fixed
 
+- Allowed applying chat permission changes after inspecting an unchanged rule,
+  without requiring an extra save.
+
 - `uv.lock` records the current drove version again, so `uv run` no longer
   dirties the working tree.
 

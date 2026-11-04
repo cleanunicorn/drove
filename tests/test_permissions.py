@@ -311,3 +311,35 @@ async def test_allow_always_still_joins_editor_override(tmp_path, monkeypatch):
         grant = Grant("fetch_url", origin="https://example.com:443")
         assert grant in app._policy_context().grants
         assert grant in app._configured_grants()
+
+
+async def test_inspecting_selected_rule_can_apply_but_changed_scope_requires_save(tmp_path):
+    app = app_for(tmp_path)
+    rule = make_rule("shell_execute", "git status", app._cwd)
+    async with app.run_test(size=(100, 50)) as pilot:
+        app._apply_permissions((frozenset({rule}), False))
+        await app._dispatch_command("/permissions")
+        await pilot.pause()
+        modal = app.screen
+        options = modal.query_one("#permission-rules", OptionList)
+        options.highlighted = 0
+        options.focus()
+        await pilot.press("enter")
+        modal.query_one("#permission-allow-all", Switch).value = True
+        await pilot.click("#permissions-apply")
+        await pilot.pause()
+        assert not isinstance(app.screen, PermissionsModal)
+        assert app._allow_all and app._policy_context().grants == frozenset({rule})
+        await app._dispatch_command("/permissions")
+        await pilot.pause()
+        modal = app.screen
+        options = modal.query_one("#permission-rules", OptionList)
+        options.highlighted = 0
+        options.focus()
+        await pilot.press("enter")
+        modal.query_one("#permission-scope", Input).value = "git diff"
+        await pilot.click("#permissions-apply")
+        assert isinstance(app.screen, PermissionsModal)
+        assert "Save the rule" in str(modal.query_one("#permission-error", Label).render())
+        await pilot.press("escape")
+        assert app._policy_context().grants == frozenset({rule})

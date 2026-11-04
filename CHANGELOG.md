@@ -4,8 +4,6 @@
 
 ### Changed
 
-- Documented the release regression tests and disposable rehearsal command.
-
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for
   the same check, so a red `main` no longer cuts a version.
@@ -14,8 +12,6 @@
   assert on the body.
 
 ### Fixed
-
-- Kept release publication independent of the runner's preinstalled Python version.
 
 - Preserved reviewed changelog bullets in release notes and refreshed the lockfile
   with each version bump, and made release publication retryable from the original workflow commit.

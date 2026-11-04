@@ -174,9 +174,14 @@ class Grant:
             data["origin"] = self.origin
         if self.internal:
             data["internal"] = True
-        return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=self.command is not None)
 
     def describe(self) -> str:
+        if self.command is not None:
+            return (
+                f"{self.tool} exactly {json.dumps(self.command, ensure_ascii=True)}"
+                f" in {json.dumps(self.directory, ensure_ascii=True)}"
+            )
         if self.directory is not None:
             return f"{self.tool} in {self.directory}"
         suffix = ", including internal addresses" if self.internal else ""

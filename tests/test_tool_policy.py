@@ -474,3 +474,13 @@ def test_shell_grants_require_both_command_and_directory():
         token = {"v": 1, "tool": "shell_execute", "dir": "/tmp", "command": "ls"}
         del token[field]
         assert parse_grant(json.dumps(token)) is None
+
+
+@pytest.mark.parametrize("command", ["echo \u202e", "echo \u200b", "echo \u2028", "echo x\necho y"])
+def test_shell_scope_and_token_escape_invisible_characters(command):
+    grant = Grant("shell_execute", directory="/tmp/\u202e", command=command)
+    scope = grant.describe()
+    assert scope == f"shell_execute exactly {json.dumps(command)} in {json.dumps(grant.directory)}"
+    assert scope.isascii()
+    assert grant.token().isascii()
+    assert parse_grant(grant.token()) == grant

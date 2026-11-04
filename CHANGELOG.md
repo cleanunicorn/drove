@@ -13,6 +13,9 @@
 
 ### Fixed
 
+- Preserved reviewed changelog bullets in release notes and refreshed the lockfile
+  with each version bump, and made release publication retryable after failure.
+
 - `uv.lock` records the current drove version again, so `uv run` no longer
   dirties the working tree.
 

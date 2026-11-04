@@ -258,8 +258,8 @@ Keep it short and useful:
 - Address review feedback by pushing more commits to the same branch.
 - Mention `@claude` in a PR/issue comment to have Claude Code act on it
   (`.github/workflows/claude.yml`).
-- Maintainers squash-merge: verify the prefilled commit message is the PR title
-  alone, not the branch's commit list (see [Gotchas](#gotchas)).
+- Maintainers squash-merge: verify the prefilled commit title is the PR title
+  and the body is the PR description, preserving intentional breaking footers (see [Gotchas](#gotchas)).
 
 ## Release automation
 
@@ -268,12 +268,16 @@ Keep it short and useful:
   which is what makes the PR title become the commit message the automation
   parses.
 - **What does merging trigger?** `.github/workflows/release.yml` runs
-  [python-semantic-release](https://python-semantic-release.readthedocs.io/) v9
+  [python-semantic-release](https://python-semantic-release.readthedocs.io/) 9.21.2
   on every push to `main`, after the **Check** workflow passes on that
   commit (`needs: check`). When a release is due it bumps `project.version` in
-  `pyproject.toml`, rewrites `CHANGELOG.md` (promoting `## [Unreleased]` into a
-  versioned section), commits `chore(release): vX.Y.Z` with `[skip ci]`, tags
-  `v{version}`, and publishes a GitHub Release with the changelog as the body.
+  `pyproject.toml`, runs `scripts/release.py prepare` to promote reviewed `## [Unreleased]`
+  bullets into `## vX.Y.Z (YYYY-MM-DD)` and `uv lock` to refresh the lock,
+  commits `chore(release): vX.Y.Z` with `[skip ci]`, tags
+  `v{version}`, and the workflow publishes that tag's handwritten changelog section with
+  `scripts/release.py publish` (safe to retry after publication failure).
+  PSR runs with `--no-changelog --no-vcs-release`; its build assets include
+  `CHANGELOG.md` and `uv.lock`, so versions and lock are committed together.
   There is no PyPI publish — drove is distributed via `uv tool install` from
   this GitHub repository, smoke-tested by the Install workflow.
 - **Does the PR title decide the bump?** Yes. The squash-merge commit carries
@@ -342,6 +346,8 @@ src/drove/
                        server.py (serve — default, status), integrate.py
                        (agent registration), completions.py, tui_logging.py
                        (logging rerouted while a Textual app runs)
+scripts/release.py      Handwritten release notes promotion and retryable publication
+scripts/check_release.py  Disposable two-release rehearsal (`make release-check`)
 tests/                 pytest suite, one file per module
 docs/                  architecture.md, configuration.md, deploy.md (release
                        process), getting-started.md, cli.md, speech-to-text.md,
@@ -475,9 +481,10 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   use `extra_args`. The context-size field is `ctx_size`, not `context_size`.
 - **`n_parallel` maps to `--parallel`**, not `--n-parallel` — llama-server
   rejects the latter outright and the model never starts.
-- **Squash-merge with the PR title as the commit message.** If GitHub
+- **Squash-merge with the PR title as the commit title and PR description as the body.** If GitHub
   prefills the branch's commit list instead, semantic-release parses the
-  wrong messages and the bump is wrong. Check the merge dialog.
+  wrong messages and the bump is wrong. Check the merge dialog and retain intentional breaking footers. Quote literal
+  `BREAKING CHANGE:` examples with backticks so they cannot trigger a bump.
 - **`make install` is not dev setup.** It installs a *global* uv tool
   (Python 3.14, `asr` extra by default); the dev targets work without it.
 - **Version, tags, releases, and versioned changelog sections are

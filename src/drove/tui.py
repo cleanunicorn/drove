@@ -303,6 +303,8 @@ def _markdown_parser() -> MarkdownIt:
 
 TOOL_DENIED = "Error: Tool execution denied by user."
 PERMISSIONS_OFF_LABEL = "⚠ permissions off"
+PERMISSIONS_OFF_SHORT_LABEL = "⚠ auto"
+PERMISSIONS_OFF_FULL_MIN_WIDTH = 70
 PERMISSIONS_OFF_TOOLTIP = (
     "--dangerously-skip-permissions: every tool call runs without asking, including"
     " shell commands, file writes and URL fetches. Restart without the flag to ask again."
@@ -1025,10 +1027,17 @@ class ChatApp(App[None]):
 
     def on_resize(self, event: events.Resize) -> None:
         # Reserve space for the persistent permission warning and the context meter.
-        self.set_class(event.size.width < (70 if self._skip_permissions else 50), "narrow")
+        self.set_class(
+            event.size.width < (PERMISSIONS_OFF_FULL_MIN_WIDTH if self._skip_permissions else 50),
+            "narrow",
+        )
         for badge in self.query("#permissions-off"):
             assert isinstance(badge, Label)
-            badge.update("⚠ auto" if event.size.width < 70 else PERMISSIONS_OFF_LABEL)
+            badge.update(
+                PERMISSIONS_OFF_SHORT_LABEL
+                if event.size.width < PERMISSIONS_OFF_FULL_MIN_WIDTH
+                else PERMISSIONS_OFF_LABEL
+            )
         self.set_class(event.size.height < 24, "short")
 
     def on_mount(self) -> None:

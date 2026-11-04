@@ -936,7 +936,11 @@ async def test_skip_permissions_outlasts_new_model_switch_and_session_load(tmp_p
 
 @pytest.mark.parametrize("width", [40, 49, 50, 69, 70, 100])
 async def test_skip_permissions_indicator_stays_in_the_header(tmp_path, monkeypatch, width):
-    from drove.tui import PERMISSIONS_OFF_LABEL
+    from drove.tui import (
+        PERMISSIONS_OFF_FULL_MIN_WIDTH,
+        PERMISSIONS_OFF_LABEL,
+        PERMISSIONS_OFF_SHORT_LABEL,
+    )
 
     app, _, _ = policy_app(tmp_path, monkeypatch, skip_permissions=True)
     async with app.run_test(size=(width, 24)) as pilot:
@@ -946,7 +950,11 @@ async def test_skip_permissions_indicator_stays_in_the_header(tmp_path, monkeypa
         meter.add_class("visible")
         await pilot.pause()
         badge = app.query_one("#chat-header #permissions-off", Label)
-        assert badge.render().plain == ("⚠ auto" if width < 70 else PERMISSIONS_OFF_LABEL)
+        assert badge.render().plain == (
+            PERMISSIONS_OFF_SHORT_LABEL
+            if width < PERMISSIONS_OFF_FULL_MIN_WIDTH
+            else PERMISSIONS_OFF_LABEL
+        )
         for selector in ("#brand", "#permissions-off", "#ctx-meter", "#new-chat", "#chat-details"):
             widget = app.query_one(selector)
             assert widget.region.width > 0, selector

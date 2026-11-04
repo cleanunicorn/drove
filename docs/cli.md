@@ -199,9 +199,11 @@ below it, for that one read tool (the file's directory for `read_file`), or one 
 origin for `fetch_url`. **a** saves the grant in `allowed_tools`; bare tool names there
 are ignored.
 
-**`--dangerously-skip-permissions` turns every check above off.** With it, the model
-can run any shell command, write or overwrite any file, read outside the working
-directory and fetch any URL, internal addresses included, without asking. With
+**`--dangerously-skip-permissions` skips every approval prompt above.** With it, the
+model can run shell commands, write or overwrite files, read outside the working
+directory and fetch HTTP(S) URLs, internal addresses included, without asking.
+Execution checks still apply: recursive reads stay within the approved scope,
+invalid paths and URLs still fail, and tool output is still capped. With
 `--endpoint` or a remote `--host`, whatever those tools read or print is sent to that
 server. Use it only in a disposable sandbox (a container, a VM or a scratch
 directory). It lasts for that run only: it still holds after `/new`, a model switch or

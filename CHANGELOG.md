@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Kept release publication independent of the runner's preinstalled Python version.
+
 - Preserved reviewed changelog bullets in release notes and refreshed the lockfile
   with each version bump, and made release publication retryable from the original workflow commit.
 

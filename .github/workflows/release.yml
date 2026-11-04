@@ -48,4 +48,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: python scripts/release.py publish --version "$RELEASE_VERSION"
+        run: uv run --no-project --python 3.14 python scripts/release.py publish --version "$RELEASE_VERSION"

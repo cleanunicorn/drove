@@ -86,7 +86,9 @@ Expected: `false`, `false`, `true`, `PR_TITLE`, `PR_BODY`, respectively.
    stamped project version; unrelated dependencies are not upgraded.
 5. PSR commits `pyproject.toml`, `CHANGELOG.md`, and `uv.lock` together as
    `chore(release): vX.Y.Z` with `[skip ci]`, and pushes the commit and tag.
-6. `scripts/release.py publish --version "$RELEASE_VERSION"` checks for a
+6. The workflow runs publication through `uv run --no-project --python 3.14`,
+   selecting the interpreter explicitly. `scripts/release.py publish
+   --version "$RELEASE_VERSION"` checks for a
    GitHub Release for PSR's computed version (the step's `version` output).
    A rerun checks out the original push SHA; its project version is stale, so
    publication must use PSR's output rather than the working copy. An existing release is left alone. Otherwise it

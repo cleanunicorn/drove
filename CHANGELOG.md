@@ -12,7 +12,8 @@
   reinstall recipe in the existing guides.
 - Declared directly imported CLI and validation dependencies, including TTS workers,
   and removed the unused HTTP/2 dependency extra.
-- Aligned contributor commit types with the PR title and release parser.
+- Aligned contributor commit types with the PR title and release parser, with
+  regression checks covering the release guide too.
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for
   the same check, so a red `main` no longer cuts a version.

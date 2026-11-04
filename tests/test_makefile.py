@@ -36,6 +36,9 @@ def test_commit_types_agree() -> None:
     guidance = (ROOT / "AGENTS.md").read_text()
     allowed = guidance.split("Allowed types:", 1)[1].split(". Add", 1)[0]
     assert set(re.findall(r"`([a-z]+)`", allowed)) == expected
+    deploy = (ROOT / "docs/deploy.md").read_text()
+    deploy_types = deploy.split("Allowed types", 1)[1].split("```", 2)[1]
+    assert set(re.findall(r"[a-z]+", deploy_types)) == expected
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="pkill session isolation uses Linux -s")

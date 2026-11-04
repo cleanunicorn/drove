@@ -22,6 +22,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.errors import NoWidget
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -924,6 +925,7 @@ class ChatApp(App[None]):
         self._tool_seconds = 0
         self._completed_hints: set[ChatHint] = set()
         self._hint_save_failed = False
+        self._transcript_selection_started = False
         if config_path is not None:
             try:
                 self._completed_hints.update(load_config(config_path).tui_completed_hints)
@@ -1000,10 +1002,51 @@ class ChatApp(App[None]):
 
         self.push_screen(ChatDetails(self._details_text()), focus_input)
 
+    def _is_transcript_selection_target(self, widget: Widget | None) -> bool:
+        return (
+            self.screen is self.screen_stack[0]
+            and widget is not None
+            and widget.allow_select
+            and any(isinstance(node, Transcript) for node in widget.ancestors_with_self)
+        )
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        try:
+            widget, _ = self.get_widget_at(event.screen_x, event.screen_y)
+        except NoWidget:
+            widget = None
+        self._transcript_selection_started = (
+            event.button == 1 and self._is_transcript_selection_target(widget)
+        )
+
+    def on_text_selected(self, event: events.TextSelected) -> None:
+        # Textual emits this on every mouse release, even for a scrollbar/composer drag
+        # that leaves an earlier transcript selection intact.
+        started, self._transcript_selection_started = self._transcript_selection_started, False
+        if started:
+            self._copy_transcript_selection()
+
+    def _copy_transcript_selection(self) -> None:
+        if self.screen is not self.screen_stack[0]:
+            return
+        transcript = self.query_one(Transcript)
+        if any(transcript not in widget.ancestors_with_self for widget in self.screen.selections):
+            return  # ignore selections extending into controls or other non-transcript text
+        selected = self.screen.get_selected_text()
+        if selected:
+            self.copy_to_clipboard(selected)
+
     def on_click(self, event: events.Click) -> None:
         """Return focus to the composer after a click on anything but a control."""
         if self.screen is not self.screen_stack[0] or event.widget is None:
             return  # modal screens keep their own focus handling
+        if (
+            event.chain >= 2
+            and event.button == 1
+            and self._is_transcript_selection_target(event.widget)
+        ):
+            # Textual handles double/triple-click selection after the release event.
+            self.call_after_refresh(self._copy_transcript_selection)
         for node in event.widget.ancestors_with_self:
             if isinstance(node, Widget) and node.focusable and node.focus_on_click():
                 return  # a real control: the composer, autocomplete, a collapsible title…

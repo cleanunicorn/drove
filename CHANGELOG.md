@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Chat automatically copied mouse-selected transcript text to the terminal clipboard
+  when selection finished, while preserving the composer draft and explicit copy shortcuts.
+
 ### Changed
 
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a

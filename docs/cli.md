@@ -235,10 +235,15 @@ picker copies the current block without its fences, preserving code whitespace;
 Esc closes the picker. These keys apply only while a message is focused. Return to
 the input with Tab, or click anywhere outside a button or dialog, to continue typing.
 Clicking a message never moves focus off the input, so mouse text selection and
-scrolling leave your draft ready to type into.
+scrolling leave your draft ready to type into. Releasing a non-empty mouse selection
+in the transcript automatically copies the selected rendered text, including code
+snippets, replacing the clipboard without a notification. Double-click selections
+also copy; a triple click selects and copies the containing scrollable area (usually
+the whole transcript, or a code block). Selections extending outside the transcript
+are ignored. Plain clicks and composer selections do not automatically copy.
 
 Copying sends an OSC52 clipboard request to the terminal. The terminal must support
-and allow clipboard writes; macOS Terminal does not. The confirmation means the
+and allow clipboard writes; macOS Terminal does not. For explicit copy actions, the confirmation means the
 request was sent, not that the operating-system clipboard was verified.
 
 Connection errors suggest `drove server status` and `drove serve`. Proxy errors show

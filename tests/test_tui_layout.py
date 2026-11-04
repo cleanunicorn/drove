@@ -401,7 +401,10 @@ async def test_transcript_drag_selection_is_copied_with_input_focused(tmp_path, 
         await pilot.pause()
         selected = app.screen.get_selected_text()
         assert selected
+        copied.assert_called_once_with(selected)  # mouse release copies before any shortcut
+        assert composer.text == "my draft"
         assert isinstance(app.focused, ChatInput)
+        copied.reset_mock()
         # Starting the drag dropped the draft selection, so the composer's copy binding
         # skips and the screen copies the transcript selection.
         assert not composer.selected_text
@@ -411,3 +414,147 @@ async def test_transcript_drag_selection_is_copied_with_input_focused(tmp_path, 
         composer.select_all()  # a newer draft selection wins over the transcript one
         await pilot.press("super+c")
         copied.assert_called_with("my draft")
+
+
+async def drag_content(pilot, widget, start, end):
+    """Drag between content cells, independent of a widget's padding/border."""
+    x, y = widget.content_region.offset
+    await pilot.mouse_down(offset=(x + start[0], y + start[1]))
+    await pilot.hover(offset=(x + end[0], y + end[1]))
+    await pilot.mouse_up(offset=(x + end[0], y + end[1]))
+    await pilot.pause()
+
+
+@pytest.mark.parametrize(
+    ("role", "content", "selector", "start", "end", "expected"),
+    [
+        ("user", "First question", ".message-body", (0, 0), (5, 0), "First"),
+        ("assistant", "A **bold** answer", "MarkdownParagraph", (2, 0), (6, 0), "bold"),
+        (
+            "assistant",
+            "```python\nalpha = 1\nbeta = 2\n```",
+            "MarkdownFence Label",
+            (2, 0),
+            (4, 1),
+            "pha = 1\nbeta",
+        ),
+        (
+            "user",
+            "First question\nSecond line",
+            ".message-body",
+            (6, 1),
+            (6, 0),
+            "question\nSecond",
+        ),
+    ],
+)
+async def test_mouse_selection_copies_exact_rendered_text(
+    tmp_path, monkeypatch, role, content, selector, start, end, expected
+):
+    messages = [{"role": role, "content": content}]
+    if role == "assistant":
+        messages.insert(0, {"role": "user", "content": "Question"})
+    app = resumed_chat(tmp_path, messages)
+    copied = Mock()
+    async with app.run_test(size=(100, 40)) as pilot:
+        message = (await wait_for_messages(pilot, app, len(messages)))[-1]
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        await drag_content(pilot, message.query_one(selector), start, end)
+        assert app.screen.get_selected_text() == expected
+        copied.assert_called_once_with(expected)
+        assert isinstance(app.focused, ChatInput)
+
+
+async def test_click_and_empty_selection_do_not_copy(tmp_path, monkeypatch):
+    app = resumed_chat(tmp_path)
+    copied = Mock()
+    async with app.run_test(size=(100, 40)) as pilot:
+        user, _ = await wait_for_messages(pilot, app, 2)
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        body = user.query_one(".message-body")
+        await drag_content(pilot, body, (0, 0), (5, 0))
+        copied.assert_called_once_with("First")
+        copied.reset_mock()
+        await pilot.click(body)
+        await pilot.pause()
+        copied.assert_not_called()
+        await drag_content(pilot, body, (30, 0), (35, 0))
+        assert not app.screen.get_selected_text()
+        copied.assert_not_called()
+
+
+async def test_composer_and_modal_drags_do_not_copy_old_transcript_selection(tmp_path, monkeypatch):
+    app = resumed_chat(tmp_path)
+    copied = Mock()
+    async with app.run_test(size=(100, 40)) as pilot:
+        user, _ = await wait_for_messages(pilot, app, 2)
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        await drag_content(pilot, user.query_one(".message-body"), (0, 0), (5, 0))
+        copied.assert_called_once_with("First")
+        copied.reset_mock()
+        composer = app.query_one(ChatInput)
+        composer.insert("draft stays here")
+        await drag_content(pilot, composer, (0, 0), (5, 0))
+        assert composer.text == "draft stays here"
+        copied.assert_not_called()
+        await pilot.click(composer, times=2)
+        await pilot.pause()
+        copied.assert_not_called()
+        await pilot.click("#chat-details")
+        await pilot.pause()
+        label = app.screen.query_one(Label)
+        await drag_content(pilot, label, (0, 0), (5, 0))
+        copied.assert_not_called()
+
+
+@pytest.mark.parametrize("times", [2, 3])
+async def test_repeated_click_selection_copies(tmp_path, monkeypatch, times):
+    app = resumed_chat(tmp_path, [{"role": "user", "content": "First question"}])
+    copied = Mock()
+    async with app.run_test(size=(100, 40)) as pilot:
+        [user] = await wait_for_messages(pilot, app, 1)
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        await pilot.click(user.query_one(".message-body"), times=times)
+        await pilot.pause()
+        selected = app.screen.get_selected_text()
+        expected = "First question" if times == 2 else "\nYou\nFirst question"
+        assert selected == expected
+        copied.assert_called_with(expected)
+
+
+async def test_scrollbar_drag_does_not_copy_old_selection(tmp_path, monkeypatch):
+    messages = [{"role": "user", "content": f"Message {i}"} for i in range(30)]
+    app = resumed_chat(tmp_path, messages)
+    copied = Mock()
+    async with app.run_test(size=(80, 24)) as pilot:
+        bubbles = await wait_for_messages(pilot, app, 30)
+        transcript = app.query_one(Transcript)
+        transcript.scroll_home(animate=False)
+        await pilot.pause()
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        await drag_content(pilot, bubbles[0].query_one(".message-body"), (0, 0), (7, 0))
+        copied.assert_called_once_with("Message")
+        copied.reset_mock()
+        scrollbar = transcript.vertical_scrollbar
+        assert scrollbar.region.area
+        await drag_content(pilot, scrollbar, (0, 0), (0, 2))
+        copied.assert_not_called()
+
+
+async def test_selection_extending_outside_transcript_is_not_copied(tmp_path, monkeypatch):
+    app = resumed_chat(tmp_path)
+    copied = Mock()
+    async with app.run_test(size=(100, 40)) as pilot:
+        user, _ = await wait_for_messages(pilot, app, 2)
+        status = app.query_one("#guidance-label", Label)
+        status.update("Outside transcript")
+        await pilot.pause()
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        x, y = user.query_one(".message-body").content_region.offset
+        end_x, end_y = status.content_region.offset
+        await pilot.mouse_down(offset=(x, y))
+        await pilot.hover(offset=(end_x + 7, end_y))
+        await pilot.mouse_up(offset=(end_x + 7, end_y))
+        await pilot.pause()
+        assert status in app.screen.selections
+        copied.assert_not_called()

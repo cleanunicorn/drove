@@ -64,6 +64,12 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A never-awaited coroutine (e.g. an AsyncMock where a plain callable belongs)
+# means a code path silently never ran; fail the suite instead of warning.
+filterwarnings = [
+    "error::RuntimeWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.mypy]
 python_version = "3.14"

@@ -9,6 +9,9 @@
 
 ### Changed
 
+- Expanded chat selection regression coverage across messages, repeated clicks
+  and expanded reasoning text.
+
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for
   the same check, so a red `main` no longer cuts a version.
@@ -17,6 +20,8 @@
   assert on the body.
 
 ### Fixed
+
+- Kept selections spanning multiple chat messages eligible for automatic copying.
 
 - Kept automatic chat copying reliable when a terminal delivered a complete mouse
   selection before its mouse-down event finished passing through the widgets.

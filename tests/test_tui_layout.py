@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import httpx
 import pytest
 from textual.events import MouseDown, MouseMove, MouseScrollDown, MouseUp
-from textual.widgets import Button, DataTable, Label, OptionList
+from textual.widgets import Button, Collapsible, DataTable, Label, OptionList
 
 from drove.chat_models import ChatModel
 from drove.model_picker import ModelPicker
@@ -509,10 +509,16 @@ async def test_composer_and_modal_drags_do_not_copy_old_transcript_selection(tmp
 
 @pytest.mark.parametrize("times", [2, 3])
 async def test_repeated_click_selection_copies(tmp_path, monkeypatch, times):
-    app = resumed_chat(tmp_path, [{"role": "user", "content": "First question"}])
+    app = resumed_chat(
+        tmp_path,
+        [
+            {"role": "user", "content": "First question"},
+            {"role": "user", "content": "Second question"},
+        ],
+    )
     copied = Mock()
     async with app.run_test(size=(100, 40)) as pilot:
-        [user] = await wait_for_messages(pilot, app, 1)
+        user, _ = await wait_for_messages(pilot, app, 2)
         monkeypatch.setattr(app, "copy_to_clipboard", copied)
         await pilot.click(user.query_one(".message-body"), times=times)
         await pilot.pause()
@@ -576,3 +582,43 @@ async def test_fast_drag_copies_before_mouse_down_bubbles(tmp_path, monkeypatch)
         await pilot.pause()
         assert app.screen.get_selected_text() == "First"
         copied.assert_called_once_with("First")
+
+
+async def test_mouse_selection_across_messages_copies_exact_text(tmp_path, monkeypatch):
+    app = resumed_chat(
+        tmp_path,
+        [
+            {"role": "user", "content": "First question"},
+            {"role": "user", "content": "Second question"},
+        ],
+    )
+    copied = Mock()
+    async with app.run_test(size=(100, 40)) as pilot:
+        first, second = await wait_for_messages(pilot, app, 2)
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        x, y = first.query_one(".message-body").content_region.offset
+        end_x, end_y = second.query_one(".message-body").content_region.offset
+        await pilot.mouse_down(offset=(x + 6, y))
+        await pilot.hover(offset=(end_x + 6, end_y))
+        await pilot.mouse_up(offset=(end_x + 6, end_y))
+        await pilot.pause()
+        selected = app.screen.get_selected_text()
+        assert selected is not None
+        # Textual includes blank container separators; their position may vary for
+        # widgets sharing a row. Keep every separator exactly as explicitly copied.
+        assert [line for line in selected.splitlines() if line] == ["question", "You", "Second"]
+        copied.assert_called_once_with(selected)
+
+
+async def test_expanded_reasoning_selection_copies(tmp_path, monkeypatch):
+    app = resumed_chat(tmp_path)
+    copied = Mock()
+    async with app.run_test(size=(100, 40)) as pilot:
+        _, assistant = await wait_for_messages(pilot, app, 2)
+        await assistant.append_thinking("Reasoning detail")
+        assistant.query_one(Collapsible).collapsed = False
+        await pilot.pause()
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        await drag_content(pilot, assistant.query_one(f"#thinking-{id(assistant)}"), (0, 0), (9, 0))
+        assert app.screen.get_selected_text() == "Reasoning"
+        copied.assert_called_once_with("Reasoning")

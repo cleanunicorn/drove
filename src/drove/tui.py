@@ -1030,8 +1030,13 @@ class ChatApp(App[None]):
         if self.screen is not self.screen_stack[0]:
             return
         transcript = self.query_one(Transcript)
-        if any(transcript not in widget.ancestors_with_self for widget in self.screen.selections):
-            return  # ignore selections extending into controls or other non-transcript text
+        for widget, selection in self.screen.selections.items():
+            if transcript not in widget.ancestors_with_self:
+                text = widget.get_selection(selection)
+                if text is not None and text[0]:
+                    return  # ignore actual selected text outside the transcript
+                # Multi-widget selections also include overlapping, empty ancestor
+                # containers. They add native separators, not out-of-scope content.
         selected = self.screen.get_selected_text()
         if selected:
             self.copy_to_clipboard(selected)

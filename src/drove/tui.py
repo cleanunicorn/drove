@@ -1280,7 +1280,6 @@ class ChatApp(App[None]):
         self._session = session
         self._system_prompt = session.system_prompt
         self._reset_permissions()
-        self._call_grant = None
         self._history = cap_tool_messages(session.messages)
         self._last_speed = self._last_ttft = None
         self._last_usage = {}

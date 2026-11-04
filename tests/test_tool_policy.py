@@ -449,6 +449,7 @@ def test_shell_grants_match_only_command_and_exact_cwd(tree, remote, background)
     ]:
         decision = decide("shell_execute", json.dumps({"command": command}), ctx)
         assert decision.prompt and decision.scoped_choices
+        assert ("not local" in decision.reason) == remote
     for other in [cwd / "sub", tree["outside"]]:
         assert decide(
             "shell_execute", '{"command":"git status"}', context(other, grants=ctx.grants)

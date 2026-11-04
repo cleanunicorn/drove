@@ -5,7 +5,8 @@
 ### Added
 
 - Added session and saved shell command approvals scoped to an exact command and
-  working directory.
+  working directory, with a remote-endpoint disclosure when granting commands
+  whose output goes to a remote model.
 
 ### Changed
 

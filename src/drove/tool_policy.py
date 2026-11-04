@@ -314,7 +314,12 @@ def _decide_shell(arguments: str, ctx: PolicyContext) -> Decision:
     grant = Grant(
         "shell_execute", directory=str(ctx.cwd.resolve()), command=normalize_command(command)
     )
-    return Decision(prompt=grant not in ctx.grants, grant=grant, scoped_choices=True)
+    reason = (
+        "The chat endpoint is not local: the command's output is sent to a remote server."
+        if ctx.remote_endpoint
+        else ""
+    )
+    return Decision(prompt=grant not in ctx.grants, grant=grant, scoped_choices=True, reason=reason)
 
 
 def _decide_read(name: str, args: dict[str, Any], ctx: PolicyContext) -> Decision:

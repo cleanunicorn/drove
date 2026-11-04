@@ -363,8 +363,8 @@ Layering: `proxy.py` receives requests and delegates lifecycle to
 `server_manager.py`, which picks the command via `backend.py` and resolves
 paths via `model_store.py`; drove settings come only from `config.py`,
 per-model overrides only from `model_config.py`. Integration modules may
-read the third-party environment variables described in golden rule 8. The CLI and TUI are thin fronts over
-the same pieces.
+read the third-party environment variables described in golden rule 8.
+The CLI and TUI are thin fronts over the same pieces.
 
 Request flow:
 

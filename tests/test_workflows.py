@@ -45,6 +45,8 @@ def test_check_job_runs_every_quality_command_in_order() -> None:
 def test_check_job_steps_are_blocking() -> None:
     job = load("check.yml")["jobs"]["check"]
     assert not job.get("continue-on-error", False)
+    # A job-level condition would skip the whole check, leaving no red status.
+    assert "if" not in job
     for step in job["steps"]:
         assert not step.get("continue-on-error", False), step.get("name")
         assert "if" not in step, step.get("name")

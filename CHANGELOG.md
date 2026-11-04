@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/permissions` in chat to inspect and edit conversation-scoped tool rules,
+  including exact shell commands and write directories, and explicitly enable or
+  disable Allow all with a visible status indicator. Changes stayed in the current
+  conversation; Cancel discarded edits and new conversations restored defaults.
+
 ### Changed
 
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a

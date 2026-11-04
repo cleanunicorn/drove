@@ -228,6 +228,7 @@ class ToolContext:
     """What the chat approved for one call. Direct callers may leave it out.
 
     *read_roots* limits the directories read tools open (None: no limit).
+    *write_roots* limits editor-approved writes (None: per-call approval or Allow all).
     *approved_origins* are the scheme://host:port origins fetch_url may reach (None:
     any public one), and *internal_origins* those that may also resolve to internal
     addresses. *approve_origin* asks the user about any other origin met on the way.
@@ -235,6 +236,7 @@ class ToolContext:
 
     cwd: Path = field(default_factory=Path.cwd)
     read_roots: tuple[Path, ...] | None = None
+    write_roots: tuple[Path, ...] | None = None
     approved_origins: set[str] | None = None
     internal_origins: set[str] = field(default_factory=set)
     approve_origin: OriginApproval | None = None
@@ -385,8 +387,15 @@ def _write_file(args: dict[str, Any], context: ToolContext) -> str:
     content = args.get("content", "")
     if not isinstance(content, str):
         return ToolFailure("Error: content must be a string")
+
+    def check_scope() -> None:
+        if context.write_roots is not None and not _within_roots(path, context.write_roots):
+            raise _Refused(f"Error: {path} resolves outside the approved write directories")
+
+    check_scope()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        check_scope()
         path.write_text(content, encoding="utf-8")
     except OSError as e:
         return ToolFailure(f"Error writing file: {e}")

@@ -23,7 +23,7 @@ TOOL_OUTPUT_LIMIT = 64 * 1024
 TRUNCATION_NOTICE = "\n… [output truncated]"
 
 READ_TOOLS = frozenset({"read_file", "list_files", "search_files"})
-#: Tools that always ask, once per call: no session or saved grant applies to them.
+#: Tools that ask per call by default; only the conversation editor can grant them.
 PER_CALL_TOOLS = frozenset({"shell_execute", "write_file"})
 
 _GRANT_VERSION = 1
@@ -149,16 +149,20 @@ def is_local_endpoint(base_url: str) -> bool:
 
 @dataclass(frozen=True)
 class Grant:
-    """Permission for one tool on one directory (and below) or one exact origin."""
+    """Permission on a directory, exact origin, or editor-only exact command and cwd."""
 
     tool: str
     directory: str | None = None
     origin: str | None = None  # fetch only: scheme://host:port, see canonical_origin
     internal: bool = False  # fetch only: the host may resolve to an internal address
 
+    command: str | None = None  # editor only: exact trimmed shell command, bound to directory
+
     def token(self) -> str:
         """The canonical string stored in ``allowed_tools``."""
         data: dict[str, Any] = {"v": _GRANT_VERSION, "tool": self.tool}
+        if self.command is not None:
+            data["command"] = self.command
         if self.directory is not None:
             data["dir"] = self.directory
         if self.origin is not None:
@@ -168,6 +172,8 @@ class Grant:
         return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
     def describe(self) -> str:
+        if self.command is not None:
+            return f"{self.tool}: {self.command!r} in {self.directory}"
         if self.directory is not None:
             return f"{self.tool} in {self.directory}"
         suffix = ", including internal addresses" if self.internal else ""
@@ -211,6 +217,8 @@ class PolicyContext:
     cwd: Path  # resolved
     remote_endpoint: bool
     grants: frozenset[Grant] = frozenset()
+    allow_all: bool = False
+    managed: bool = False  # conversation editor may authorize shell/write rules
 
 
 @dataclass(frozen=True)
@@ -247,7 +255,31 @@ def decide(name: str, arguments: str, ctx: PolicyContext) -> Decision:
     Calls whose arguments the tool itself rejects need no prompt: they fail before
     doing anything.
     """
+    if ctx.allow_all:
+        return _NO_PROMPT
     if name in PER_CALL_TOOLS:
+        if ctx.managed:
+            try:
+                args = json.loads(arguments)
+                if not isinstance(args, dict):
+                    return Decision(prompt=True)
+                for grant in ctx.grants:
+                    if grant.tool != name or grant.directory is None:
+                        continue
+                    if name == "shell_execute":
+                        command = args.get("command")
+                        if (
+                            isinstance(command, str)
+                            and grant.command is not None
+                            and command.strip() == grant.command
+                            and grant.directory == str(ctx.cwd)
+                        ):
+                            return Decision(prompt=False, grant=grant)
+                    elif isinstance(args.get("path"), str):
+                        if resolve_path(args["path"], ctx.cwd).is_relative_to(grant.directory):
+                            return Decision(prompt=False, grant=grant)
+            except ValueError, OSError, RuntimeError:
+                pass
         return Decision(prompt=True)
     if name not in READ_TOOLS and name != "fetch_url":
         return _NO_PROMPT

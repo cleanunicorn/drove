@@ -175,7 +175,41 @@ Tool confirmation shortcuts are **y** (allow once), **n** or **Esc** (deny once)
 **s** (allow for this session), and **a** (allow always). Esc in this dialog denies
 the call rather than stopping the whole turn.
 
-What asks for approval:
+Use `/permissions` (also listed by `/help` and autocomplete) to inspect and stage
+permissions before a tool asks. Select a rule to edit it, or choose **New rule**;
+choose a readable tool name, enter the scope, then **Save rule**. **Remove** deletes
+the selected rule from the draft. **Apply** installs the draft; **Cancel** or **Esc**
+leaves the active permissions unchanged. Save or clear a pending scope before Apply.
+The editor is available while no reply or queued prompt is pending.
+
+Rules identify their tool, scope and lifetime. Read and write scopes are directories
+and their descendants, with `~` and relative paths resolved against the working
+directory. Shell scopes match the exact command after trimming surrounding
+whitespace, in this chat's working directory, including background calls and any
+timeout; there are no prefix or glob matches. Fetch scopes name one HTTP(S) origin
+(scheme, host, port), with a separate option for private/internal addresses.
+Remote reads still ask on every call, even with a directory rule; the editor marks
+these rules inactive. Local reads inside the working directory and background-task
+status checks already need no approval.
+
+**Allow all** explicitly permits every chat tool without approval, including shell
+commands, writes, remote reads and private-address fetches and redirects. Its active
+state stays visible in the chat status bar. Turn it off and Apply to return to the
+rules in the editor. Argument validation, output caps, timeouts, DNS pinning and URL
+validation still apply. Changes affect subsequent tool calls; the editor cannot
+change an already running call.
+
+Editor changes, including Allow all and shell/write rules, last only for the current
+conversation. `/new`, `/clear`, switching model, or loading a saved conversation
+clears them. They are never saved to config or conversation files. Saved config
+rules appear as **saved defaults**; removing or changing one in this editor overrides
+it for this conversation only, and a new conversation restores the saved default.
+Later **Allow for session** or **Allow always** directory/origin approvals join the
+active rules; **Allow always** also updates the saved config as before. The editor
+does not add new persistent shell/write token formats (see #158 for that separate
+proposal).
+
+What asks for approval by default (before editor overrides or Allow all):
 
 - `read_file`, `list_files` and `search_files` run without asking inside the
   directory `drove chat` was started in, and ask for anything outside it. Paths are

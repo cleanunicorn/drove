@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from drove.chat_models import CatalogError, ChatModel
@@ -221,9 +222,15 @@ def test_skip_permissions_flag_is_opt_in_per_run(flags: list[str], expected: boo
     assert chat.call_args.kwargs["skip_permissions"] is expected
 
 
-def test_help_lists_skip_permissions_with_its_risk() -> None:
-    result = CliRunner().invoke(app, ["chat", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1"})
+@pytest.mark.parametrize("force_terminal", [False, True])
+def test_help_lists_skip_permissions_with_its_risk(monkeypatch, force_terminal: bool) -> None:
+    # Typer detects CI at import time and Rich can style parts of a flag separately.
+    # Fix its console width so truncation and terminal detection cannot hide the text.
+    monkeypatch.setattr("typer.rich_utils.MAX_WIDTH", 200)
+    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", force_terminal)
+    result = CliRunner().invoke(app, ["chat", "--help"], env={"NO_COLOR": "1", "TERM": "xterm"})
     assert result.exit_code == 0
-    assert "--dangerously-skip-permissions" in result.output
-    assert "DANGEROUS: run every tool call without asking" in result.output
-    assert "disposable sandbox" in result.output
+    output = unstyle(result.output)
+    assert "--dangerously-skip-permissions" in output
+    assert "DANGEROUS: run every tool call without asking" in output
+    assert "disposable sandbox" in output

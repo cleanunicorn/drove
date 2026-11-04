@@ -9,6 +9,8 @@
 
 ### Changed
 
+- Made chat permission help regression checks independent of terminal styling and width.
+
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for
   the same check, so a red `main` no longer cuts a version.

@@ -5,7 +5,7 @@
 ### Added
 
 - Added `drove chat --dangerously-skip-permissions` to bypass tool confirmations
-  for one run, with a persistent warning across terminal sizes and no saved permission grants.
+  for one run, with a persistent warning (compact `UNSAFE` in narrow terminals) and no saved permission grants.
 
 ### Changed
 

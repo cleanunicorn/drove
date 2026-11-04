@@ -206,8 +206,8 @@ directory and fetch any URL, internal addresses included, without asking. With
 server. Use it only in a disposable sandbox (a container, a VM or a scratch
 directory). It lasts for that run only: it still holds after `/new`, a model switch or
 loading a session, it saves nothing to `allowed_tools`, and the chat header shows
-**⚠ permissions off** (shortened to **⚠ auto** in narrow terminals) for as long as it is on. Start `drove chat` without the flag to
-be asked again.
+**⚠ permissions off** (shortened to **UNSAFE** in narrow terminals) for as long as
+it is on. Start `drove chat` without the flag to be asked again.
 
 Limits: every tool result is cut to 64 KiB with an `… [output truncated]` notice before
 it reaches the model or a saved session. `read_file` returns 200 lines unless `limit`

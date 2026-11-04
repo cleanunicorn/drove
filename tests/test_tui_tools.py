@@ -934,9 +934,10 @@ async def test_skip_permissions_outlasts_new_model_switch_and_session_load(tmp_p
     assert config.read_bytes() == before
 
 
-@pytest.mark.parametrize("width", [40, 49, 50, 69, 70, 100])
+@pytest.mark.parametrize("width", [40, 49, 50, 58, 59, 60, 69, 70, 100])
 async def test_skip_permissions_indicator_stays_in_the_header(tmp_path, monkeypatch, width):
     from drove.tui import (
+        PERMISSIONS_OFF_CONTROLS_MIN_WIDTH,
         PERMISSIONS_OFF_FULL_MIN_WIDTH,
         PERMISSIONS_OFF_LABEL,
         PERMISSIONS_OFF_SHORT_LABEL,
@@ -961,6 +962,11 @@ async def test_skip_permissions_indicator_stays_in_the_header(tmp_path, monkeypa
             assert app.query_one("#chat-header").content_region.contains_region(widget.region), (
                 selector
             )
+        for selector in ("#change-model", "#open-sessions"):
+            widget = app.query_one(selector)
+            assert widget.display is (width >= PERMISSIONS_OFF_CONTROLS_MIN_WIDTH)
+            if widget.display:
+                assert app.query_one("#chat-header").content_region.contains_region(widget.region)
         assert "--dangerously-skip-permissions" in str(badge.tooltip)
         await app._dispatch_command("/new")
         await pilot.pause()

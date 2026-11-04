@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 import httpx
 import pytest
-from textual.events import MouseScrollDown
+from textual.events import MouseDown, MouseMove, MouseScrollDown, MouseUp
 from textual.widgets import Button, DataTable, Label, OptionList
 
 from drove.chat_models import ChatModel
@@ -558,3 +558,21 @@ async def test_selection_extending_outside_transcript_is_not_copied(tmp_path, mo
         await pilot.pause()
         assert status in app.screen.selections
         copied.assert_not_called()
+
+
+async def test_fast_drag_copies_before_mouse_down_bubbles(tmp_path, monkeypatch):
+    app = resumed_chat(tmp_path)
+    copied = Mock()
+    async with app.run_test(size=(100, 40)) as pilot:
+        user, _ = await wait_for_messages(pilot, app, 2)
+        monkeypatch.setattr(app, "copy_to_clipboard", copied)
+        x, y = user.query_one(".message-body").content_region.offset
+        # A real terminal may queue the whole gesture before the widget's MouseDown
+        # has bubbled back to the app. Do not pause between incoming input events.
+        for event_type, position in [(MouseDown, x), (MouseMove, x + 5), (MouseUp, x + 5)]:
+            app.post_message(
+                event_type(None, position, y, 0, 0, 1, False, False, False, position, y)
+            )
+        await pilot.pause()
+        assert app.screen.get_selected_text() == "First"
+        copied.assert_called_once_with("First")

@@ -18,6 +18,9 @@
 
 ### Fixed
 
+- Kept automatic chat copying reliable when a terminal delivered a complete mouse
+  selection before its mouse-down event finished passing through the widgets.
+
 - `uv.lock` records the current drove version again, so `uv run` no longer
   dirties the working tree.
 

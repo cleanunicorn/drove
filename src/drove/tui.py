@@ -24,7 +24,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.errors import NoWidget
 from textual.reactive import reactive
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import (
     Button,
@@ -1010,14 +1010,14 @@ class ChatApp(App[None]):
             and any(isinstance(node, Transcript) for node in widget.ancestors_with_self)
         )
 
-    def on_mouse_down(self, event: events.MouseDown) -> None:
+    def _on_selection_started(self, screen: Screen) -> None:
+        # This immediate signal runs before Textual forwards MouseDown through
+        # widget queues, so a fast release cannot overtake the start callback.
         try:
-            widget, _ = self.get_widget_at(event.screen_x, event.screen_y)
+            widget, _ = screen.get_widget_at(*self.mouse_position)
         except NoWidget:
             widget = None
-        self._transcript_selection_started = (
-            event.button == 1 and self._is_transcript_selection_target(widget)
-        )
+        self._transcript_selection_started = self._is_transcript_selection_target(widget)
 
     def on_text_selected(self, event: events.TextSelected) -> None:
         # Textual emits this on every mouse release, even for a scrollbar/composer drag
@@ -1057,6 +1057,9 @@ class ChatApp(App[None]):
         self.set_class(event.size.height < 24, "short")
 
     def on_mount(self) -> None:
+        self.screen.text_selection_started_signal.subscribe(
+            self, self._on_selection_started, immediate=True
+        )
         self.title = "drove chat"
         self._tool_timer = self.set_interval(0.1, self._tick_tool, pause=True)
         self.run_worker(self._refresh_context_length(), exit_on_error=False)

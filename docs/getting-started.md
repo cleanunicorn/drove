@@ -143,7 +143,7 @@ For an install constrained to the checked-in lock, run from the repository:
 
 ```bash
 uv export --frozen --no-dev --extra asr --no-emit-project --format requirements.txt --output-file /tmp/drove-constraints.txt
-uv tool install --force --python 3.14 --constraint /tmp/drove-constraints.txt '.[asr]'
+uv tool install --force --reinstall-package drove --python 3.14 --constraint /tmp/drove-constraints.txt '.[asr]'
 ```
 
 The lock must match the checkout. Development targets use `uv run` and the

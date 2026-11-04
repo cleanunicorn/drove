@@ -239,7 +239,8 @@ scrolling leave your draft ready to type into. Releasing a non-empty mouse selec
 in the transcript automatically copies the selected rendered text, including code
 snippets, replacing the clipboard without a notification. Double- and triple-click
 selections also copy exactly the text highlighted by the chat interface. Selections
-extending outside the transcript are ignored. Plain clicks and composer selections do not automatically copy.
+extending outside the transcript are ignored. Plain clicks and composer selections
+do not automatically copy.
 
 Copying sends an OSC52 clipboard request to the terminal. The terminal must support
 and allow clipboard writes; macOS Terminal does not. For explicit copy actions, the

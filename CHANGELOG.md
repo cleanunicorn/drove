@@ -4,15 +4,11 @@
 
 ### Added
 
-- Chat automatically copied mouse-selected transcript text to the terminal clipboard
-  when selection finished, while preserving the composer draft and explicit copy shortcuts.
+- Chat automatically copied non-empty transcript selections, including rendered Markdown,
+  code snippets and text spanning messages, while preserving composer drafts, focus
+  and explicit copy shortcuts.
 
 ### Changed
-
-- Rewrapped the chat copying documentation for readability.
-
-- Expanded chat selection regression coverage across messages, repeated clicks
-  and expanded reasoning text.
 
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for
@@ -22,13 +18,6 @@
   assert on the body.
 
 ### Fixed
-
-- Kept selection-start handling compatible with strict type checking.
-
-- Kept selections spanning multiple chat messages eligible for automatic copying.
-
-- Kept automatic chat copying reliable when a terminal delivered a complete mouse
-  selection before its mouse-down event finished passing through the widgets.
 
 - `uv.lock` records the current drove version again, so `uv run` no longer
   dirties the working tree.

@@ -2,15 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added report-only coverage via `make cov`.
+
 ### Changed
 
-- Added report-only coverage via `make cov` and documented unlocked CLI and TTS
-  dependency resolution, with a lock-constrained reinstall recipe in the existing guides.
+- Documented unlocked CLI and TTS dependency resolution, with a lock-constrained
+  reinstall recipe in the existing guides.
 - Declared directly imported CLI and validation dependencies, including TTS workers,
-  and removed the
-  unused HTTP/2 dependency extra.
+  and removed the unused HTTP/2 dependency extra.
 - Aligned contributor commit types with the PR title and release parser.
-
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for
   the same check, so a red `main` no longer cuts a version.
@@ -22,7 +24,6 @@
 
 - Made `service-restart` run even when a file has that name, and stopped
   hand-started `drove serve` instances before starting the systemd service.
-
 - `uv.lock` records the current drove version again, so `uv run` no longer
   dirties the working tree.
 

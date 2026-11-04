@@ -566,7 +566,8 @@ async def test_selection_extending_outside_transcript_is_not_copied(tmp_path, mo
         copied.assert_not_called()
 
 
-async def test_fast_drag_copies_before_mouse_down_bubbles(tmp_path, monkeypatch):
+@pytest.mark.parametrize("button", [1, 2, 3])
+async def test_fast_drag_copies_before_mouse_down_bubbles(tmp_path, monkeypatch, button):
     app = resumed_chat(tmp_path)
     copied = Mock()
     async with app.run_test(size=(100, 40)) as pilot:
@@ -577,7 +578,7 @@ async def test_fast_drag_copies_before_mouse_down_bubbles(tmp_path, monkeypatch)
         # has bubbled back to the app. Do not pause between incoming input events.
         for event_type, position in [(MouseDown, x), (MouseMove, x + 5), (MouseUp, x + 5)]:
             app.post_message(
-                event_type(None, position, y, 0, 0, 1, False, False, False, position, y)
+                event_type(None, position, y, 0, 0, button, False, False, False, position, y)
             )
         await pilot.pause()
         assert app.screen.get_selected_text() == "First"

@@ -410,8 +410,6 @@ The speaker embedding model has separate MIT terms, and auxiliary codec
 assets have their own upstream terms. The code license does not grant rights
 to all model weights.
 
-[Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)
-
 ## Engine dependencies
 
 TTS workers run under Python 3.12 using `uv run --no-project
@@ -423,3 +421,5 @@ resolves the ranges again, so installed versions may differ over time.
 Complete engine locks need validation with the corresponding engine and its
 PyTorch/device combination. Until those environments are validated, the
 requirements retain their existing compatibility ranges and upstream pins.
+
+[Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)

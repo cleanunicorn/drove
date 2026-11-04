@@ -5,7 +5,7 @@
 ### Changed
 
 - Added report-only coverage via `make cov` and documented unlocked CLI and TTS
-  dependency resolution, with a lock-constrained reinstall recipe.
+  dependency resolution, with a lock-constrained reinstall recipe in the existing guides.
 - Declared directly imported CLI and validation dependencies, including TTS workers,
   and removed the
   unused HTTP/2 dependency extra.

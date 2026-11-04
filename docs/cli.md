@@ -242,8 +242,9 @@ selections also copy exactly the text highlighted by the chat interface. Selecti
 extending outside the transcript are ignored. Plain clicks and composer selections do not automatically copy.
 
 Copying sends an OSC52 clipboard request to the terminal. The terminal must support
-and allow clipboard writes; macOS Terminal does not. For explicit copy actions, the confirmation means the
-request was sent, not that the operating-system clipboard was verified.
+and allow clipboard writes; macOS Terminal does not. For explicit copy actions, the
+confirmation means the request was sent, not that the operating-system clipboard
+was verified.
 
 Connection errors suggest `drove server status` and `drove serve`. Proxy errors show
 the returned message and an appropriate next step instead of a raw JSON response.

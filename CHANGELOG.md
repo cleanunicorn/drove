@@ -9,6 +9,8 @@
 
 ### Changed
 
+- Rewrapped the chat copying documentation for readability.
+
 - Expanded chat selection regression coverage across messages, repeated clicks
   and expanded reasoning text.
 

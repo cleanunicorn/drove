@@ -319,8 +319,8 @@ src/drove/
                        drove.workers.asr); onnx-asr comes with the optional
                        `drove[asr]` extra
   workers/tts_runtime/ Text-to-speech worker (worker.py) and the Kokoro, Qwen3-TTS,
-                       Chatterbox, Fish and Kitten engines (engines.py), adapted from
-                       Cathy (CATHY-LICENSE; Kitten: KITTEN-NOTICE);
+                       Chatterbox and Fish engines adapted from Cathy (CATHY-LICENSE),
+                       plus Kitten (engines.py; model terms in KITTEN-NOTICE);
                        run by `uv run --python 3.12` with the
                        per-engine <engine>.txt requirements, never imported by drove
   proxy.py             FastAPI reverse proxy: extracts the model from JSON or

@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Changed
+
+- Refreshed the contributor guide (AGENTS.md): the project map now covers every
+  module, the KittenTTS engine and the current docs set, the docs and test
+  inventories point at `docs/README.md` and `tests/` instead of going stale, and
+  the configuration rule now says `DROVE_*` settings are read only in
+  `config.py` while other tools' own variables stay with their integrations.
+  Corrected the `backend` field comment to list `tts`.
+
 
 ## v0.15.1 (2026-11-03)
 

@@ -117,7 +117,7 @@ class ModelConfig(BaseModel):
     extra_args: list[str] | None = None
 
     # Drove-specific settings (never passed to llama-server)
-    backend: str | None = None  # "llama" (default) or "asr"
+    backend: str | None = None  # "llama" (default), "asr", or "tts"
     asr_model: str | None = None  # onnx-asr model type, e.g. "nemo-parakeet-tdt-0.6b-v3"
     asr_quantization: str | None = None  # e.g. "int8"
 

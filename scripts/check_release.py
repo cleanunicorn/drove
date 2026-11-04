@@ -100,6 +100,7 @@ def main() -> None:
                 cwd=repo,
                 env=env,
             )
+            before_head = run("git", "rev-parse", "HEAD", cwd=repo, env=env).strip()
             before = (repo / "CHANGELOG.md").read_text()
             expected_notes = script["section"](before, "## [Unreleased]")[1].strip() + "\n"
             run(
@@ -129,9 +130,67 @@ def main() -> None:
             if iteration == 0:
                 run("make", "test", cwd=repo, env=env)
             assert not run("git", "status", "--porcelain", cwd=repo, env=env).strip()
+            released_head = run("git", "rev-parse", "HEAD", cwd=repo, env=env).strip()
+            # Reproduce a GitHub rerun: original push SHA, but the release tag
+            # from the partially successful run is already present.
+            run("git", "checkout", "-B", "main", before_head, cwd=repo, env=env)
+            outputs = root / f"outputs-{iteration}"
+            retry_env = dict(env, GITHUB_OUTPUT=str(outputs))
+            run(
+                "uvx",
+                "--python",
+                "3.12",
+                "--from",
+                "python-semantic-release==9.21.2",
+                "semantic-release",
+                "version",
+                "--no-push",
+                "--no-changelog",
+                "--no-vcs-release",
+                cwd=repo,
+                env=retry_env,
+            )
+            output_values = dict(line.split("=", 1) for line in outputs.read_text().splitlines())
+            assert output_values["version"] == current, output_values
+            assert (
+                tomllib.loads((repo / "pyproject.toml").read_text())["project"]["version"]
+                != current
+            )
+            # Stub gh at the executable boundary, so no release API is touched.
+            bin_dir = root / "bin"
+            bin_dir.mkdir(exist_ok=True)
+            captured = root / "published-notes.md"
+            gh = bin_dir / "gh"
+            gh.write_text(
+                "#!/usr/bin/env python3\nimport sys\nfrom pathlib import Path\n"
+                "if sys.argv[2] == 'view': sys.exit(1)\n"
+                f"assert sys.argv[3] == 'v{current}'\n"
+                "assert '--verify-tag' in sys.argv\n"
+                f"Path({str(captured)!r}).write_text("
+                "Path(sys.argv[sys.argv.index('--notes-file') + 1]).read_text())\n"
+            )
+            gh.chmod(0o755)
+            publish_env = dict(env, PATH=str(bin_dir) + os.pathsep + env["PATH"])
+            run(
+                "uv",
+                "run",
+                "--no-project",
+                "--python",
+                "3.14",
+                "python",
+                "scripts/release.py",
+                "publish",
+                "--version",
+                output_values["version"],
+                cwd=repo,
+                env=publish_env,
+            )
+            assert captured.read_text() == expected_notes
+            run("git", "checkout", "-B", "main", released_head, cwd=repo, env=env)
             original = current
         print(
-            "PASS: two real PSR releases; exact reviewed notes; lock valid; tests leave clean tree"
+            "PASS: two real PSR releases and original-SHA publication retries; "
+            "exact notes; valid lock; clean tree"
         )
 
 

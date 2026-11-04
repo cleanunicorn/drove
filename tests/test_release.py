@@ -86,3 +86,16 @@ def test_missing_tag_and_failed_publication_are_errors(monkeypatch: pytest.Monke
     )
     with pytest.raises(subprocess.CalledProcessError):
         release.publish("0.1.1")
+
+
+def test_publish_cli_uses_psr_version_even_from_older_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A workflow rerun checks out the push before the release commit.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
+    publish = Mock()
+    monkeypatch.setitem(release.main.__globals__, "publish", publish)
+    monkeypatch.setattr("sys.argv", ["release.py", "publish", "--version", "0.1.1"])
+    release.main()
+    publish.assert_called_once_with("0.1.1")

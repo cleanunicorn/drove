@@ -37,6 +37,7 @@ jobs:
       # Run on the host so build_command can use the same uv installation.
       # PSR 9 runs on Python 3.12; drove and its lock retain Python 3.14.
       - name: Version, prepare reviewed notes and refresh lock
+        id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: uvx --python 3.12 --from python-semantic-release==9.21.2 semantic-release version --no-changelog --no-vcs-release
@@ -46,4 +47,5 @@ jobs:
       - name: Publish tagged release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/release.py publish
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: python scripts/release.py publish --version "$RELEASE_VERSION"

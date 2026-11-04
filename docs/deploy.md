@@ -86,8 +86,10 @@ Expected: `false`, `false`, `true`, `PR_TITLE`, `PR_BODY`, respectively.
    stamped project version; unrelated dependencies are not upgraded.
 5. PSR commits `pyproject.toml`, `CHANGELOG.md`, and `uv.lock` together as
    `chore(release): vX.Y.Z` with `[skip ci]`, and pushes the commit and tag.
-6. `python scripts/release.py publish` checks for a GitHub Release for the
-   current project version. An existing release is left alone. Otherwise it
+6. `scripts/release.py publish --version "$RELEASE_VERSION"` checks for a
+   GitHub Release for PSR's computed version (the step's `version` output).
+   A rerun checks out the original push SHA; its project version is stale, so
+   publication must use PSR's output rather than the working copy. An existing release is left alone. Otherwise it
    reads that tag's changelog section and passes it to `gh release create
    --verify-tag --notes-file`. A missing tag fails rather than creating one.
    This reconciliation also runs when PSR makes no new bump, allowing a rerun

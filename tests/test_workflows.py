@@ -95,8 +95,12 @@ def test_release_prepares_notes_and_lock_before_publishing() -> None:
             "uvx --python 3.12 --from python-semantic-release==9.21.2 "
             "semantic-release version --no-changelog --no-vcs-release"
         ),
-        "python scripts/release.py publish",
+        'python scripts/release.py publish --version "$RELEASE_VERSION"',
     ]
     # Publication must also reconcile a tag left by a partially successful run.
     publish = next(s for s in steps if s.get("run") == runs[-1])
     assert "if" not in publish
+
+    version = next(s for s in steps if s.get("id") == "version")
+    assert "--no-vcs-release" in version["run"]
+    assert publish["env"]["RELEASE_VERSION"] == "${{ steps.version.outputs.version }}"

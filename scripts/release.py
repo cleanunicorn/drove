@@ -85,15 +85,19 @@ def publish(version: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["prepare", "notes", "publish"])
+    parser.add_argument("--version", help="PSR computed version, required for publication")
     args = parser.parse_args()
+    if args.command == "publish":
+        if not args.version:
+            parser.error("publish requires --version from PSR, including on retries")
+        publish(args.version)
+        return
     version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
     path = Path("CHANGELOG.md")
     if args.command == "prepare":
         path.write_text(prepare(path.read_text(), version, datetime.now(UTC).date().isoformat()))
     elif args.command == "notes":
         print(notes(path.read_text(), version), end="")
-    else:
-        publish(version)
 
 
 if __name__ == "__main__":

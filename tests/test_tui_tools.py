@@ -352,8 +352,8 @@ async def test_allow_always_persists_only_the_chosen_tool(tmp_path, monkeypatch)
     answering(app, monkeypatch, "allow-always", "allow-always")
 
     assert await app._tool_allowed("read_file", json.dumps({"path": str(outside / "a.txt")}))
-    # shell_execute is per-call: even an "always" answer persists nothing for it.
-    assert await app._tool_allowed("shell_execute", json.dumps({"command": "true"}))
+    # write_file stays per-call: even an "always" answer persists nothing for it.
+    assert await app._tool_allowed("write_file", json.dumps({"path": "x", "content": ""}))
 
     chosen = Grant("read_file", directory=str(outside.resolve())).token()
     assert tomllib.loads(config_path.read_text()) == {
@@ -500,8 +500,8 @@ async def test_allow_always_saves_a_directory_scope_and_nothing_else(tmp_path, m
     assert len(shown) == 1
 
 
-@pytest.mark.parametrize("name", ["shell_execute", "write_file"])
-async def test_shell_and_write_ask_every_call_and_ignore_bare_grants(tmp_path, monkeypatch, name):
+async def test_write_asks_every_call_and_ignores_bare_grants(tmp_path, monkeypatch):
+    name = "write_file"
     app, _, config = policy_app(tmp_path, monkeypatch)
     config.write_text(f'allowed_tools = ["{name}", "fetch_url"]\n')
     shown = answering(app, monkeypatch, "allow-always", "allow-session", "allow-once")
@@ -780,3 +780,57 @@ async def test_stop_or_quit_settles_a_pending_mid_fetch_approval(tmp_path, monke
     if how == "stop":
         [tool_message] = [m for m in app._history if m["role"] == "tool"]
         assert "not approved" in tool_message["content"]
+
+
+async def test_shell_session_grant_reuses_exact_command_and_shows_scope(tmp_path, monkeypatch):
+    app, work, config = policy_app(tmp_path, monkeypatch)
+    config.write_text('allowed_tools = ["shell_execute"]\n')
+    shown = answering(app, monkeypatch, "allow-session", "deny-once", "deny-once", "deny-once")
+    assert await app._tool_allowed("shell_execute", '{"command":"git status"}')
+    for command in ["git status", " \tgit status\n"]:
+        assert await app._tool_allowed(
+            "shell_execute", json.dumps({"command": command, "background": True})
+        )
+    assert len(shown) == 1
+    assert (
+        shown[0]._scope
+        == f'shell_execute exactly "git status" in {json.dumps(str(work.resolve()))}'
+    )
+    assert not shown[0]._per_call
+    for command in ["git status; rm -rf ~", "git status $(id)", "git status && x"]:
+        assert not await app._tool_allowed("shell_execute", json.dumps({"command": command}))
+    assert len(shown) == 4
+    token = Grant("shell_execute", directory=str(work.resolve()), command="git status").token()
+    assert app._session_allowed_tools == {token}
+    assert tomllib.loads(config.read_text()) == {"allowed_tools": ["shell_execute"]}
+
+
+async def test_shell_always_saves_and_fresh_chat_reuses_only_in_same_cwd(tmp_path, monkeypatch):
+    app, work, config = policy_app(tmp_path, monkeypatch)
+    shown = answering(app, monkeypatch, "allow-always")
+    assert await app._tool_allowed("shell_execute", '{"command":"make test"}')
+    token = Grant("shell_execute", directory=str(work.resolve()), command="make test").token()
+    assert tomllib.loads(config.read_text()) == {"listen_port": 7000, "allowed_tools": [token]}
+    fresh = ChatApp("http://localhost:8080", "test-model", tmp_path / "sessions", config)
+    fresh_shown = answering(fresh, monkeypatch, "deny-once")
+    assert await fresh._tool_allowed("shell_execute", '{"command":"make test"}')
+    assert fresh_shown == []
+    sibling = tmp_path / "sibling"
+    sibling.mkdir()
+    monkeypatch.chdir(sibling)
+    other = ChatApp("http://localhost:8080", "test-model", tmp_path / "sessions", config)
+    other_shown = answering(other, monkeypatch, "deny-once")
+    assert not await other._tool_allowed("shell_execute", '{"command":"make test"}')
+    assert len(shown) == len(other_shown) == 1
+
+
+async def test_shell_scope_renders_literal_json_command(tmp_path):
+    app = chat_app(tmp_path)
+    grant = Grant("shell_execute", directory=str(tmp_path), command="echo [red]\u202e\necho x")
+    async with app.run_test() as pilot:
+        app.push_screen(ToolConfirmationModal("shell_execute", "{}", scope=grant.describe()))
+        await pilot.pause()
+        label = app.screen.query_one("#tool-scope", Label)
+        assert str(label.content) == f"Session and Always allow {grant.describe()}."
+        await pilot.press("s")
+        assert not isinstance(app.screen, ToolConfirmationModal)

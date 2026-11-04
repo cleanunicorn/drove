@@ -15,7 +15,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 import httpx
 
@@ -174,7 +174,9 @@ class Grant:
             data["origin"] = self.origin
         if self.internal:
             data["internal"] = True
-        return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=self.command is not None)
+        return json.dumps(
+            data, sort_keys=True, separators=(",", ":"), ensure_ascii=self.command is not None
+        )
 
     def describe(self) -> str:
         if self.command is not None:
@@ -290,7 +292,7 @@ def decide(name: str, arguments: str, ctx: PolicyContext) -> Decision:
     return _decide_read(name, args, ctx)
 
 
-def valid_command(command: Any) -> bool:
+def valid_command(command: Any) -> TypeGuard[str]:
     """Whether a command can be executed and represented by a persistent grant."""
     if not isinstance(command, str) or not normalize_command(command) or "\x00" in command:
         return False
@@ -309,7 +311,9 @@ def _decide_shell(arguments: str, ctx: PolicyContext) -> Decision:
     command = args.get("command") if isinstance(args, dict) else None
     if not valid_command(command):
         return Decision(prompt=True)
-    grant = Grant("shell_execute", directory=str(ctx.cwd.resolve()), command=normalize_command(command))
+    grant = Grant(
+        "shell_execute", directory=str(ctx.cwd.resolve()), command=normalize_command(command)
+    )
     return Decision(prompt=grant not in ctx.grants, grant=grant, scoped_choices=True)
 
 

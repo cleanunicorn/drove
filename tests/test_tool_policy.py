@@ -434,17 +434,47 @@ def test_shell_grants_match_only_command_and_exact_cwd(tree, remote, background)
     grant = Grant("shell_execute", directory=str(cwd), command="git status")
     ctx = context(cwd, remote=remote, grants=frozenset({grant}))
     for command in ["git status", " \tgit status\n"]:
-        assert not decide("shell_execute", json.dumps({"command": command, "background": background}), ctx).prompt
-    for command in ["ls", "git status; rm -rf ~", "git status $(id)", "git status && x", "git status\nx", "git status #", "git status\r", "git status\u00a0"]:
+        assert not decide(
+            "shell_execute", json.dumps({"command": command, "background": background}), ctx
+        ).prompt
+    for command in [
+        "ls",
+        "git status; rm -rf ~",
+        "git status $(id)",
+        "git status && x",
+        "git status\nx",
+        "git status #",
+        "git status\r",
+        "git status\u00a0",
+    ]:
         decision = decide("shell_execute", json.dumps({"command": command}), ctx)
         assert decision.prompt and decision.scoped_choices
     for other in [cwd / "sub", tree["outside"]]:
-        assert decide("shell_execute", '{"command":"git status"}', context(other, grants=ctx.grants)).prompt
+        assert decide(
+            "shell_execute", '{"command":"git status"}', context(other, grants=ctx.grants)
+        ).prompt
     missing_command = Grant("shell_execute", directory=str(cwd))
-    assert decide("shell_execute", '{"command":"git status"}', context(cwd, grants=frozenset({missing_command}))).prompt
+    assert decide(
+        "shell_execute",
+        '{"command":"git status"}',
+        context(cwd, grants=frozenset({missing_command})),
+    ).prompt
 
 
-@pytest.mark.parametrize("arguments", ["{invalid", "[]", "{}", '{"command": null}', '{"command": 7}', '{"command":""}', '{"command":" \t\n"}', json.dumps({"command": "\ud800"}), json.dumps({"command": "x\x00y"})])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "{invalid",
+        "[]",
+        "{}",
+        '{"command": null}',
+        '{"command": 7}',
+        '{"command":""}',
+        '{"command":" \t\n"}',
+        json.dumps({"command": "\ud800"}),
+        json.dumps({"command": "x\x00y"}),
+    ],
+)
 def test_invalid_shell_calls_still_ask_without_scoped_choices(tree, arguments):
     decision = decide("shell_execute", arguments, context(tree["cwd"]))
     assert decision.prompt and not decision.scoped_choices and decision.grant is None
@@ -457,13 +487,30 @@ def test_shell_command_grant_round_trip(tree):
     assert parse_grant(grant.token()) == grant
 
 
-@pytest.mark.parametrize("updates", [
-    {"command": None}, {"command": 3}, {"command": ""}, {"command": " \t\n"},
-    {"command": " ls"}, {"command": "x\x00y"}, {"command": "\ud800"},
-    {"dir": None}, {"dir": "relative"}, {"dir": "/tmp/.."}, {"dir": "/tmp/"},
-    {"dir": "/tmp/./x"}, {"dir": "/tmp\x00"}, {"origin": "https://example.com:443"},
-    {"internal": False}, {"host": "example.com"}, {"v": True}, {"v": 1.0}, {"v": 2},
-])
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"command": None},
+        {"command": 3},
+        {"command": ""},
+        {"command": " \t\n"},
+        {"command": " ls"},
+        {"command": "x\x00y"},
+        {"command": "\ud800"},
+        {"dir": None},
+        {"dir": "relative"},
+        {"dir": "/tmp/.."},
+        {"dir": "/tmp/"},
+        {"dir": "/tmp/./x"},
+        {"dir": "/tmp\x00"},
+        {"origin": "https://example.com:443"},
+        {"internal": False},
+        {"host": "example.com"},
+        {"v": True},
+        {"v": 1.0},
+        {"v": 2},
+    ],
+)
 def test_malformed_shell_grants_are_ignored(updates):
     token = {"v": 1, "tool": "shell_execute", "dir": "/tmp", "command": "ls"}
     assert parse_grant(json.dumps(token | updates)) is None

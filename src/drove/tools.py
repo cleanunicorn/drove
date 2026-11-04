@@ -27,9 +27,9 @@ from drove.tool_policy import (
     TRUNCATION_NOTICE,
     canonical_origin,
     cap_output,
-    normalize_command,
     is_blocked_address,
     join_tool_path,
+    normalize_command,
     url_port,
 )
 
@@ -483,7 +483,9 @@ def _start_background(command: str, timeout: float, cwd: Path) -> str:
             "output": "",
             "error": "",
         }
-    threading.Thread(target=_run_background, args=(task_id, command, timeout, cwd), daemon=True).start()
+    threading.Thread(
+        target=_run_background, args=(task_id, command, timeout, cwd), daemon=True
+    ).start()
     return f"Started background task with ID: {task_id}"
 
 

@@ -19,7 +19,8 @@ If you only want a checklist, jump to [Maintainer checklist](#maintainer-checkli
 
 | Component | File | Purpose |
 |---|---|---|
-| Release workflow | `.github/workflows/release.yml` | Runs `python-semantic-release` on every push to `main`. |
+| Release workflow | `.github/workflows/release.yml` | Runs `python-semantic-release` on every push to `main`, after the Check job passes (`needs: check`). |
+| Check workflow | `.github/workflows/check.yml` | Runs `uv lock --check`, `make lint`, `make typecheck`, and `make test` on every PR; `release.yml` calls it on `main`. |
 | PR-title lint | `.github/workflows/pr-title.yml` | Enforces Conventional Commits on PR titles via `amannn/action-semantic-pull-request@v6`. |
 | Semantic-release config | `pyproject.toml` (`[tool.semantic_release]`) | Defines how versions, tags, and the changelog are produced. |
 | Version source of truth | `pyproject.toml` → `project.version` | The field semantic-release rewrites. |

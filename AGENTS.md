@@ -70,8 +70,10 @@ here.
   `make service-start`, `service-stop`, `service-restart`, `service-status`,
   `service-logs`, `service-uninstall`.
 
-Always run `make lint` and `make test` before opening a PR — CI does **not**
-run them (see [Gotchas](#gotchas)).
+Always run `make lint`, `make typecheck`, and `make test` before opening a PR.
+The **Check** workflow re-runs them (plus `uv lock --check`) on every PR and
+before every release, but a red check costs a round trip (see
+[Gotchas](#gotchas)).
 
 ## Golden rules
 
@@ -82,9 +84,11 @@ run them (see [Gotchas](#gotchas)).
    squash-merge. Merging can cut a release, and the squash commit (which
    carries the PR title) is what the release automation parses.
 2. **Never force-push a shared branch.**
-3. **Keep `main` green.** CI only smoke-tests `make install` and lints PR
-   titles — `make lint`, `make typecheck`, and `make test` are *your* job
-   before opening a PR (see [Run the checks locally](#5-run-the-checks-locally)).
+3. **Keep `main` green.** The **Check** workflow runs `uv lock --check`,
+   `make lint`, `make typecheck`, and `make test` on every PR, and
+   semantic-release waits for the same check on `main` — a red `main` never
+   releases. Run them yourself before opening a PR (see
+   [Run the checks locally](#5-run-the-checks-locally)).
 4. **Use the project's task runner.** `make` is the single source of the dev
    flow — don't hand-roll the underlying `uv`/`pytest`/`ruff`/`mypy` commands
    (single-test `uv run pytest` is the one fallback, because no target exists
@@ -199,7 +203,8 @@ commits keep reviews honest.
 
 ### 5. Run the checks locally
 
-CI will not run these — do not open a PR with them failing:
+CI runs these too (the **Check** workflow), but do not open a PR with them
+failing:
 
 ```bash
 make lint
@@ -247,9 +252,9 @@ Keep it short and useful:
 
 ## After opening the PR
 
-- Make sure the **PR Title** check is green and the **Install** workflow (a
-  `make install` + CLI smoke test) passes. These are the only CI jobs —
-  lint/test/typecheck ran locally or not at all.
+- Make sure the **PR Title** check, the **Check** workflow (`uv lock
+  --check`, lint, type-check, tests), and the **Install** workflow (a
+  `make install` + CLI smoke test) are green.
 - Address review feedback by pushing more commits to the same branch.
 - Mention `@claude` in a PR/issue comment to have Claude Code act on it
   (`.github/workflows/claude.yml`).
@@ -264,7 +269,8 @@ Keep it short and useful:
   parses.
 - **What does merging trigger?** `.github/workflows/release.yml` runs
   [python-semantic-release](https://python-semantic-release.readthedocs.io/) v9
-  on every push to `main`. When a release is due it bumps `project.version` in
+  on every push to `main`, after the **Check** workflow passes on that
+  commit (`needs: check`). When a release is due it bumps `project.version` in
   `pyproject.toml`, rewrites `CHANGELOG.md` (promoting `## [Unreleased]` into a
   versioned section), commits `chore(release): vX.Y.Z` with `[skip ci]`, tags
   `v{version}`, and publishes a GitHub Release with the changelog as the body.
@@ -340,8 +346,9 @@ tests/                 pytest suite, one file per module
 docs/                  architecture.md, configuration.md, deploy.md (release
                        process), getting-started.md, cli.md, speech-to-text.md,
                        text-to-speech.md
-.github/workflows/     install.yml (make install smoke), pr-title.yml,
-                       release.yml (semantic-release), claude.yml (@claude)
+.github/workflows/     check.yml (lock check, lint, typecheck, test), install.yml
+                       (make install smoke), pr-title.yml, release.yml (check,
+                       then semantic-release), claude.yml (@claude)
 ```
 
 Layering: `proxy.py` receives requests and delegates lifecycle to
@@ -455,9 +462,13 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
 
 ## Gotchas
 
-- **CI never runs `make test`/`lint`/`typecheck`.** The only PR checks are
-  the title lint and the `make install` smoke test — the local gate is the
-  only gate.
+- **CI checks the lockfile before anything else.** `uv run` (behind every
+  make target) silently rewrites a stale `uv.lock`, so the Check workflow runs
+  `uv lock --check` first. If it fails, run `uv lock` and commit the result.
+- **A never-awaited coroutine fails the suite.** pytest turns `RuntimeWarning`
+  and unraisable-exception warnings into errors. Mock an async iterator such
+  as `aiter_raw` with a plain callable (`lambda: aiter([...])`), not
+  `AsyncMock`, which returns a coroutine.
 - **Undeclared sidecar TOML keys are dropped silently** (`extra="ignore"`).
   If a flag seems ignored, check the key is a real `ModelConfig` field — or
   use `extra_args`. The context-size field is `ctx_size`, not `context_size`.

@@ -11,6 +11,8 @@
   including exact shell commands and write directories, and explicitly enable or
   disable Allow all with a visible status indicator. Changes stayed in the current
   conversation; Cancel discarded edits and new conversations restored defaults.
+- Added `drove chat --dangerously-skip-permissions` to bypass tool confirmations while retaining execution checks
+  for one run, with a persistent warning (compact `UNSAFE` in narrow terminals) and no saved permission grants.
 
 ### Changed
 

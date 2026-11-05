@@ -15,7 +15,7 @@ the command; subcommand options follow it.
 | `drove init` | Write the config file with defaults | `-f, --force` overwrites |
 | `drove serve` / `drove server` | Start the proxy | `--host`, `--port` |
 | `drove server status` | Inspect the running proxy | `-w, --watch [N]`, `-V, --verbose` |
-| `drove chat [MODEL]` | Open terminal chat | `-r, --resume`, `-s, --system`, `-e, --endpoint`, `-k, --api-key` |
+| `drove chat [MODEL]` | Open terminal chat | `-r, --resume`, `-s, --system`, `-e, --endpoint`, `-k, --api-key`, `--dangerously-skip-permissions` (runs every tool call unasked; sandboxes only, see below) |
 | `drove config [KEY] [VALUE]` | Show, get, or set global settings | Dotted keys, e.g. `llama_server.n_gpu_layers` |
 | `drove models list` | List installed models | `-V, --verbose` |
 | `drove models download REF` | Download `org/repo[:QUANT]` | `-n, --name`, `-y, --yes`, `--tts-engine`, `--repair-config`, `-V, --verbose` |
@@ -240,6 +240,18 @@ origin for `fetch_url`, or one exact command in one working directory for
 are ignored. Shell grants apply with both local and remote endpoints, so the output
 of an approved command may be sent to a remote model. An approved command can still
 behave differently if files or programs it uses change (for example, `make test`).
+
+**`--dangerously-skip-permissions` skips every approval prompt above.** With it, the
+model can run shell commands, write or overwrite files, read outside the working
+directory and fetch HTTP(S) URLs, internal addresses included, without asking.
+Execution checks still apply: recursive reads stay within the approved scope,
+invalid paths and URLs still fail, and tool output is still capped. With
+`--endpoint` or a remote `--host`, whatever those tools read or print is sent to that
+server. Use it only in a disposable sandbox (a container, a VM or a scratch
+directory). It lasts for that run only: it still holds after `/new`, a model switch or
+loading a session, it saves nothing to `allowed_tools`, and the chat header shows
+**⚠ permissions off** (shortened to **UNSAFE** in narrow terminals) for as long as
+it is on. Start `drove chat` without the flag to be asked again.
 
 Limits: every tool result is cut to 64 KiB with an `… [output truncated]` notice before
 it reaches the model or a saved session. `read_file` returns 200 lines unless `limit`

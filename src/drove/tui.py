@@ -68,6 +68,7 @@ ChatApp { background: $background; }
 #ctx-meter { display: none; width: auto; margin-left: 1; color: $text-muted; }
 #ctx-meter.visible { display: block; }
 #ctx-meter.warn { color: $warning; }
+#permissions-off { width: auto; margin-left: 1; color: $warning; text-style: bold; }
 #chat-header Button {
     width: auto; min-width: 0; height: 1; border: none;
     background: transparent; margin-left: 1;
@@ -302,6 +303,14 @@ def _markdown_parser() -> MarkdownIt:
 
 
 TOOL_DENIED = "Error: Tool execution denied by user."
+PERMISSIONS_OFF_LABEL = "⚠ permissions off"
+PERMISSIONS_OFF_SHORT_LABEL = "UNSAFE"
+PERMISSIONS_OFF_FULL_MIN_WIDTH = 70
+PERMISSIONS_OFF_CONTROLS_MIN_WIDTH = 59
+PERMISSIONS_OFF_TOOLTIP = (
+    "--dangerously-skip-permissions: every tool call runs without asking, including"
+    " shell commands, file writes and URL fetches. Restart without the flag to ask again."
+)
 CONTEXT_METER_CELLS = 10
 #: Fill fraction from which the context meter is shown as nearly full.
 CONTEXT_WARN_FRACTION = 0.8
@@ -901,6 +910,7 @@ class ChatApp(App[None]):
         resume_session: Session | None = None,
         theme: str = "textual-dark",
         api_key: str | None = None,
+        skip_permissions: bool = False,
     ) -> None:
         super().__init__()
         self._base_url = base_url.rstrip("/")
@@ -935,6 +945,9 @@ class ChatApp(App[None]):
         self._session_allowed_tools: set[str] = set()
         self._conversation_rules: frozenset[Grant] | None = None
         self._allow_all = False
+        # --dangerously-skip-permissions: approve every call for the whole app run. Never
+        # reset by /new, /model or loading a session, and never saved to allowed_tools.
+        self._skip_permissions = skip_permissions
         self._cwd = Path.cwd().resolve()  # reads inside it need no approval
         self._remote_endpoint = not is_local_endpoint(self._base_url)
         self._call_grant: Grant | None = None  # the scope approved for the next tool run
@@ -957,6 +970,10 @@ class ChatApp(App[None]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="chat-header"):
             yield Label("drove", id="brand")
+            if self._skip_permissions:
+                badge = Label(PERMISSIONS_OFF_LABEL, id="permissions-off", markup=False)
+                badge.tooltip = PERMISSIONS_OFF_TOOLTIP
+                yield badge
             yield Button(
                 "Model", id="change-model", compact=True, tooltip="Choose a model · /model"
             )
@@ -1013,7 +1030,19 @@ class ChatApp(App[None]):
         self.query_one("#user-input", ChatInput).focus(scroll_visible=False)
 
     def on_resize(self, event: events.Resize) -> None:
-        self.set_class(event.size.width < 50, "narrow")
+        # Reserve space for the persistent permission warning and the context meter.
+        self.set_class(
+            event.size.width
+            < (PERMISSIONS_OFF_CONTROLS_MIN_WIDTH if self._skip_permissions else 50),
+            "narrow",
+        )
+        for badge in self.query("#permissions-off"):
+            assert isinstance(badge, Label)
+            badge.update(
+                PERMISSIONS_OFF_SHORT_LABEL
+                if event.size.width < PERMISSIONS_OFF_FULL_MIN_WIDTH
+                else PERMISSIONS_OFF_LABEL
+            )
         self.set_class(event.size.height < 24, "short")
 
     def on_mount(self) -> None:
@@ -1681,7 +1710,13 @@ class ChatApp(App[None]):
         return allowed
 
     async def _confirm(self, name: str, arguments: str, decision: Decision) -> bool:
-        """Ask about one call; a session/always choice records only the decision's scope."""
+        """Ask about one call; a session/always choice records only the decision's scope.
+
+        With --dangerously-skip-permissions every call is approved here, without a dialog
+        and without recording any grant, so it also covers prompts met mid-fetch.
+        """
+        if self._skip_permissions:
+            return True
         grant = decision.grant if decision.scoped_choices else None
         modal = ToolConfirmationModal(
             name,

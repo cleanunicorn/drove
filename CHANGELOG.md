@@ -31,7 +31,8 @@
 
 - Allowed applying chat permission changes after inspecting an unchanged rule,
   without requiring an extra save.
-
+- Preserved reviewed changelog bullets in release notes and refreshed the lockfile
+  with each version bump, and made release publication retryable from the original workflow commit.
 - `uv.lock` records the current drove version again, so `uv run` no longer
   dirties the working tree.
 

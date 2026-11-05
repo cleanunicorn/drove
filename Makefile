@@ -115,3 +115,8 @@ service-logs:
 .PHONY: test-observe-web-states
 test-observe-web-states:
 	uv run python tests/browser/run_observe_web_states.py $(OBSERVE_BROWSER_ARGS)
+
+# Real pinned PSR integration, in a disposable local repository; no remote writes.
+.PHONY: release-check
+release-check:
+	uv run python scripts/check_release.py

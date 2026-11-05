@@ -85,18 +85,13 @@ version_toml = ["pyproject.toml:project.version"]
 tag_format = "v{version}"
 commit_message = "chore(release): v{version}\n\n[skip ci]"
 commit_parser = "conventional"
+# PSR stamps project.version before this command; commit both generated assets.
+build_command = "python scripts/release.py prepare && uv lock"
+assets = ["CHANGELOG.md", "uv.lock"]
 
 [tool.semantic_release.branches.main]
 match = "main"
 prerelease = false
-
-[tool.semantic_release.changelog]
-exclude_commit_patterns = [
-    "^chore(\\(.*\\))?:",
-    "^ci(\\(.*\\))?:",
-    "^style(\\(.*\\))?:",
-    "^test(\\(.*\\))?:",
-]
 
 [tool.semantic_release.commit_parser_options]
 allowed_tags = ["build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "style", "test"]

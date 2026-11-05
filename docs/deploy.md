@@ -2,238 +2,158 @@
 
 [Docs](./README.md) / Release process
 
-This document describes how a new version of `drove` is cut. The process is **fully automated** by [`python-semantic-release`](https://python-semantic-release.readthedocs.io/) and runs on every push to `main`. As the repo maintainer you do **not** edit version numbers, tag commits, or publish releases by hand — your job is to make sure each PR carries the correct metadata so the automation produces the right result.
-
-## TL;DR
-
-1. Author a PR. Pick a [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/) type for the **PR title**.
-2. Add a bullet to `CHANGELOG.md` under `## [Unreleased]`.
-3. **Squash-merge** to `main`.
-4. The `Release` workflow bumps the version, rewrites the changelog, tags `vX.Y.Z`, and creates a GitHub Release.
-
-If you only want a checklist, jump to [Maintainer checklist](#maintainer-checklist).
-
----
+Releases run automatically from `main` after the Check workflow passes on the
+same commit. Do not edit versions, create tags, or publish releases by hand.
+`pyproject.toml` holds the version; reviewed `CHANGELOG.md` bullets hold the
+release notes. Commit messages determine only whether to bump and by how much.
 
 ## Components involved
 
-| Component | File | Purpose |
-|---|---|---|
-| Release workflow | `.github/workflows/release.yml` | Runs `python-semantic-release` on every push to `main`, after the Check job passes (`needs: check`). |
-| Check workflow | `.github/workflows/check.yml` | Runs `uv lock --check`, `make lint`, `make typecheck`, and `make test` on every PR; `release.yml` calls it on `main`. |
-| PR-title lint | `.github/workflows/pr-title.yml` | Enforces Conventional Commits on PR titles via `amannn/action-semantic-pull-request@v6`. |
-| Semantic-release config | `pyproject.toml` (`[tool.semantic_release]`) | Defines how versions, tags, and the changelog are produced. |
-| Version source of truth | `pyproject.toml` → `project.version` | The field semantic-release rewrites. |
-| Human changelog | `CHANGELOG.md` | The `[Unreleased]` section is promoted to a versioned section on each release. |
-| Contributor rules | `AGENTS.md` (Changelog section) | States that every change must add an `[Unreleased]` entry. |
-
----
+| Component | Purpose |
+| --- | --- |
+| `.github/workflows/release.yml` | Gates releases on Check, runs pinned python-semantic-release 9.21.2, then publishes saved notes. |
+| `.github/workflows/check.yml` | Checks the lock, lint, types, and tests. |
+| `.github/workflows/pr-title.yml` | Checks Conventional Commit PR titles. |
+| `pyproject.toml`, `[tool.semantic_release]` | Sets version rules, release commit assets and build command. |
+| `scripts/release.py` | Promotes handwritten notes and publishes the tagged section. |
+| `scripts/check_release.py`, `make release-check` | Rehearses two releases in a disposable local repository, without pushing. |
+| `AGENTS.md` | Requires an Unreleased bullet for every change. |
 
 ## Step 1 — Write the PR
 
-### 1a. PR title (drives the version bump)
+### PR title (drives the version bump)
 
-The squash-merge commit on `main` takes the **PR title**, and that commit message is what semantic-release parses. So the PR title alone determines whether a release is cut and what kind.
-
-Allowed types (from `pr-title.yml` and `pyproject.toml:77`):
-
-```
-build, chore, ci, docs, feat, fix, perf, refactor, style, test
-```
-
-Bump rules (from `pyproject.toml:78-79`):
+Use `<type>(optional-scope)!?: <subject>`. Subjects start with a letter and
+have no final period. The allowed types and bump rules are configured in
+`[tool.semantic_release.commit_parser_options]`:
 
 | PR title prefix | Result |
-|---|---|
-| `fix: …` | **patch** bump (e.g. `0.1.0` → `0.1.1`) |
-| `perf: …` | **patch** bump |
-| `feat: …` | **minor** bump (e.g. `0.1.1` → `0.2.0`) |
-| `feat!: …` *or* `BREAKING CHANGE:` in commit body | **major** bump (e.g. `0.2.0` → `1.0.0`) |
-| `chore:`, `ci:`, `style:`, `test:`, `build:`, `docs:`, `refactor:` | **No release.** Also excluded from the rendered changelog (`pyproject.toml:69-74`). |
+| --- | --- |
+| `fix:`, `perf:` | Patch |
+| `feat:` | Minor |
+| Any `type!:`, or a breaking footer in the squash body | Major |
+| `build:`, `chore:`, `ci:`, `docs:`, `refactor:`, `style:`, `test:` | No release |
 
-Title format constraints (from `pr-title.yml:31-33`):
+Examples: `fix(proxy): return 503 when the backend is unreachable`,
+`feat(cli): add models prune command`, `feat(api)!: rename completions schema`.
 
-- Subject must start with a letter.
-- Subject must not end with a period.
-- A scope is optional: `feat(cli): …` is fine, `feat: …` is fine.
+### Breaking changes
 
-**Examples of correct PR titles**
+Put `!` in the title or put a `BREAKING CHANGE:` footer in the PR description.
+The squash body defaults to the PR description, preserving that footer. When
+merely discussing the footer syntax, quote it with backticks; a line beginning
+with the bare token is interpreted as a breaking change.
 
-```
-fix(proxy): return 503 when llama-server is unreachable
-feat(cli): add `models prune` command
-feat(api)!: rename /v1/completions request schema
-perf(loader): cache tokenizer between requests
-docs: clarify make install usage
-```
+### CHANGELOG entry (required for every PR)
 
-**Examples of incorrect PR titles** (the `PR Title` check will fail):
+Add a past-tense bullet under `## [Unreleased]` in `CHANGELOG.md`, describing
+impact. Use `### Added`, `### Changed`, `### Deprecated`, `### Removed`,
+`### Fixed`, or `### Security`. Never add a version heading or date manually.
+Every change gets an entry, including changes that do not trigger a release;
+those bullets accumulate until the next release. Commit bodies and trailers
+are never used to generate new notes. Existing historical sections remain
+unchanged, including old generated notes.
 
-```
-Fix proxy 503 handling          # missing type
-feat: Add models prune.         # ends with a period
-update: tweak loader            # 'update' is not an allowed type
-```
+## Step 2 — Merge to main
 
-### 1b. Breaking changes
+Use **Squash and merge**. Repository settings disable merge commits and rebase
+merges, set the default squash title to **PR title**, and the squash body to
+**PR description**. Check the final title and any breaking footer before merging.
+Do not push directly to `main`; the merge-method settings do not themselves
+protect the branch against direct pushes.
 
-To force a major bump, either:
+Maintainers can audit these settings with:
 
-- Put `!` after the type/scope in the PR title:
-  `feat(api)!: drop legacy /completions endpoint`
-- **Or** include a `BREAKING CHANGE:` footer in the squash-merge commit body. Because the body comes from the PR description on squash-merge, write it like this in the PR description:
-
-  ```
-  Drops the legacy /completions endpoint in favour of /v1/chat/completions.
-
-  BREAKING CHANGE: clients calling /completions must migrate.
-  ```
-
-### 1c. CHANGELOG entry (required for every PR)
-
-Per `AGENTS.md:101`, every PR must add a bullet to `## [Unreleased]` in `CHANGELOG.md`. This applies to fixes, features, refactors, docs, and dependency bumps.
-
-Rules:
-
-- Use a Keep-a-Changelog subsection: `### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`, or `### Security`. Create the subsection under `[Unreleased]` if it doesn't exist yet.
-- One bullet per user-visible change, **past tense**, describing impact not implementation.
-- **Never** add a version number or release date — the automation does that.
-- The entry's category should be consistent with the PR-title type (a `feat:` typically lands under `### Added` or `### Changed`; a `fix:` under `### Fixed`).
-
-**Example diff to `CHANGELOG.md` for a `feat:` PR**
-
-```diff
- ## [Unreleased]
-
- ### Added
- - Documented the repository install script in the README install instructions.
-+- `drove models prune` command that removes unreferenced GGUF files from the model store.
-
- ### Fixed
- - Fixed model-store test lint issues so full-repository Ruff checks pass.
+```bash
+gh api repos/cleanunicorn/drove --jq '{allow_merge_commit,allow_rebase_merge,allow_squash_merge,squash_merge_commit_title,squash_merge_commit_message}'
 ```
 
----
-
-## Step 2 — Merge to `main`
-
-Use **Squash and merge**. This is what makes the PR title become the commit message that semantic-release parses.
-
-- Verify the squash-merge commit message in the GitHub merge dialog before clicking. GitHub may pre-fill it with the PR title (good) or with a list of all your branch commits (bad — semantic-release would parse those individually). Edit it down to the single Conventional Commit line if needed.
-- Do **not** push directly to `main`. Always go through a PR so the title lint runs.
-- Do **not** rebase- or merge-commit a feature branch into `main` unless every commit on that branch is itself a valid Conventional Commit; otherwise the parser may pick up unintended types.
-
----
+Expected: `false`, `false`, `true`, `PR_TITLE`, `PR_BODY`, respectively.
 
 ## Step 3 — What the Release workflow does
 
-`.github/workflows/release.yml` triggers on `push: branches: [main]` and runs `python-semantic-release/python-semantic-release@v9`. Configured by `[tool.semantic_release]` in `pyproject.toml`:
+1. Calls Check on the pushed commit: `uv lock --check`, `make lint`,
+   `make typecheck`, `make test`. A failed check prevents release work.
+2. Installs uv and Python 3.14 on the host. Runs PSR 9.21.2 via `uvx` on
+   Python 3.12, with `version --no-changelog --no-vcs-release`.
+3. PSR examines commits since the latest version tag. A bumping commit stamps
+   `project.version`. No bump leaves the project and changelog alone.
+4. Before committing, PSR runs `python scripts/release.py prepare && uv lock`.
+   The script promotes the exact Unreleased body to `## vX.Y.Z (YYYY-MM-DD)`
+   using the UTC date, leaving an empty Unreleased heading above it. The build
+   fails if Unreleased is absent, duplicated, empty of bullets, or contains a
+   commit trailer, or if the version already appears. The lock then records the
+   stamped project version; unrelated dependencies are not upgraded.
+5. PSR commits `pyproject.toml`, `CHANGELOG.md`, and `uv.lock` together as
+   `chore(release): vX.Y.Z` with `[skip ci]`, and pushes the commit and tag.
+6. The workflow runs publication through `uv run --no-project --python 3.14`,
+   selecting the interpreter explicitly. `scripts/release.py publish
+   --version "$RELEASE_VERSION"` checks for a
+   GitHub Release for PSR's computed version (the step's `version` output).
+   A rerun checks out the original push SHA; its project version is stale, so
+   publication must use PSR's output rather than the working copy. An existing release is left alone. Otherwise it
+   reads that tag's changelog section and passes it to `gh release create
+   --verify-tag --notes-file`. A missing tag fails rather than creating one.
+   This reconciliation also runs when PSR makes no new bump, allowing a rerun
+   to recover publication after the tag was pushed successfully.
 
-1. **Inspects commits since the last `vX.Y.Z` tag.** If none of them imply a bump (e.g. only `chore:` / `docs:` / `style:` / `test:` / `ci:`), it exits and **no release is made**.
-2. **Computes the next version** based on the highest-impact commit (`feat!` > `feat` > `fix`/`perf`).
-3. **Rewrites `pyproject.toml`**: `project.version` → new version (`version_toml = ["pyproject.toml:project.version"]`).
-4. **Rewrites `CHANGELOG.md`**: moves the contents of `## [Unreleased]` into a new `## [X.Y.Z]` section, leaving `[Unreleased]` empty for the next cycle. Commits matching `^chore(\(.*\))?:`, `^ci…`, `^style…`, `^test…` are excluded from the auto-generated section (`pyproject.toml:69-74`).
-5. **Commits** the changes back to `main` with message:
-
-   ```
-   chore(release): vX.Y.Z
-
-   [skip ci]
-   ```
-
-   The `[skip ci]` token prevents the release workflow from re-triggering itself.
-6. **Tags** the commit `vX.Y.Z` (`tag_format = "v{version}"`).
-7. **Creates a GitHub Release** for that tag, with the rendered changelog as the body.
-
-The job uses `permissions: contents: write` and the default `GITHUB_TOKEN`; no PAT or extra secret is required.
-
-> **Note:** there is no PyPI publish step. `drove` is distributed via `make install` / `uv tool install` from the GitHub repository (smoke-tested by `.github/workflows/install.yml`), not PyPI. Adding PyPI publishing later would mean adding a `publish` step to `release.yml` and a `PYPI_TOKEN` secret.
-
----
+The workflow uses `contents: write` and `GITHUB_TOKEN`; no PAT is required.
+There is no PyPI publication. Distribution remains `make install` / `uv tool
+install` from GitHub. Release preparation uses a host CLI rather than PSR's
+Docker action so its build command can access the installed uv.
 
 ## Worked example
 
-Starting state: `pyproject.toml` says `version = "0.1.0"`, `CHANGELOG.md` has entries under `[Unreleased]`.
-
-1. You merge a PR titled `feat(cli): add models prune command`.
-2. GitHub pushes the squash commit to `main`.
-3. `Release` workflow runs:
-   - Sees a `feat:` commit since `v0.1.0` → next version is `0.2.0`.
-   - Rewrites `pyproject.toml`: `version = "0.2.0"`.
-   - Rewrites `CHANGELOG.md`:
-
-     ```diff
-     -## [Unreleased]
-     -
-     -### Added
-     -- `drove models prune` command that removes unreferenced GGUF files from the model store.
-     +## [Unreleased]
-     +
-     +## [0.2.0]
-     +
-     +### Added
-     +- `drove models prune` command that removes unreferenced GGUF files from the model store.
-     ```
-
-   - Commits `chore(release): v0.2.0` to `main`.
-   - Tags `v0.2.0`.
-   - Publishes GitHub Release `v0.2.0` with the changelog body.
-
----
+A PR titled `fix(proxy): return backend errors` adds an Unreleased `### Fixed`
+bullet. With a previous `v0.15.1` tag, PSR stamps `0.15.2`. The script leaves
+`## [Unreleased]` empty and creates a `## v0.15.2 (YYYY-MM-DD)` section with
+that same `### Fixed` bullet. The lock is refreshed to `0.15.2` before all
+three files are committed and tagged. The GitHub Release body contains just
+that section's body, without its version heading or any older sections.
 
 ## Maintainer checklist
 
-Before merging a PR:
+Before merging:
 
-- [ ] PR title is a valid Conventional Commit (the `PR Title` check is green).
-- [ ] PR title's type matches the intent (`feat`, `fix`, `perf` for user-visible changes; `chore`/`ci`/`style`/`test`/`docs`/`refactor`/`build` for invisible changes).
-- [ ] If breaking, `!` is in the title or `BREAKING CHANGE:` is in the description body.
-- [ ] `CHANGELOG.md` has a new bullet under `[Unreleased]` in the right Keep-a-Changelog subsection.
-- [ ] No manual edits to `project.version` in `pyproject.toml`.
-- [ ] No manually created `vX.Y.Z` tag or GitHub Release.
-- [ ] Squash-merge is selected and the squash commit message is the PR title (not a list of branch commits).
+- [ ] Conventional Commit title matches the intended bump; PR Title and Check are green.
+- [ ] Unreleased contains the change under the appropriate group.
+- [ ] Breaking footers are intentional; literal examples use backticks.
+- [ ] Squash title is the PR title and body retains intentional breaking footers.
+- [ ] No manual version, versioned changelog, tag, or release changes.
+- [ ] For release changes, `make release-check` passes in addition to the normal gate.
 
 After merging:
 
-- [ ] The `Release` workflow run for the merge commit is green.
-- [ ] If a release was expected, a new `vX.Y.Z` tag and GitHub Release exist.
-- [ ] If no release was expected (e.g. `docs:`-only PR), the workflow exited cleanly without bumping.
-
----
+- [ ] Release workflow is green; an expected bump has a commit, tag and GitHub Release.
+- [ ] The release commit includes the lock and `uv lock --check` passes.
+- [ ] The new notes match reviewed bullets; an ordinary no-bump push creates no new release.
 
 ## Troubleshooting
 
-**The `PR Title` check is failing.**
-Edit the PR title to match `<type>(optional-scope)!?: <subject>`, where `<type>` is one of the allowed types and `<subject>` starts with a letter and does not end with a period. The check re-runs on title edits.
+**PR Title fails.** Fix its Conventional Commit type and subject; editing the
+PR title re-runs the check.
 
-**I merged but no release was cut.**
-Open the latest `Release` workflow run. The most likely causes:
+**No release, or the wrong bump.** Inspect the squash title and any breaking
+footer. PSR chooses the highest bump since the last tag. Fix forward through
+a PR; do not retag or edit versions manually.
 
-- The squash-merge commit message didn't start with a release-triggering type. `chore:`, `ci:`, `style:`, `test:`, `docs:`, `refactor:`, and `build:` do not bump. If a release was expected, fix forward by landing a follow-up `feat:` or `fix:` PR.
-- GitHub put the full list of branch commits into the squash commit body and none were `feat`/`fix`/`perf`. Same fix-forward approach.
+**Empty or invalid Unreleased.** Preparation aborts before a release commit.
+Restore the missing reviewed bullets through a PR and retry. Do not substitute
+commit messages or a placeholder for release notes.
 
-**The wrong version was bumped (e.g. patch instead of minor).**
-The bump is governed by the highest-impact commit since the last tag. If a `feat:` was mistitled as `fix:`, the next `feat:`-typed PR you land will produce the correct minor bump on top of the released patch — semantic-release will not retroactively re-tag.
+**The tag exists but GitHub Release publication failed.** Retry the workflow.
+The publish step reconciles the stamped version even if PSR finds no new bump,
+using the changelog saved at the tag. Check token permissions and GitHub status
+if publication continues to fail.
 
-**`CHANGELOG.md` ended up with an empty version section.**
-This happens when every commit since the last tag matched an excluded pattern (`chore`, `ci`, `style`, `test`). If a release was nonetheless cut (e.g. via a `feat:`/`fix:` mixed in), edit the changelog by hand in a follow-up `docs:` PR — do not retag.
+**The release commit pushed but its tag failed to push.** A rerun may find the
+version already stamped without a matching tag. Escalate to the maintainer;
+do not create a tag or release manually from a contributor session. This
+happened for `47155d0` (`chore(release): v0.8.4`) after PR #90: GitHub rejected
+the tag push with a temporary-file rename error. There is intentionally no
+`v0.8.4` tag or GitHub Release. Its changes were included in `v0.9.0`; the gap
+is retained and documented rather than rewriting release history.
 
-**I need to release urgently from a branch other than `main`.**
-Not supported by the current configuration: `[tool.semantic_release.branches.main]` matches only `main` (`pyproject.toml:82-84`). Land the change on `main` via a hotfix PR.
+**Releasing from another branch.** Unsupported. Land a PR on `main`.
 
-**I need to skip a release for a particular merge.**
-Use a non-bumping type (`chore:`, `docs:`, `refactor:`, etc.) for the PR title. The merge will still happen; no version will be cut.
-
----
-
-## What you should never do manually
-
-- Edit `project.version` in `pyproject.toml`.
-- Add a `## [X.Y.Z]` heading or release date to `CHANGELOG.md`.
-- Create a `vX.Y.Z` git tag.
-- Create a GitHub Release.
-- Push directly to `main`.
-
-The automation owns all of these. Doing them by hand will desynchronise the version, tags, and changelog and confuse the next semantic-release run.
-
-[Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md) · [Troubleshooting](./troubleshooting.md)
+[Docs](./README.md) · [CLI](./cli.md) · [Configuration](./configuration.md)

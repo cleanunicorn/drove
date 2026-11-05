@@ -68,11 +68,28 @@ not the example budget in the next section.
 | `prompt_cache_dir` | `~/.local/share/drove/prompt-cache` | KV cache storage |
 | `prompt_cache_ttl_seconds` | `3600` | Cache expiry (`0` = never) |
 | `prompt_cache_timeout_seconds` | `60` | Timeout per cache save/restore |
-| `allowed_tools` | `[]` | Chat tool grants saved by "Allow Always" (one directory or fetch origin each; bare tool names are ignored) — see [Chat controls](cli.md#chat-controls) |
+| `allowed_tools` | `[]` | Chat tool grants saved by "Allow Always" (one directory, fetch origin, or exact shell command and working directory each; bare tool names are ignored) — see [Chat controls](cli.md#chat-controls) |
 | `tui_theme` | `textual-dark` | TUI theme |
 | `tui_completed_hints` | `[]` | Learned/dismissed chat tips; `/tips` resets them |
 | `llama_server.n_gpu_layers` | `-1` | Default GPU layer offload |
 | `llama_server.threads` | unset | Default backend thread count |
+
+### Saved shell command grants
+
+Choosing **a** in the chat approval dialog saves a versioned command grant in
+`allowed_tools`, for example:
+
+```toml
+allowed_tools = ['{"command":"git status","dir":"/home/user/project","tool":"shell_execute","v":1}']
+```
+
+The command matches exactly after removing surrounding spaces, tabs and newlines
+(the same normalization is used to execute it). The resolved chat working directory
+must match exactly, with no subdirectory inheritance. Background calls use the same
+grant. Bare `"shell_execute"`, missing directories, malformed tokens and empty commands
+are ignored. Grants apply with local or remote model endpoints; the command's output
+can be sent to that endpoint. Use the dialog to inspect and save the scope.
+
 
 ## Reload behavior
 

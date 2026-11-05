@@ -183,8 +183,13 @@ What asks for approval:
   listing never follows a symlink out of the approved directories. When the chat
   talks to a server that is not this machine (`--endpoint`, or `--host` other than
   `localhost`/a loopback address), every read asks, once per call.
-- `shell_execute` and `write_file` ask on every call; the dialog offers only allow once
-  or deny.
+- `shell_execute` asks unless the exact command has a session or saved grant for the
+  chat's working directory. The dialog shows the command and directory covered by
+  **s**/**a**. Surrounding spaces, tabs and newlines are removed before approval
+  and execution; all remaining characters must match, including shell operators.
+  Background calls follow the same rule; timeout and background settings do not
+  change the command scope. A grant never covers another directory or a subdirectory.
+- `write_file` asks on every call; the dialog offers only allow once or deny.
 - `fetch_url` asks once per origin: scheme, host and port, so `https://example.com`
   does not cover `http://example.com` or `https://example.com:8443`. It fetches only
   `http`/`https` URLs, follows up to five redirects (a redirect to another origin asks
@@ -196,8 +201,11 @@ What asks for approval:
 
 **s** and **a** grant only the scope the dialog names: a directory and everything
 below it, for that one read tool (the file's directory for `read_file`), or one exact
-origin for `fetch_url`. **a** saves the grant in `allowed_tools`; bare tool names there
-are ignored.
+origin for `fetch_url`, or one exact command in one working directory for
+`shell_execute`. **a** saves the grant in `allowed_tools`; bare tool names there
+are ignored. Shell grants apply with both local and remote endpoints, so the output
+of an approved command may be sent to a remote model. An approved command can still
+behave differently if files or programs it uses change (for example, `make test`).
 
 Limits: every tool result is cut to 64 KiB with an `… [output truncated]` notice before
 it reaches the model or a saved session. `read_file` returns 200 lines unless `limit`

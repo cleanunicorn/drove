@@ -227,9 +227,9 @@ def test_missing_timeout_defaults_to_30_seconds(monkeypatch) -> None:
     seen: list[float] = []
     real = tools._run_streaming
 
-    def spy(command, timeout, on_output):
+    def spy(command, timeout, on_output, cwd):
         seen.append(timeout)
-        return real(command, timeout, on_output)
+        return real(command, timeout, on_output, cwd)
 
     monkeypatch.setattr(tools, "_run_streaming", spy)
     execute_tool("shell_execute", json.dumps({"command": "true", "timeout": None}))
@@ -795,3 +795,28 @@ def test_fetch_reports_dns_failures_and_http_errors(fake_net) -> None:
 
     assert isinstance(unresolved, ToolFailure) and "resolve" in unresolved
     assert isinstance(missing, ToolFailure) and "404" in missing
+
+
+def test_shell_executes_the_same_normalized_command_used_for_grants():
+    # A trailing backslash-newline changes shell semantics unless execution and
+    # approval normalize identically. The retained backslash is printed literally.
+    result = execute_tool("shell_execute", json.dumps({"command": " echo \\\n"}))
+    assert "STDOUT:\n\\\n" in result
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_shell_runs_in_the_approved_cwd(tmp_path, background):
+    # The process cwd deliberately differs from the tool's approved directory.
+    context = ToolContext(cwd=tmp_path)
+    result = execute_tool(
+        "shell_execute", json.dumps({"command": "pwd", "background": background}), context=context
+    )
+    if background:
+        task_id = result.rsplit(": ", 1)[1]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            result = execute_tool("check_background_task", json.dumps({"task_id": task_id}))
+            if "running" not in result:
+                break
+            time.sleep(0.01)
+    assert str(tmp_path) in result

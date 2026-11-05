@@ -335,7 +335,7 @@ src/drove/
   sessions.py, tui.py, tools.py, stats.py Chat TUI app, session persistence,
                        tool execution, token/process metrics
   tool_policy.py       Chat tool approvals (cwd/remote reads, scoped grants,
-                       per-call shell/write) and the 64 KiB tool output cap,
+                       exact-command shell grants, per-call writes) and the 64 KiB tool output cap,
                        testable without the TUI
   cli/                 Typer CLI: main.py (config, chat, observe, init),
                        models.py (list, download, add-tts, delete, info, config),

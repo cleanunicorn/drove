@@ -203,7 +203,10 @@ def parse_grant(token: str) -> Grant | None:
     if not isinstance(data, dict) or data.get("v") != _GRANT_VERSION:
         return None
     tool, directory, origin = data.get("tool"), data.get("dir"), data.get("origin")
-    if not isinstance(tool, str) or tool in PER_CALL_TOOLS or "host" in data:
+    if not isinstance(tool, str) or "host" in data:
+        return None
+    # shell_execute is in PER_CALL_TOOLS but can have saved grants; write_file cannot.
+    if tool in PER_CALL_TOOLS and tool != "shell_execute":
         return None
     if tool == "shell_execute":
         command = data.get("command")
@@ -279,6 +282,8 @@ def decide(name: str, arguments: str, ctx: PolicyContext) -> Decision:
     """
     if ctx.allow_all:
         return _NO_PROMPT
+    if name == "shell_execute":
+        return _decide_shell(arguments, ctx)
     if name in PER_CALL_TOOLS:
         if ctx.managed:
             try:
@@ -288,23 +293,12 @@ def decide(name: str, arguments: str, ctx: PolicyContext) -> Decision:
                 for grant in ctx.grants:
                     if grant.tool != name or grant.directory is None:
                         continue
-                    if name == "shell_execute":
-                        command = args.get("command")
-                        if (
-                            isinstance(command, str)
-                            and grant.command is not None
-                            and command.strip() == grant.command
-                            and grant.directory == str(ctx.cwd)
-                        ):
-                            return Decision(prompt=False, grant=grant)
-                    elif isinstance(args.get("path"), str):
+                    if isinstance(args.get("path"), str):
                         if resolve_path(args["path"], ctx.cwd).is_relative_to(grant.directory):
                             return Decision(prompt=False, grant=grant)
             except ValueError, OSError, RuntimeError:
                 pass
         return Decision(prompt=True)
-    if name == "shell_execute":
-        return _decide_shell(arguments, ctx)
     if name not in READ_TOOLS and name != "fetch_url":
         return _NO_PROMPT
     try:
@@ -337,15 +331,23 @@ def _decide_shell(arguments: str, ctx: PolicyContext) -> Decision:
     command = args.get("command") if isinstance(args, dict) else None
     if not valid_command(command):
         return Decision(prompt=True)
-    grant = Grant(
-        "shell_execute", directory=str(ctx.cwd.resolve()), command=normalize_command(command)
-    )
+    normalized = normalize_command(command)
+    cwd_str = str(ctx.cwd.resolve())
+    # Check existing grants for this exact command and directory
+    for grant in ctx.grants:
+        if (
+            grant.tool == "shell_execute"
+            and grant.command == normalized
+            and grant.directory == cwd_str
+        ):
+            return Decision(prompt=False, grant=grant)
+    grant = Grant("shell_execute", directory=cwd_str, command=normalized)
     reason = (
         "The chat endpoint is not local: the command's output is sent to a remote server."
         if ctx.remote_endpoint
         else ""
     )
-    return Decision(prompt=grant not in ctx.grants, grant=grant, scoped_choices=True, reason=reason)
+    return Decision(prompt=True, grant=grant, scoped_choices=True, reason=reason)
 
 
 def _decide_read(name: str, args: dict[str, Any], ctx: PolicyContext) -> Decision:

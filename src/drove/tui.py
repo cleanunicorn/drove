@@ -22,8 +22,9 @@ from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.errors import NoWidget
 from textual.reactive import reactive
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import (
     Button,
@@ -935,6 +936,7 @@ class ChatApp(App[None]):
         self._tool_seconds = 0
         self._completed_hints: set[ChatHint] = set()
         self._hint_save_failed = False
+        self._transcript_selection_started = False
         if config_path is not None:
             try:
                 self._completed_hints.update(load_config(config_path).tui_completed_hints)
@@ -1020,10 +1022,56 @@ class ChatApp(App[None]):
 
         self.push_screen(ChatDetails(self._details_text()), focus_input)
 
+    def _is_transcript_selection_target(self, widget: Widget | None) -> bool:
+        return (
+            self.screen is self.screen_stack[0]
+            and widget is not None
+            and widget.allow_select
+            and any(isinstance(node, Transcript) for node in widget.ancestors_with_self)
+        )
+
+    def _on_selection_started(self, screen: Screen[Any]) -> None:
+        # This immediate signal runs before Textual forwards MouseDown through
+        # widget queues, so a fast release cannot overtake the start callback.
+        try:
+            widget, _ = screen.get_widget_at(*self.mouse_position)
+        except NoWidget:
+            widget = None
+        self._transcript_selection_started = self._is_transcript_selection_target(widget)
+
+    def on_text_selected(self, event: events.TextSelected) -> None:
+        # Textual emits this on every mouse release, even for a scrollbar/composer drag
+        # that leaves an earlier transcript selection intact.
+        started, self._transcript_selection_started = self._transcript_selection_started, False
+        if started:
+            self._copy_transcript_selection()
+
+    def _copy_transcript_selection(self) -> None:
+        if self.screen is not self.screen_stack[0]:
+            return
+        transcript = self.query_one(Transcript)
+        for widget, selection in self.screen.selections.items():
+            if transcript not in widget.ancestors_with_self:
+                text = widget.get_selection(selection)
+                if text is not None and text[0]:
+                    return  # ignore actual selected text outside the transcript
+                # Multi-widget selections also include overlapping, empty ancestor
+                # containers. They add native separators, not out-of-scope content.
+        selected = self.screen.get_selected_text()
+        if selected:
+            self.copy_to_clipboard(selected)
+
     def on_click(self, event: events.Click) -> None:
         """Return focus to the composer after a click on anything but a control."""
         if self.screen is not self.screen_stack[0] or event.widget is None:
             return  # modal screens keep their own focus handling
+        if (
+            event.chain >= 2
+            and event.button == 1
+            and self._is_transcript_selection_target(event.widget)
+        ):
+            # Textual handles double/triple-click selection after the release event.
+            self.call_after_refresh(self._copy_transcript_selection)
         for node in event.widget.ancestors_with_self:
             if isinstance(node, Widget) and node.focusable and node.focus_on_click():
                 return  # a real control: the composer, autocomplete, a collapsible title…
@@ -1046,6 +1094,9 @@ class ChatApp(App[None]):
         self.set_class(event.size.height < 24, "short")
 
     def on_mount(self) -> None:
+        self.screen.text_selection_started_signal.subscribe(
+            self, self._on_selection_started, immediate=True
+        )
         self.title = "drove chat"
         self._tool_timer = self.set_interval(0.1, self._tick_tool, pause=True)
         self.run_worker(self._refresh_context_length(), exit_on_error=False)

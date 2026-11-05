@@ -15,6 +15,9 @@
   for one run, with a persistent warning (compact `UNSAFE` in narrow terminals) and no saved permission grants.
 - Added `make cov` to report coverage with uncovered lines and `make release-check`
   to rehearse a semantic-release cycle in a disposable repo with no remote writes.
+- Chat automatically copied non-empty transcript selections, including rendered Markdown,
+  code snippets and text spanning messages, while preserving composer drafts, focus
+  and explicit copy shortcuts.
 
 ### Changed
 

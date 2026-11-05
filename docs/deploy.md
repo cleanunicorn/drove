@@ -23,6 +23,12 @@ release notes. Commit messages determine only whether to bump and by how much.
 
 ### PR title (drives the version bump)
 
+Allowed types (from `pr-title.yml` and `pyproject.toml`):
+
+```
+build, chore, ci, docs, feat, fix, perf, refactor, style, test
+```
+
 Use `<type>(optional-scope)!?: <subject>`. Subjects start with a letter and
 have no final period. The allowed types and bump rules are configured in
 `[tool.semantic_release.commit_parser_options]`:

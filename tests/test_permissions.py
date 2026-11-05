@@ -48,8 +48,11 @@ def test_shell_exact_command_and_cwd(tmp_path, suffix):
             args,
             PolicyContext(tmp_path / "other", False, ctx.grants, managed=True),
         ).prompt
-    # Config grants remain the old contract, even if someone serializes an editor rule.
-    assert not parse_grants([rule.token(), make_rule("write_file", "sub", tmp_path).token()])
+        # Config grants remain the old contract for write_file (editor-only), but shell_execute
+        # grants from PR #172 are persistent and can be saved.
+        parsed = parse_grants([rule.token(), make_rule("write_file", "sub", tmp_path).token()])
+        assert len(parsed) == 1  # shell grant parsed, write_file rejected
+        assert list(parsed)[0].tool == "shell_execute"
 
 
 def test_write_directory_and_symlink_scope(tmp_path):

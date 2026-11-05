@@ -31,6 +31,10 @@
   and removed the unused HTTP/2 dependency extra.
 - Aligned contributor commit types with the PR title and release parser, with
   regression checks covering the release guide too.
+- Refreshed the contributor guide with current module and engine pointers,
+  directory-based docs and test inventories, and the distinction between drove
+  settings and third-party environment conventions; corrected backend comments
+  to include text-to-speech.
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for
   the same check, so a red `main` no longer cuts a version.

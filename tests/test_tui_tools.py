@@ -352,8 +352,8 @@ async def test_allow_always_persists_only_the_chosen_tool(tmp_path, monkeypatch)
     answering(app, monkeypatch, "allow-always", "allow-always")
 
     assert await app._tool_allowed("read_file", json.dumps({"path": str(outside / "a.txt")}))
-    # shell_execute is per-call: even an "always" answer persists nothing for it.
-    assert await app._tool_allowed("shell_execute", json.dumps({"command": "true"}))
+    # write_file stays per-call: even an "always" answer persists nothing for it.
+    assert await app._tool_allowed("write_file", json.dumps({"path": "x", "content": ""}))
 
     chosen = Grant("read_file", directory=str(outside.resolve())).token()
     assert tomllib.loads(config_path.read_text()) == {
@@ -395,14 +395,22 @@ async def test_allow_always_save_failure_warns_and_keeps_the_session_grant(tmp_p
 # ── Approval policy in the chat (AC2, AC3) ──────────────────────────────────────
 
 
-def policy_app(tmp_path: Path, monkeypatch, endpoint: str = "http://localhost:8080"):
+def policy_app(
+    tmp_path: Path,
+    monkeypatch,
+    endpoint: str = "http://localhost:8080",
+    skip_permissions: bool = False,
+):
     """A chat started in *work*, with its own config file."""
     work = tmp_path / "work"
     work.mkdir()
     monkeypatch.chdir(work)
     config = tmp_path / "config.toml"
     config.write_text("listen_port = 7000\n")
-    return ChatApp(endpoint, "test-model", tmp_path / "sessions", config), work, config
+    app = ChatApp(
+        endpoint, "test-model", tmp_path / "sessions", config, skip_permissions=skip_permissions
+    )
+    return app, work, config
 
 
 def answering(app: ChatApp, monkeypatch, *choices: str) -> list[ToolConfirmationModal]:
@@ -500,8 +508,8 @@ async def test_allow_always_saves_a_directory_scope_and_nothing_else(tmp_path, m
     assert len(shown) == 1
 
 
-@pytest.mark.parametrize("name", ["shell_execute", "write_file"])
-async def test_shell_and_write_ask_every_call_and_ignore_bare_grants(tmp_path, monkeypatch, name):
+async def test_write_asks_every_call_and_ignores_bare_grants(tmp_path, monkeypatch):
+    name = "write_file"
     app, _, config = policy_app(tmp_path, monkeypatch)
     config.write_text(f'allowed_tools = ["{name}", "fetch_url"]\n')
     shown = answering(app, monkeypatch, "allow-always", "allow-session", "allow-once")
@@ -585,8 +593,11 @@ async def test_an_approved_outside_read_runs_within_its_scope(tmp_path, monkeypa
     assert requests[1][-1]["content"] == "inner"
 
 
-async def test_a_search_inside_cwd_skips_symlinks_that_lead_out(tmp_path, monkeypatch):
-    app, work, _ = policy_app(tmp_path, monkeypatch)
+@pytest.mark.parametrize("skip_permissions", [False, True])
+async def test_a_search_inside_cwd_skips_symlinks_that_lead_out(
+    tmp_path, monkeypatch, skip_permissions
+):
+    app, work, _ = policy_app(tmp_path, monkeypatch, skip_permissions=skip_permissions)
     outside = outside_dir(tmp_path)
     (work / "leak.txt").symlink_to(outside / "secret.txt")
     requests: list = []
@@ -780,3 +791,255 @@ async def test_stop_or_quit_settles_a_pending_mid_fetch_approval(tmp_path, monke
     if how == "stop":
         [tool_message] = [m for m in app._history if m["role"] == "tool"]
         assert "not approved" in tool_message["content"]
+
+
+async def test_shell_session_grant_reuses_exact_command_and_shows_scope(tmp_path, monkeypatch):
+    app, work, config = policy_app(tmp_path, monkeypatch)
+    config.write_text('allowed_tools = ["shell_execute"]\n')
+    shown = answering(app, monkeypatch, "allow-session", "deny-once", "deny-once", "deny-once")
+    assert await app._tool_allowed("shell_execute", '{"command":"git status"}')
+    for command in ["git status", " \tgit status\n"]:
+        assert await app._tool_allowed(
+            "shell_execute", json.dumps({"command": command, "background": True})
+        )
+    assert len(shown) == 1
+    assert (
+        shown[0]._scope
+        == f'shell_execute exactly "git status" in {json.dumps(str(work.resolve()))}'
+    )
+    assert not shown[0]._per_call
+    for command in ["git status; rm -rf ~", "git status $(id)", "git status && x"]:
+        assert not await app._tool_allowed("shell_execute", json.dumps({"command": command}))
+    assert len(shown) == 4
+    token = Grant("shell_execute", directory=str(work.resolve()), command="git status").token()
+    assert app._session_allowed_tools == {token}
+    assert tomllib.loads(config.read_text()) == {"allowed_tools": ["shell_execute"]}
+
+
+async def test_shell_always_saves_and_fresh_chat_reuses_only_in_same_cwd(tmp_path, monkeypatch):
+    app, work, config = policy_app(tmp_path, monkeypatch)
+    shown = answering(app, monkeypatch, "allow-always")
+    assert await app._tool_allowed("shell_execute", '{"command":"make test"}')
+    token = Grant("shell_execute", directory=str(work.resolve()), command="make test").token()
+    assert tomllib.loads(config.read_text()) == {"listen_port": 7000, "allowed_tools": [token]}
+    fresh = ChatApp("http://localhost:8080", "test-model", tmp_path / "sessions", config)
+    fresh_shown = answering(fresh, monkeypatch, "deny-once")
+    assert await fresh._tool_allowed("shell_execute", '{"command":"make test"}')
+    assert fresh_shown == []
+    sibling = tmp_path / "sibling"
+    sibling.mkdir()
+    monkeypatch.chdir(sibling)
+    other = ChatApp("http://localhost:8080", "test-model", tmp_path / "sessions", config)
+    other_shown = answering(other, monkeypatch, "deny-once")
+    assert not await other._tool_allowed("shell_execute", '{"command":"make test"}')
+    assert len(shown) == len(other_shown) == 1
+
+
+async def test_shell_scope_renders_literal_json_command(tmp_path):
+    app = chat_app(tmp_path)
+    grant = Grant("shell_execute", directory=str(tmp_path), command="echo [red]\u202e\necho x")
+    async with app.run_test() as pilot:
+        app.push_screen(ToolConfirmationModal("shell_execute", "{}", scope=grant.describe()))
+        await pilot.pause()
+        label = app.screen.query_one("#tool-scope", Label)
+        assert str(label.content) == f"Session and Always allow {grant.describe()}."
+        await pilot.press("s")
+        assert not isinstance(app.screen, ToolConfirmationModal)
+
+
+# ── --dangerously-skip-permissions (issue #155) ─────────────────────────────────
+def gated_calls(work: Path) -> list[tuple[str, str]]:
+    """One call to each tool that asks every time: write, shell and fetch."""
+    return [
+        ("write_file", json.dumps({"path": str(work / "out.txt"), "content": "written"})),
+        ("shell_execute", json.dumps({"command": "echo ran-shell"})),
+        ("fetch_url", json.dumps({"url": "http://site.example/"})),
+    ]
+
+
+def calls_then_reply(requests: list, calls: list[tuple[str, str]]):
+    """Ask for each of *calls* in its own turn step, then reply."""
+
+    async def stream(messages):
+        requests.append([dict(m) for m in messages])
+        if len(requests) <= len(calls):
+            name, arguments = calls[len(requests) - 1]
+            yield {
+                "kind": "tool_call",
+                "index": 0,
+                "id": f"c{len(requests)}",
+                "name": name,
+                "arguments": arguments,
+            }
+        else:
+            yield {"kind": "content", "chunk": "Done"}
+
+    return stream
+
+
+def fake_fetch(monkeypatch) -> None:
+    """Serve fetch_url from an internal address, which also asks mid-fetch without the flag."""
+    monkeypatch.setattr(tools, "_resolve", lambda host, port: ["10.0.0.7"])
+    monkeypatch.setattr(
+        tools,
+        "_fetch_transport",
+        httpx.MockTransport(lambda request: httpx.Response(200, content=b"fetched page")),
+    )
+
+
+def recording_screens(app: ChatApp, monkeypatch, *answers: str) -> list:
+    """Record every screen awaited; answer tool modals with *answers*, pickers with "other"."""
+    from drove.model_picker import ModelPicker
+
+    shown: list = []
+    replies = iter(answers)
+
+    async def push_screen_wait(screen):
+        shown.append(screen)
+        if isinstance(screen, ModelPicker):
+            return "other-model"
+        return next(replies)
+
+    monkeypatch.setattr(app, "push_screen_wait", push_screen_wait)
+    return shown
+
+
+async def test_skip_permissions_runs_write_shell_and_fetch_without_a_dialog(tmp_path, monkeypatch):
+    app, work, config = policy_app(tmp_path, monkeypatch, skip_permissions=True)
+    fake_fetch(monkeypatch)
+    before = config.read_bytes()
+    shown = recording_screens(app, monkeypatch)
+    requests: list = []
+    monkeypatch.setattr(app, "_stream_chat", calls_then_reply(requests, gated_calls(work)))
+
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: len(requests) == 4)
+        assert not any(isinstance(s, ToolConfirmationModal) for s in app.screen_stack)
+
+    assert shown == []
+    results = [m["content"] for m in requests[3] if m["role"] == "tool"]
+    assert (work / "out.txt").read_text() == "written"
+    assert "ran-shell" in results[1]
+    assert results[2] == "fetched page"
+    # Nothing is granted or saved: the bypass is a flag, not a set of grants.
+    assert app._session_allowed_tools == set()
+    assert config.read_bytes() == before
+
+
+async def test_without_the_flag_each_gated_call_still_asks(tmp_path, monkeypatch):
+    app, work, config = policy_app(tmp_path, monkeypatch)
+    fake_fetch(monkeypatch)
+    # write, shell, fetch origin, then the internal address met mid-fetch.
+    shown = recording_screens(app, monkeypatch, *["allow-once"] * 4)
+    requests: list = []
+    monkeypatch.setattr(app, "_stream_chat", calls_then_reply(requests, gated_calls(work)))
+
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: len(requests) == 4)
+        assert not app.query("#permissions-off")
+
+    assert all(isinstance(screen, ToolConfirmationModal) for screen in shown)
+    assert [screen._tool_name for screen in shown] == [
+        "write_file",
+        "shell_execute",
+        "fetch_url",
+        "fetch_url",
+    ]
+    assert "internal" in shown[3]._reason
+
+
+async def test_skip_permissions_outlasts_new_model_switch_and_session_load(tmp_path, monkeypatch):
+    from drove.chat_models import ChatModel
+
+    app, work, config = policy_app(tmp_path, monkeypatch, skip_permissions=True)
+    before = config.read_bytes()
+    shown = recording_screens(app, monkeypatch)
+    outside = outside_dir(tmp_path)
+    arguments = [
+        *gated_calls(work)[:2],
+        ("read_file", json.dumps({"path": str(outside / "secret.txt")})),
+    ]
+
+    async def all_allowed() -> bool:
+        return all([await app._tool_allowed(name, args) for name, args in arguments])
+
+    async def fetch_models_async(*_):
+        return [ChatModel("test-model"), ChatModel("other-model")]
+
+    monkeypatch.setattr("drove.tui.fetch_models_async", fetch_models_async)
+    async with app.run_test() as pilot:
+        assert await all_allowed()
+        await app._dispatch_command("/new")
+        assert await all_allowed()
+        await app._dispatch_command("/model")
+        await pilot.pause()
+        assert app._model == "other-model"
+        assert await all_allowed()
+        await app._load_session(new_session("other-model", endpoint=app._endpoint))
+        assert await all_allowed()
+        assert app.query_one("#permissions-off", Label).display
+
+    assert not any(isinstance(screen, ToolConfirmationModal) for screen in shown)
+    assert app._session_allowed_tools == set()
+    assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize("width", [40, 49, 50, 58, 59, 60, 69, 70, 100])
+async def test_skip_permissions_indicator_stays_in_the_header(tmp_path, monkeypatch, width):
+    from drove.tui import (
+        PERMISSIONS_OFF_CONTROLS_MIN_WIDTH,
+        PERMISSIONS_OFF_FULL_MIN_WIDTH,
+        PERMISSIONS_OFF_LABEL,
+        PERMISSIONS_OFF_SHORT_LABEL,
+    )
+
+    app, _, _ = policy_app(tmp_path, monkeypatch, skip_permissions=True)
+    async with app.run_test(size=(width, 24)) as pilot:
+        # Check the worst case: context use is known and the meter is visible.
+        meter = app.query_one("#ctx-meter", Label)
+        meter.update("▰" * 5 + "▱" * 5)
+        meter.add_class("visible")
+        await pilot.pause()
+        badge = app.query_one("#chat-header #permissions-off", Label)
+        assert badge.render().plain == (
+            PERMISSIONS_OFF_SHORT_LABEL
+            if width < PERMISSIONS_OFF_FULL_MIN_WIDTH
+            else PERMISSIONS_OFF_LABEL
+        )
+        for selector in ("#brand", "#permissions-off", "#ctx-meter", "#new-chat", "#chat-details"):
+            widget = app.query_one(selector)
+            assert widget.region.width > 0, selector
+            assert app.query_one("#chat-header").content_region.contains_region(widget.region), (
+                selector
+            )
+        for selector in ("#change-model", "#open-sessions"):
+            widget = app.query_one(selector)
+            assert widget.display is (width >= PERMISSIONS_OFF_CONTROLS_MIN_WIDTH)
+            if widget.display:
+                assert app.query_one("#chat-header").content_region.contains_region(widget.region)
+        assert "--dangerously-skip-permissions" in str(badge.tooltip)
+        await app._dispatch_command("/new")
+        await pilot.pause()
+        assert app.query_one("#permissions-off", Label).region.width > 0
+
+
+@pytest.mark.parametrize("endpoint", ["http://localhost:8080", "https://api.example.com"])
+async def test_skip_permissions_reads_outside_cwd_and_over_remote_endpoints(
+    tmp_path, monkeypatch, endpoint
+):
+    """Every gated tool is covered, not a list of names: reads run with their scope."""
+    app, _, _ = policy_app(tmp_path, monkeypatch, endpoint, skip_permissions=True)
+    outside = outside_dir(tmp_path)
+    shown = recording_screens(app, monkeypatch)
+    requests: list = []
+    call = json.dumps({"path": str(outside / "secret.txt")})
+    monkeypatch.setattr(app, "_stream_chat", tool_then_reply(requests, "read_file", call))
+
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: len(requests) == 2)
+
+    assert shown == []
+    assert "secret" in requests[1][-1]["content"]

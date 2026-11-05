@@ -29,7 +29,23 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Python Semantic Release
-        uses: python-semantic-release/python-semantic-release@v9
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v6
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: "3.14"
+
+      # Run on the host so build_command can use the same uv installation.
+      # PSR 9 runs on Python 3.12; drove and its lock retain Python 3.14.
+      - name: Version, prepare reviewed notes and refresh lock
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uvx --python 3.12 --from python-semantic-release==9.21.2 semantic-release version --no-changelog --no-vcs-release
+
+      # Also runs on a retry with no new bump: publish the tagged notes if the
+      # preceding run pushed the tag but failed to create the GitHub Release.
+      - name: Publish tagged release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: uv run --no-project --python 3.14 python scripts/release.py publish --version "$RELEASE_VERSION"

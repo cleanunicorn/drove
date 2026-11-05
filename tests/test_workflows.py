@@ -77,3 +77,33 @@ def test_every_release_job_waits_for_check() -> None:
         assert "check" in ([needs] if isinstance(needs, str) else needs), name
         # An `if: always()` (or similar) would run the job despite a red check.
         assert "if" not in job, name
+
+
+def test_release_prepares_notes_and_lock_before_publishing() -> None:
+    import tomllib
+
+    config = tomllib.loads((WORKFLOWS.parents[1] / "pyproject.toml").read_text())
+    semantic = config["tool"]["semantic_release"]
+    assert semantic["build_command"] == "python scripts/release.py prepare && uv lock"
+    assert set(semantic["assets"]) == {"CHANGELOG.md", "uv.lock"}
+    steps = load("release.yml")["jobs"]["release"]["steps"]
+    setup = next(s for s in steps if str(s.get("uses", "")).startswith("astral-sh/setup-uv@"))
+    assert setup["with"]["python-version"] == "3.14"
+    runs = [s["run"] for s in steps if "run" in s]
+    assert runs == [
+        (
+            "uvx --python 3.12 --from python-semantic-release==9.21.2 "
+            "semantic-release version --no-changelog --no-vcs-release"
+        ),
+        (
+            "uv run --no-project --python 3.14 python scripts/release.py publish "
+            '--version "$RELEASE_VERSION"'
+        ),
+    ]
+    # Publication must also reconcile a tag left by a partially successful run.
+    publish = next(s for s in steps if s.get("run") == runs[-1])
+    assert "if" not in publish
+
+    version = next(s for s in steps if s.get("id") == "version")
+    assert "--no-vcs-release" in version["run"]
+    assert publish["env"]["RELEASE_VERSION"] == "${{ steps.version.outputs.version }}"

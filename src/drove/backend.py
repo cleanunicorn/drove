@@ -1,4 +1,4 @@
-"""Backend selection for models: llama-server vs the built-in ASR worker."""
+"""Backend selection for models: llama-server, ASR, or TTS workers."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ def detect_backend(model_path: Path, model_cfg: ModelConfig) -> str:
     """Return the backend for a model.
 
     An explicit ``backend`` key in the model config wins; otherwise the
-    primary file extension decides (``.onnx`` → ASR worker, anything else →
-    llama-server).
+    primary file extension decides (``.tts`` → TTS worker, ``.onnx`` → ASR
+    worker, anything else → llama-server).
     """
     if model_cfg.backend:
         backend = model_cfg.backend.strip().lower()

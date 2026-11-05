@@ -22,8 +22,9 @@ from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.errors import NoWidget
 from textual.reactive import reactive
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import (
     Button,
@@ -42,6 +43,7 @@ from textual.worker import Worker
 from drove.chat_models import CatalogError, fetch_context_length, fetch_models_async
 from drove.config import ChatHint, load_config, save_tui_completed_hints
 from drove.model_picker import ModelPicker
+from drove.permissions import PermissionsModal
 from drove.sessions import Session, list_sessions, new_session, save_session, session_endpoint
 from drove.tool_policy import (
     Decision,
@@ -67,6 +69,7 @@ ChatApp { background: $background; }
 #ctx-meter { display: none; width: auto; margin-left: 1; color: $text-muted; }
 #ctx-meter.visible { display: block; }
 #ctx-meter.warn { color: $warning; }
+#permissions-off { width: auto; margin-left: 1; color: $warning; text-style: bold; }
 #chat-header Button {
     width: auto; min-width: 0; height: 1; border: none;
     background: transparent; margin-left: 1;
@@ -301,6 +304,14 @@ def _markdown_parser() -> MarkdownIt:
 
 
 TOOL_DENIED = "Error: Tool execution denied by user."
+PERMISSIONS_OFF_LABEL = "⚠ permissions off"
+PERMISSIONS_OFF_SHORT_LABEL = "UNSAFE"
+PERMISSIONS_OFF_FULL_MIN_WIDTH = 70
+PERMISSIONS_OFF_CONTROLS_MIN_WIDTH = 59
+PERMISSIONS_OFF_TOOLTIP = (
+    "--dangerously-skip-permissions: every tool call runs without asking, including"
+    " shell commands, file writes and URL fetches. Restart without the flag to ask again."
+)
 CONTEXT_METER_CELLS = 10
 #: Fill fraction from which the context meter is shown as nearly full.
 CONTEXT_WARN_FRACTION = 0.8
@@ -900,6 +911,7 @@ class ChatApp(App[None]):
         resume_session: Session | None = None,
         theme: str = "textual-dark",
         api_key: str | None = None,
+        skip_permissions: bool = False,
     ) -> None:
         super().__init__()
         self._base_url = base_url.rstrip("/")
@@ -924,6 +936,7 @@ class ChatApp(App[None]):
         self._tool_seconds = 0
         self._completed_hints: set[ChatHint] = set()
         self._hint_save_failed = False
+        self._transcript_selection_started = False
         if config_path is not None:
             try:
                 self._completed_hints.update(load_config(config_path).tui_completed_hints)
@@ -932,6 +945,11 @@ class ChatApp(App[None]):
         self.theme = theme
         # Grant tokens (see drove.tool_policy) allowed for this session only.
         self._session_allowed_tools: set[str] = set()
+        self._conversation_rules: frozenset[Grant] | None = None
+        self._allow_all = False
+        # --dangerously-skip-permissions: approve every call for the whole app run. Never
+        # reset by /new, /model or loading a session, and never saved to allowed_tools.
+        self._skip_permissions = skip_permissions
         self._cwd = Path.cwd().resolve()  # reads inside it need no approval
         self._remote_endpoint = not is_local_endpoint(self._base_url)
         self._call_grant: Grant | None = None  # the scope approved for the next tool run
@@ -954,6 +972,10 @@ class ChatApp(App[None]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="chat-header"):
             yield Label("drove", id="brand")
+            if self._skip_permissions:
+                badge = Label(PERMISSIONS_OFF_LABEL, id="permissions-off", markup=False)
+                badge.tooltip = PERMISSIONS_OFF_TOOLTIP
+                yield badge
             yield Button(
                 "Model", id="change-model", compact=True, tooltip="Choose a model · /model"
             )
@@ -1000,20 +1022,81 @@ class ChatApp(App[None]):
 
         self.push_screen(ChatDetails(self._details_text()), focus_input)
 
+    def _is_transcript_selection_target(self, widget: Widget | None) -> bool:
+        return (
+            self.screen is self.screen_stack[0]
+            and widget is not None
+            and widget.allow_select
+            and any(isinstance(node, Transcript) for node in widget.ancestors_with_self)
+        )
+
+    def _on_selection_started(self, screen: Screen[Any]) -> None:
+        # This immediate signal runs before Textual forwards MouseDown through
+        # widget queues, so a fast release cannot overtake the start callback.
+        try:
+            widget, _ = screen.get_widget_at(*self.mouse_position)
+        except NoWidget:
+            widget = None
+        self._transcript_selection_started = self._is_transcript_selection_target(widget)
+
+    def on_text_selected(self, event: events.TextSelected) -> None:
+        # Textual emits this on every mouse release, even for a scrollbar/composer drag
+        # that leaves an earlier transcript selection intact.
+        started, self._transcript_selection_started = self._transcript_selection_started, False
+        if started:
+            self._copy_transcript_selection()
+
+    def _copy_transcript_selection(self) -> None:
+        if self.screen is not self.screen_stack[0]:
+            return
+        transcript = self.query_one(Transcript)
+        for widget, selection in self.screen.selections.items():
+            if transcript not in widget.ancestors_with_self:
+                text = widget.get_selection(selection)
+                if text is not None and text[0]:
+                    return  # ignore actual selected text outside the transcript
+                # Multi-widget selections also include overlapping, empty ancestor
+                # containers. They add native separators, not out-of-scope content.
+        selected = self.screen.get_selected_text()
+        if selected:
+            self.copy_to_clipboard(selected)
+
     def on_click(self, event: events.Click) -> None:
         """Return focus to the composer after a click on anything but a control."""
         if self.screen is not self.screen_stack[0] or event.widget is None:
             return  # modal screens keep their own focus handling
+        if (
+            event.chain >= 2
+            and event.button == 1
+            and self._is_transcript_selection_target(event.widget)
+        ):
+            # Textual handles double/triple-click selection after the release event.
+            self.call_after_refresh(self._copy_transcript_selection)
         for node in event.widget.ancestors_with_self:
             if isinstance(node, Widget) and node.focusable and node.focus_on_click():
                 return  # a real control: the composer, autocomplete, a collapsible title…
         self.query_one("#user-input", ChatInput).focus(scroll_visible=False)
 
     def on_resize(self, event: events.Resize) -> None:
-        self.set_class(event.size.width < 50, "narrow")
+        # Reserve space for the persistent permission warning and the context meter.
+        self.set_class(
+            event.size.width
+            < (PERMISSIONS_OFF_CONTROLS_MIN_WIDTH if self._skip_permissions else 50),
+            "narrow",
+        )
+        for badge in self.query("#permissions-off"):
+            assert isinstance(badge, Label)
+            badge.update(
+                PERMISSIONS_OFF_SHORT_LABEL
+                if event.size.width < PERMISSIONS_OFF_FULL_MIN_WIDTH
+                else PERMISSIONS_OFF_LABEL
+            )
         self.set_class(event.size.height < 24, "short")
 
     def on_mount(self) -> None:
+        self.screen.text_selection_started_signal.subscribe(
+            self, self._on_selection_started, immediate=True
+        )
         self.title = "drove chat"
         self._tool_timer = self.set_interval(0.1, self._tick_tool, pause=True)
         self.run_worker(self._refresh_context_length(), exit_on_error=False)
@@ -1067,6 +1150,7 @@ class ChatApp(App[None]):
 
     _COMMANDS = {
         "/help": "Show commands and keyboard shortcuts",
+        "/permissions": "Manage tool rules and Allow all for this conversation",
         "/info": "Show connection, context, and last-reply details",
         "/tips": "/tips [off] — restart guidance or hide all tips",
         "/sessions": "Browse and resume saved sessions",
@@ -1107,7 +1191,24 @@ class ChatApp(App[None]):
             )
             return
 
-        if cmd == "/info":
+        if cmd == "/permissions":
+            if self.is_generating or self._queue:
+                await self._show_note(
+                    "Stop the reply and clear pending prompts before editing permissions."
+                )
+                return
+            policy = self._policy_context()
+            self.push_screen(
+                PermissionsModal(
+                    policy.grants,
+                    self._allow_all,
+                    self._cwd,
+                    self._remote_endpoint,
+                    self._configured_grants(),
+                ),
+                self._apply_permissions,
+            )
+        elif cmd == "/info":
             self.action_show_details()
         elif cmd == "/tips":
             self._completed_hints = set(self._HINTS) if arg == "off" else set()
@@ -1132,7 +1233,7 @@ class ChatApp(App[None]):
             self._session = new_session(self._model, self._system_prompt, endpoint=self._endpoint)
             self._history = list(self._session.messages)
             self._clear_queue()
-            self._session_allowed_tools.clear()
+            self._reset_permissions()
             self._last_speed = self._last_ttft = None
             self._last_usage = {}
             self._update_status()
@@ -1224,7 +1325,7 @@ class ChatApp(App[None]):
             )
             self._system_prompt = system_prompt
             self._history = list(self._session.messages)
-            self._session_allowed_tools.clear()
+            self._reset_permissions()
             self._last_speed = self._last_ttft = None
             self._last_usage = {}
             await self.query_one("#messages").remove_children()
@@ -1258,8 +1359,7 @@ class ChatApp(App[None]):
                 return
         self._session = session
         self._system_prompt = session.system_prompt
-        self._session_allowed_tools.clear()
-        self._call_grant = None
+        self._reset_permissions()
         self._history = cap_tool_messages(session.messages)
         self._last_speed = self._last_ttft = None
         self._last_usage = {}
@@ -1600,7 +1700,10 @@ class ChatApp(App[None]):
         origins, internal_origins = fetch_origins(policy, grant)
         context = ToolContext(
             cwd=self._cwd,
-            read_roots=read_roots(name, policy, grant),
+            read_roots=None if policy.allow_all else read_roots(name, policy, grant),
+            write_roots=(Path(grant.directory),)
+            if name == "write_file" and grant is not None and grant.directory is not None
+            else None,
             approved_origins=origins,
             internal_origins=internal_origins,
             approve_origin=self._origin_approver(turn),
@@ -1622,15 +1725,34 @@ class ChatApp(App[None]):
         finally:
             turn.tool_task = None
 
-    def _policy_context(self) -> PolicyContext:
-        tokens = set(self._session_allowed_tools)
+    def _configured_grants(self) -> frozenset[Grant]:
         try:
-            from drove.config import load_config
+            return parse_grants(load_config(self._config_path).allowed_tools)
+        except OSError, ValueError:
+            return frozenset()
 
-            tokens.update(load_config(self._config_path).allowed_tools)
-        except Exception:
-            pass
-        return PolicyContext(self._cwd, self._remote_endpoint, parse_grants(tokens))
+    def _reset_permissions(self) -> None:
+        self._session_allowed_tools.clear()
+        self._conversation_rules = None
+        self._allow_all = False
+        self._call_grant = None
+
+    def _apply_permissions(self, result: tuple[frozenset[Grant], bool] | None) -> None:
+        if result is not None:
+            self._conversation_rules, self._allow_all = result
+            self._update_status()
+
+    def _policy_context(self) -> PolicyContext:
+        grants = self._conversation_rules
+        if grants is None:
+            grants = self._configured_grants() | parse_grants(self._session_allowed_tools)
+        return PolicyContext(
+            self._cwd,
+            self._remote_endpoint,
+            grants,
+            self._allow_all,
+            self._conversation_rules is not None,
+        )
 
     async def _tool_allowed(self, name: str, arguments: str) -> bool:
         decision = decide(name, arguments, self._policy_context())
@@ -1639,7 +1761,13 @@ class ChatApp(App[None]):
         return allowed
 
     async def _confirm(self, name: str, arguments: str, decision: Decision) -> bool:
-        """Ask about one call; a session/always choice records only the decision's scope."""
+        """Ask about one call; a session/always choice records only the decision's scope.
+
+        With --dangerously-skip-permissions every call is approved here, without a dialog
+        and without recording any grant, so it also covers prompts met mid-fetch.
+        """
+        if self._skip_permissions:
+            return True
         grant = decision.grant if decision.scoped_choices else None
         modal = ToolConfirmationModal(
             name,
@@ -1653,6 +1781,8 @@ class ChatApp(App[None]):
             return False
         if grant is not None and choice in _SCOPED_CHOICES:
             self._session_allowed_tools.add(grant.token())
+            if self._conversation_rules is not None:
+                self._conversation_rules = self._conversation_rules | {grant}
             if choice == "allow-always" and self._config_path is not None:
                 try:
                     from drove.config import add_allowed_tool
@@ -1693,7 +1823,13 @@ class ChatApp(App[None]):
         if turn.stop_requested:
             return False
         arguments = json.dumps({"origin": origin})
-        allowed = await self._confirm("fetch_url", arguments, origin_decision(origin, internal))
+        policy = self._policy_context()
+        allowed = policy.allow_all or any(
+            g.tool == "fetch_url" and g.origin == origin and (not internal or g.internal)
+            for g in policy.grants
+        )
+        if not allowed:
+            allowed = await self._confirm("fetch_url", arguments, origin_decision(origin, internal))
         return allowed and not turn.stop_requested
 
     async def _send_message(self, turn: ChatTurn) -> None:
@@ -2010,7 +2146,7 @@ class ChatApp(App[None]):
         elif self._queue_paused and self._queue:
             activity = "Queue paused"
         self.query_one("#activity-label", Label).update(activity)
-        parts = []
+        parts = ["Allow all tools · this conversation"] if self._allow_all else []
         if self._queue:
             paused = " (paused)" if self._queue_paused else ""
             parts.append(f"{len(self._queue)} queued{paused}")

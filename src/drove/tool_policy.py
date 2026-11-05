@@ -1,10 +1,11 @@
 """Approval policy and output limits for the chat tools, independent of the TUI.
 
 The chat asks before a tool reads outside its working directory, before any read
-when the model runs on a remote endpoint, before each shell command or file write,
+when the model runs on a remote endpoint, before each file write or unapproved shell command,
 and before fetching from an origin (scheme, host and port) it has not been allowed
 to reach. "Allow for session" and "Allow always" record a :class:`Grant` scoped to
-one directory or one origin, never a bare tool name.
+one directory, one origin, or one exact command in its working directory, never a
+bare tool name.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 import httpx
 
@@ -23,10 +24,15 @@ TOOL_OUTPUT_LIMIT = 64 * 1024
 TRUNCATION_NOTICE = "\n… [output truncated]"
 
 READ_TOOLS = frozenset({"read_file", "list_files", "search_files"})
-#: Tools that always ask, once per call: no session or saved grant applies to them.
+#: Tools that ask per call by default; only the conversation editor can grant them.
 PER_CALL_TOOLS = frozenset({"shell_execute", "write_file"})
 
 _GRANT_VERSION = 1
+
+
+def normalize_command(command: str) -> str:
+    """Trim only shell whitespace, identically for execution and command grants."""
+    return command.strip(" \t\n")
 
 
 def cap_output(text: str, limit: int = TOOL_OUTPUT_LIMIT) -> str:
@@ -149,25 +155,35 @@ def is_local_endpoint(base_url: str) -> bool:
 
 @dataclass(frozen=True)
 class Grant:
-    """Permission for one tool on one directory (and below) or one exact origin."""
+    """Permission on a directory, exact origin, or editor-only exact command and cwd."""
 
     tool: str
     directory: str | None = None
     origin: str | None = None  # fetch only: scheme://host:port, see canonical_origin
     internal: bool = False  # fetch only: the host may resolve to an internal address
+    command: str | None = None  # editor only: exact trimmed shell command, bound to directory
 
     def token(self) -> str:
         """The canonical string stored in ``allowed_tools``."""
         data: dict[str, Any] = {"v": _GRANT_VERSION, "tool": self.tool}
+        if self.command is not None:
+            data["command"] = self.command
         if self.directory is not None:
             data["dir"] = self.directory
         if self.origin is not None:
             data["origin"] = self.origin
         if self.internal:
             data["internal"] = True
-        return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return json.dumps(
+            data, sort_keys=True, separators=(",", ":"), ensure_ascii=self.command is not None
+        )
 
     def describe(self) -> str:
+        if self.command is not None:
+            return (
+                f"{self.tool} exactly {json.dumps(self.command, ensure_ascii=True)}"
+                f" in {json.dumps(self.directory, ensure_ascii=True)}"
+            )
         if self.directory is not None:
             return f"{self.tool} in {self.directory}"
         suffix = ", including internal addresses" if self.internal else ""
@@ -187,8 +203,23 @@ def parse_grant(token: str) -> Grant | None:
     if not isinstance(data, dict) or data.get("v") != _GRANT_VERSION:
         return None
     tool, directory, origin = data.get("tool"), data.get("dir"), data.get("origin")
-    if not isinstance(tool, str) or tool in PER_CALL_TOOLS or "host" in data:
+    if not isinstance(tool, str) or "host" in data:
         return None
+    # shell_execute is in PER_CALL_TOOLS but can have saved grants; write_file cannot.
+    if tool in PER_CALL_TOOLS and tool != "shell_execute":
+        return None
+    if tool == "shell_execute":
+        command = data.get("command")
+        if set(data) != {"v", "tool", "dir", "command"} or type(data["v"]) is not int:
+            return None
+        if not valid_command(command) or command != normalize_command(command):
+            return None
+        if not isinstance(directory, str) or not directory or "\x00" in directory:
+            return None
+        path = Path(directory)
+        if not path.is_absolute() or str(path) != directory or ".." in path.parts:
+            return None
+        return Grant(tool, directory=directory, command=command)
     if tool in READ_TOOLS and isinstance(directory, str) and origin is None:
         return Grant(tool, directory=directory)
     if tool == "fetch_url" and isinstance(origin, str) and directory is None:
@@ -211,6 +242,8 @@ class PolicyContext:
     cwd: Path  # resolved
     remote_endpoint: bool
     grants: frozenset[Grant] = frozenset()
+    allow_all: bool = False
+    managed: bool = False  # conversation editor may authorize shell/write rules
 
 
 @dataclass(frozen=True)
@@ -247,7 +280,24 @@ def decide(name: str, arguments: str, ctx: PolicyContext) -> Decision:
     Calls whose arguments the tool itself rejects need no prompt: they fail before
     doing anything.
     """
+    if ctx.allow_all:
+        return _NO_PROMPT
+    if name == "shell_execute":
+        return _decide_shell(arguments, ctx)
     if name in PER_CALL_TOOLS:
+        if ctx.managed:
+            try:
+                args = json.loads(arguments)
+                if not isinstance(args, dict):
+                    return Decision(prompt=True)
+                for grant in ctx.grants:
+                    if grant.tool != name or grant.directory is None:
+                        continue
+                    if isinstance(args.get("path"), str):
+                        if resolve_path(args["path"], ctx.cwd).is_relative_to(grant.directory):
+                            return Decision(prompt=False, grant=grant)
+            except ValueError, OSError, RuntimeError:
+                pass
         return Decision(prompt=True)
     if name not in READ_TOOLS and name != "fetch_url":
         return _NO_PROMPT
@@ -260,6 +310,44 @@ def decide(name: str, arguments: str, ctx: PolicyContext) -> Decision:
     if name == "fetch_url":
         return _decide_fetch(args, ctx)
     return _decide_read(name, args, ctx)
+
+
+def valid_command(command: Any) -> TypeGuard[str]:
+    """Whether a command can be executed and represented by a persistent grant."""
+    if not isinstance(command, str) or not normalize_command(command) or "\x00" in command:
+        return False
+    try:
+        command.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _decide_shell(arguments: str, ctx: PolicyContext) -> Decision:
+    try:
+        args = json.loads(arguments)
+    except ValueError:
+        return Decision(prompt=True)
+    command = args.get("command") if isinstance(args, dict) else None
+    if not valid_command(command):
+        return Decision(prompt=True)
+    normalized = normalize_command(command)
+    cwd_str = str(ctx.cwd.resolve())
+    # Check existing grants for this exact command and directory
+    for grant in ctx.grants:
+        if (
+            grant.tool == "shell_execute"
+            and grant.command == normalized
+            and grant.directory == cwd_str
+        ):
+            return Decision(prompt=False, grant=grant)
+    grant = Grant("shell_execute", directory=cwd_str, command=normalized)
+    reason = (
+        "The chat endpoint is not local: the command's output is sent to a remote server."
+        if ctx.remote_endpoint
+        else ""
+    )
+    return Decision(prompt=True, grant=grant, scoped_choices=True, reason=reason)
 
 
 def _decide_read(name: str, args: dict[str, Any], ctx: PolicyContext) -> Decision:

@@ -257,6 +257,17 @@ def chat(
     resume: Annotated[
         bool, typer.Option("--resume", "-r", help="Resume the latest saved session.")
     ] = False,
+    dangerously_skip_permissions: Annotated[
+        bool,
+        typer.Option(
+            "--dangerously-skip-permissions",
+            help=(
+                "DANGEROUS: run every tool call without asking, including shell commands, "
+                "file writes and URL fetches. Applies to this run only and saves nothing "
+                "to config. Use only in a disposable sandbox."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Open an interactive TUI chat session.
 
@@ -328,6 +339,7 @@ def chat(
         resume_session=resume_session,
         theme=config.tui_theme,
         api_key=api_key,
+        skip_permissions=dangerously_skip_permissions,
     )
     with textual_logging():
         tui.run()

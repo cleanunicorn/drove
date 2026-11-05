@@ -15,7 +15,7 @@ the command; subcommand options follow it.
 | `drove init` | Write the config file with defaults | `-f, --force` overwrites |
 | `drove serve` / `drove server` | Start the proxy | `--host`, `--port` |
 | `drove server status` | Inspect the running proxy | `-w, --watch [N]`, `-V, --verbose` |
-| `drove chat [MODEL]` | Open terminal chat | `-r, --resume`, `-s, --system`, `-e, --endpoint`, `-k, --api-key` |
+| `drove chat [MODEL]` | Open terminal chat | `-r, --resume`, `-s, --system`, `-e, --endpoint`, `-k, --api-key`, `--dangerously-skip-permissions` (runs every tool call unasked; sandboxes only, see below) |
 | `drove config [KEY] [VALUE]` | Show, get, or set global settings | Dotted keys, e.g. `llama_server.n_gpu_layers` |
 | `drove models list` | List installed models | `-V, --verbose` |
 | `drove models download REF` | Download `org/repo[:QUANT]` | `-n, --name`, `-y, --yes`, `--tts-engine`, `--repair-config`, `-V, --verbose` |
@@ -175,7 +175,41 @@ Tool confirmation shortcuts are **y** (allow once), **n** or **Esc** (deny once)
 **s** (allow for this session), and **a** (allow always). Esc in this dialog denies
 the call rather than stopping the whole turn.
 
-What asks for approval:
+Use `/permissions` (also listed by `/help` and autocomplete) to inspect and stage
+permissions before a tool asks. Select a rule to edit it, or choose **New rule**;
+choose a readable tool name, enter the scope, then **Save rule**. **Remove** deletes
+the selected rule from the draft. **Apply** installs the draft; **Cancel** or **Esc**
+leaves the active permissions unchanged. Save or clear a pending scope before Apply.
+The editor is available while no reply or queued prompt is pending.
+
+Rules identify their tool, scope and lifetime. Read and write scopes are directories
+and their descendants, with `~` and relative paths resolved against the working
+directory. Shell scopes match the exact command after trimming surrounding
+whitespace, in this chat's working directory, including background calls and any
+timeout; there are no prefix or glob matches. Fetch scopes name one HTTP(S) origin
+(scheme, host, port), with a separate option for private/internal addresses.
+Remote reads still ask on every call, even with a directory rule; the editor marks
+these rules inactive. Local reads inside the working directory and background-task
+status checks already need no approval.
+
+**Allow all** explicitly permits every chat tool without approval, including shell
+commands, writes, remote reads and private-address fetches and redirects. Its active
+state stays visible in the chat status bar. Turn it off and Apply to return to the
+rules in the editor. Argument validation, output caps, timeouts, DNS pinning and URL
+validation still apply. Changes affect subsequent tool calls; the editor cannot
+change an already running call.
+
+Editor changes, including Allow all and shell/write rules, last only for the current
+conversation. `/new`, `/clear`, switching model, or loading a saved conversation
+clears them. They are never saved to config or conversation files. Saved config
+rules appear as **saved defaults**; removing or changing one in this editor overrides
+it for this conversation only, and a new conversation restores the saved default.
+Later **Allow for session** or **Allow always** directory/origin approvals join the
+active rules; **Allow always** also updates the saved config as before. The editor
+does not add new persistent shell/write token formats (see #158 for that separate
+proposal).
+
+What asks for approval by default (before editor overrides or Allow all):
 
 - `read_file`, `list_files` and `search_files` run without asking inside the
   directory `drove chat` was started in, and ask for anything outside it. Paths are
@@ -183,8 +217,13 @@ What asks for approval:
   listing never follows a symlink out of the approved directories. When the chat
   talks to a server that is not this machine (`--endpoint`, or `--host` other than
   `localhost`/a loopback address), every read asks, once per call.
-- `shell_execute` and `write_file` ask on every call; the dialog offers only allow once
-  or deny.
+- `shell_execute` asks unless the exact command has a session or saved grant for the
+  chat's working directory. The dialog shows the command and directory covered by
+  **s**/**a**. Surrounding spaces, tabs and newlines are removed before approval
+  and execution; all remaining characters must match, including shell operators.
+  Background calls follow the same rule; timeout and background settings do not
+  change the command scope. A grant never covers another directory or a subdirectory.
+- `write_file` asks on every call; the dialog offers only allow once or deny.
 - `fetch_url` asks once per origin: scheme, host and port, so `https://example.com`
   does not cover `http://example.com` or `https://example.com:8443`. It fetches only
   `http`/`https` URLs, follows up to five redirects (a redirect to another origin asks
@@ -196,8 +235,23 @@ What asks for approval:
 
 **s** and **a** grant only the scope the dialog names: a directory and everything
 below it, for that one read tool (the file's directory for `read_file`), or one exact
-origin for `fetch_url`. **a** saves the grant in `allowed_tools`; bare tool names there
-are ignored.
+origin for `fetch_url`, or one exact command in one working directory for
+`shell_execute`. **a** saves the grant in `allowed_tools`; bare tool names there
+are ignored. Shell grants apply with both local and remote endpoints, so the output
+of an approved command may be sent to a remote model. An approved command can still
+behave differently if files or programs it uses change (for example, `make test`).
+
+**`--dangerously-skip-permissions` skips every approval prompt above.** With it, the
+model can run shell commands, write or overwrite files, read outside the working
+directory and fetch HTTP(S) URLs, internal addresses included, without asking.
+Execution checks still apply: recursive reads stay within the approved scope,
+invalid paths and URLs still fail, and tool output is still capped. With
+`--endpoint` or a remote `--host`, whatever those tools read or print is sent to that
+server. Use it only in a disposable sandbox (a container, a VM or a scratch
+directory). It lasts for that run only: it still holds after `/new`, a model switch or
+loading a session, it saves nothing to `allowed_tools`, and the chat header shows
+**⚠ permissions off** (shortened to **UNSAFE** in narrow terminals) for as long as
+it is on. Start `drove chat` without the flag to be asked again.
 
 Limits: every tool result is cut to 64 KiB with an `… [output truncated]` notice before
 it reaches the model or a saved session. `read_file` returns 200 lines unless `limit`
@@ -235,11 +289,17 @@ picker copies the current block without its fences, preserving code whitespace;
 Esc closes the picker. These keys apply only while a message is focused. Return to
 the input with Tab, or click anywhere outside a button or dialog, to continue typing.
 Clicking a message never moves focus off the input, so mouse text selection and
-scrolling leave your draft ready to type into.
+scrolling leave your draft ready to type into. Releasing a non-empty mouse selection
+in the transcript automatically copies the selected rendered text, including code
+snippets, replacing the clipboard without a notification. Double- and triple-click
+selections also copy exactly the text highlighted by the chat interface. Selections
+extending outside the transcript are ignored. Plain clicks and composer selections
+do not automatically copy.
 
 Copying sends an OSC52 clipboard request to the terminal. The terminal must support
-and allow clipboard writes; macOS Terminal does not. The confirmation means the
-request was sent, not that the operating-system clipboard was verified.
+and allow clipboard writes; macOS Terminal does not. For explicit copy actions, the
+confirmation means the request was sent, not that the operating-system clipboard
+was verified.
 
 Connection errors suggest `drove server status` and `drove serve`. Proxy errors show
 the returned message and an appropriate next step instead of a raw JSON response.

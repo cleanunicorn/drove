@@ -51,6 +51,9 @@ here.
 - **Format:** `make fmt` (`ruff format .`)
 - **Type-check:** `make typecheck` (`mypy src/`, strict)
 - **Test (all):** `make test` (`pytest`)
+- **Coverage (report only):** `make cov` (line coverage with missing lines)
+- **Release rehearsal:** `make release-check` — two pinned PSR releases and
+  original-commit publication retries in a disposable repository; no remote writes.
 - **Test (single file / focused):** no make target exists — the one sanctioned
   raw invocation:
 
@@ -109,10 +112,13 @@ before every release, but a red check costs a round trip (see
    a version number or date. The entry must be consistent with the commit
    type. The release automation promotes `[Unreleased]` into a versioned
    section when it cuts a release.
-8. **All configuration flows through `src/drove/config.py`.** It is the only
-   place the environment (`DROVE_*`) and the TOML file are read — never read
-   env vars ad hoc in business code. Per-model settings belong in sidecar
-   TOMLs parsed by `model_config.py`, never hardcoded.
+8. **Drove configuration flows through `src/drove/config.py`.** `DROVE_*`
+   settings and the global TOML file are read only there. Reading another
+   tool's documented environment variables in the module that integrates
+   with that tool is allowed: `SHELL` in `cli/completions.py`, and
+   `XDG_CONFIG_HOME`, agent config-path variables (`OPENCODE_CONFIG`,
+   `KILO_CONFIG`) and `PI_CODING_AGENT_DIR` in `integrations.py`. Per-model
+   settings belong in sidecar TOMLs parsed by `model_config.py`, never hardcoded.
 9. **Never manually edit `project.version` in `pyproject.toml`, create
    `vX.Y.Z` tags or GitHub Releases, or add version headings to
    `CHANGELOG.md`.** python-semantic-release owns all of it; hand edits
@@ -187,7 +193,7 @@ type(optional-scope): short imperative description
 ```
 
 Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
-`build`, `ci`, `chore`, `revert`. Add `!` before the colon for a breaking
+`build`, `ci`, `chore`. Add `!` before the colon for a breaking
 change.
 
 ```
@@ -258,8 +264,8 @@ Keep it short and useful:
 - Address review feedback by pushing more commits to the same branch.
 - Mention `@claude` in a PR/issue comment to have Claude Code act on it
   (`.github/workflows/claude.yml`).
-- Maintainers squash-merge: verify the prefilled commit message is the PR title
-  alone, not the branch's commit list (see [Gotchas](#gotchas)).
+- Maintainers squash-merge: verify the prefilled commit title is the PR title
+  and the body is the PR description, preserving intentional breaking footers (see [Gotchas](#gotchas)).
 
 ## Release automation
 
@@ -268,12 +274,16 @@ Keep it short and useful:
   which is what makes the PR title become the commit message the automation
   parses.
 - **What does merging trigger?** `.github/workflows/release.yml` runs
-  [python-semantic-release](https://python-semantic-release.readthedocs.io/) v9
+  [python-semantic-release](https://python-semantic-release.readthedocs.io/) 9.21.2
   on every push to `main`, after the **Check** workflow passes on that
   commit (`needs: check`). When a release is due it bumps `project.version` in
-  `pyproject.toml`, rewrites `CHANGELOG.md` (promoting `## [Unreleased]` into a
-  versioned section), commits `chore(release): vX.Y.Z` with `[skip ci]`, tags
-  `v{version}`, and publishes a GitHub Release with the changelog as the body.
+  `pyproject.toml`, runs `scripts/release.py prepare` to promote reviewed `## [Unreleased]`
+  bullets into `## vX.Y.Z (YYYY-MM-DD)` and `uv lock` to refresh the lock,
+  commits `chore(release): vX.Y.Z` with `[skip ci]`, tags
+  `v{version}`, and the workflow publishes that tag's handwritten changelog section with
+  `scripts/release.py publish` (safe to retry after publication failure).
+  PSR runs with `--no-changelog --no-vcs-release`; its build assets include
+  `CHANGELOG.md` and `uv.lock`, so versions and lock are committed together.
   There is no PyPI publish — drove is distributed via `uv tool install` from
   this GitHub repository, smoke-tested by the Install workflow.
 - **Does the PR title decide the bump?** Yes. The squash-merge commit carries
@@ -296,7 +306,7 @@ Keep it short and useful:
 ```
 src/drove/
   config.py            Global config (pydantic-settings): ~/.config/drove/config.toml
-                       + DROVE_* env overrides — the ONLY place env is read
+                       + DROVE_* env overrides — the only reader of drove settings
   model_config.py      Per-model sidecar TOMLs → llama-server args (ctx_size,
                        n_gpu_layers, cache_*, extra_args passthrough, backend,
                        asr_model, asr_quantization, tts_*)
@@ -316,8 +326,9 @@ src/drove/
                        drove.workers.asr); onnx-asr comes with the optional
                        `drove[asr]` extra
   workers/tts_runtime/ Text-to-speech worker (worker.py) and the Kokoro, Qwen3-TTS,
-                       Chatterbox, Fish engines (engines.py), adapted from Cathy
-                       (CATHY-LICENSE); run by `uv run --python 3.12` with the
+                       Chatterbox and Fish engines adapted from Cathy (CATHY-LICENSE),
+                       plus Kitten (engines.py; model terms in KITTEN-NOTICE);
+                       run by `uv run --python 3.12` with the
                        per-engine <engine>.txt requirements, never imported by drove
   proxy.py             FastAPI reverse proxy: extracts the model from JSON or
                        multipart bodies, ensures the backend is running,
@@ -332,20 +343,26 @@ src/drove/
   observe.py           Request/response record storage
   observe_tui.py       Textual TUI browser for observe logs
   observe_web.py (+ observe_web_static/)   Small web UI for observe logs
+  chat_models.py       Chat catalog metadata and OpenAI-compatible model-list clients
+  model_picker.py      Searchable model picker shared by startup and chat
   sessions.py, tui.py, tools.py, stats.py Chat TUI app, session persistence,
                        tool execution, token/process metrics
   tool_policy.py       Chat tool approvals (cwd/remote reads, scoped grants,
-                       per-call shell/write) and the 64 KiB tool output cap,
+                       exact-command shell grants, per-call writes) and the 64 KiB tool output cap,
                        testable without the TUI
   cli/                 Typer CLI: main.py (config, chat, observe, init),
                        models.py (list, download, add-tts, delete, info, config),
                        server.py (serve — default, status), integrate.py
                        (agent registration), completions.py, tui_logging.py
-                       (logging rerouted while a Textual app runs)
-tests/                 pytest suite, one file per module
-docs/                  architecture.md, configuration.md, deploy.md (release
-                       process), getting-started.md, cli.md, speech-to-text.md,
-                       text-to-speech.md
+                       (logging rerouted while a Textual app runs), output.py
+                       (shared CLI presentation), download_progress.py
+                       (terminal and redirected progress), quant_picker.py
+                       (quantization previews and interactive picker)
+scripts/release.py      Handwritten release notes promotion and retryable publication
+scripts/check_release.py  Disposable two-release rehearsal (`make release-check`)
+tests/                 pytest module and feature suites — see tests/
+docs/                  User and contributor guides — index in docs/README.md;
+                       proposals/ holds design proposals
 .github/workflows/     check.yml (lock check, lint, typecheck, test), install.yml
                        (make install smoke), pr-title.yml, release.yml (check,
                        then semantic-release), claude.yml (@claude)
@@ -353,9 +370,10 @@ docs/                  architecture.md, configuration.md, deploy.md (release
 
 Layering: `proxy.py` receives requests and delegates lifecycle to
 `server_manager.py`, which picks the command via `backend.py` and resolves
-paths via `model_store.py`; settings come only from `config.py`, per-model
-overrides only from `model_config.py`. The CLI and TUI are thin fronts over
-the same pieces.
+paths via `model_store.py`; drove settings come only from `config.py`,
+per-model overrides only from `model_config.py`. Integration modules may
+read the third-party environment variables described in golden rule 8.
+The CLI and TUI are thin fronts over the same pieces.
 
 Request flow:
 
@@ -408,9 +426,10 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   `E`, `F`, `I`, `UP`; `make fmt` formats, `make lint` checks.
 - **Typing:** mypy strict over `src/` (`make typecheck`). `onnx_asr` is the
   only import exemption (optional extra) — don't widen it.
-- **Configuration:** global settings only via `config.py`; per-model settings
-  only via sidecar TOMLs (`drove models config` edits them). No scattered env
-  reads.
+- **Configuration:** `DROVE_*` settings and the global TOML file are read only
+  in `config.py`; per-model settings only via sidecar TOMLs (`drove models
+  config` edits them). Integration modules may read another tool's documented
+  environment variables (see golden rule 8).
 - **Interface design:** prioritize space for active content. Use thin delimiters
   and minimal padding; show diagnostics on demand. Teach one action at a time in
   a single compact guidance area, retire tips after use or dismissal, remember
@@ -426,8 +445,9 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
 
 ## Testing
 
-- **Framework / runner:** pytest (`make test`), asyncio auto mode,
-  `testpaths = ["tests"]`.
+Coverage is report-only: run `make cov` to identify gaps; no global percentage
+floor is enforced. New modules should ship with tests, including TUI modules
+(using Textual pilots where appropriate). Test observable behavior and regression
 - **Location & naming:** `tests/test_<module>.py`, one per source module —
   `test_proxy.py`, `test_server_manager.py` (lifecycle, eviction races,
   health checks), `test_config.py`, `test_model_config.py`,
@@ -435,10 +455,9 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   `test_downloader.py`, `test_gguf.py`, `test_prompt_cache.py`,
   `test_observe.py`, `test_observe_web.py`, `test_proxy_observe.py`,
   `test_cli_models.py`, and the text-to-speech suites `test_tts_worker.py`,
-  `test_tts_integration.py`, `test_tts_download.py`, plus `test_workflows.py`
+  `test_tts_integration.py`, `test_tts_download.py`, `test_release.py` (reviewed
+  notes promotion and retryable publication), plus `test_workflows.py`
   (the CI check and release-gate contract in `.github/workflows/`).
-- **What to cover:** happy path + error paths; lifecycle and eviction changes
-  ship with regression tests for the race they fix (the existing suites set
   the bar).
 - **Fixtures / stubs:** tests fake the backends (patched start/health, temp
   model dirs) — no `llama-server`, GPU, network, or downloaded models needed;
@@ -475,9 +494,10 @@ extra_args = ["--a-flag-llama-server-added-yesterday", "value"]
   use `extra_args`. The context-size field is `ctx_size`, not `context_size`.
 - **`n_parallel` maps to `--parallel`**, not `--n-parallel` — llama-server
   rejects the latter outright and the model never starts.
-- **Squash-merge with the PR title as the commit message.** If GitHub
+- **Squash-merge with the PR title as the commit title and PR description as the body.** If GitHub
   prefills the branch's commit list instead, semantic-release parses the
-  wrong messages and the bump is wrong. Check the merge dialog.
+  wrong messages and the bump is wrong. Check the merge dialog and retain intentional breaking footers. Quote literal
+  `BREAKING CHANGE:` examples with backticks so they cannot trigger a bump.
 - **`make install` is not dev setup.** It installs a *global* uv tool
   (Python 3.14, `asr` extra by default); the dev targets work without it.
 - **Version, tags, releases, and versioned changelog sections are

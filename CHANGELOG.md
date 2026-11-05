@@ -2,8 +2,42 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added session and saved shell command approvals scoped to an exact command and
+  working directory, with a remote-endpoint disclosure when granting commands
+  whose output goes to a remote model.
+- Added `/permissions` in chat to inspect and edit conversation-scoped tool rules,
+  including exact shell commands and write directories, and explicitly enable or
+  disable Allow all with a visible status indicator. Changes stayed in the current
+  conversation; Cancel discarded edits and new conversations restored defaults.
+- Added `drove chat --dangerously-skip-permissions` to bypass tool confirmations while retaining execution checks
+  for one run, with a persistent warning (compact `UNSAFE` in narrow terminals) and no saved permission grants.
+- Added `make cov` to report coverage with uncovered lines and `make release-check`
+  to rehearse a semantic-release cycle in a disposable repo with no remote writes.
+- Chat automatically copied non-empty transcript selections, including rendered Markdown,
+  code snippets and text spanning messages, while preserving composer drafts, focus
+  and explicit copy shortcuts.
+
 ### Changed
 
+- Shell commands trimmed surrounding spaces, tabs and newlines consistently for
+  approval and execution, and foreground and background tasks ran in the chat's
+  recorded working directory.
+- Reused the conversation permission reset when loading saved chats.
+- The systemd service now stops a hand-started `drove serve` process before
+  starting its own, and `make service-restart` was made to run even when a file
+  has that name.
+- Documented unlocked CLI and TTS dependency resolution, with a lock-constrained
+  reinstall recipe in the existing guides.
+- Declared directly imported CLI and validation dependencies, including TTS workers,
+  and removed the unused HTTP/2 dependency extra.
+- Aligned contributor commit types with the PR title and release parser, with
+  regression checks covering the release guide too.
+- Refreshed the contributor guide with current module and engine pointers,
+  directory-based docs and test inventories, and the distinction between drove
+  settings and third-party environment conventions; corrected backend comments
+  to include text-to-speech.
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for
   the same check, so a red `main` no longer cuts a version.
@@ -13,6 +47,12 @@
 
 ### Fixed
 
+- Allowed applying chat permission changes after inspecting an unchanged rule,
+  without requiring an extra save.
+- Preserved reviewed changelog bullets in release notes and refreshed the lockfile
+  with each version bump, and made release publication retryable from the original workflow commit.
+- Made `service-restart` run even when a file has that name, and stopped
+  hand-started `drove serve` instances before starting the systemd service.
 - `uv.lock` records the current drove version again, so `uv run` no longer
   dirties the working tree.
 

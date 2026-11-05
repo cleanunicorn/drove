@@ -133,4 +133,19 @@ Stop the foreground server with Ctrl+C when you are finished.
 - [Running drove](./operations.md) — service setup, status, request logs.
 - [Configuration](./configuration.md) — timeouts, memory budget, prompt cache.
 
+## Dependency reproducibility
+
+`make install` uses `uv tool install`, which resolves package metadata afresh;
+it does not use this checkout's `uv.lock`. Dependency floors permit newer versions.
+For an install constrained to the checked-in lock, run from the repository:
+
+```bash
+uv export --frozen --no-dev --extra asr --no-emit-project --format requirements.txt --output-file /tmp/drove-constraints.txt
+uv tool install --force --reinstall-package drove --python 3.14 --constraint /tmp/drove-constraints.txt '.[asr]'
+```
+
+The lock must match the checkout. Development targets use `uv run` and the
+project lock. TTS engines have separate environments; see
+[text-to-speech](./text-to-speech.md#engine-dependencies).
+
 [Docs](./README.md) · [Next: Managing models →](./models.md)

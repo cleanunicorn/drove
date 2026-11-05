@@ -39,6 +39,12 @@ An invalid value (in the file or a `DROVE_*` variable) stops commands with a
 message naming the file or variable and the key. `drove config <key> <value>`
 still works on a file with a bad value, so it can fix it; a file that is not
 valid TOML must be fixed by hand or reset with `drove init --force`.
+`/permissions` in chat provides a readable, conversation-only editor and an explicit
+Allow all switch. It can override these saved defaults for the current conversation;
+`/new`, `/clear`, model switching and session loading restore the defaults. Editor
+shell/write rules and Allow all are never written here. Remote reads still ask unless
+Allow all is on. See [Chat controls](cli.md#chat-controls) for scopes and Apply/Cancel.
+
 `allowed_tools` is a list, so set it in the file (or with "allow always" in
 `drove chat`), not with `drove config`.
 

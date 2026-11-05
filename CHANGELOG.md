@@ -7,12 +7,17 @@
 - Added session and saved shell command approvals scoped to an exact command and
   working directory, with a remote-endpoint disclosure when granting commands
   whose output goes to a remote model.
+- Added `/permissions` in chat to inspect and edit conversation-scoped tool rules,
+  including exact shell commands and write directories, and explicitly enable or
+  disable Allow all with a visible status indicator. Changes stayed in the current
+  conversation; Cancel discarded edits and new conversations restored defaults.
 
 ### Changed
 
 - Shell commands trimmed surrounding spaces, tabs and newlines consistently for
-  approval and execution, and foreground and background tasks ran in the chat’s
+  approval and execution, and foreground and background tasks ran in the chat's
   recorded working directory.
+- Reused the conversation permission reset when loading saved chats.
 - Pull requests now get a `check` status that fails on a stale `uv.lock`, a
   ruff error, a mypy error or a failing test, and releases from `main` wait for
   the same check, so a red `main` no longer cuts a version.
@@ -21,6 +26,9 @@
   assert on the body.
 
 ### Fixed
+
+- Allowed applying chat permission changes after inspecting an unchanged rule,
+  without requiring an extra save.
 
 - `uv.lock` records the current drove version again, so `uv run` no longer
   dirties the working tree.

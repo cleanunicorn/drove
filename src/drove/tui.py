@@ -42,6 +42,7 @@ from textual.worker import Worker
 from drove.chat_models import CatalogError, fetch_context_length, fetch_models_async
 from drove.config import ChatHint, load_config, save_tui_completed_hints
 from drove.model_picker import ModelPicker
+from drove.permissions import PermissionsModal
 from drove.sessions import Session, list_sessions, new_session, save_session, session_endpoint
 from drove.tool_policy import (
     Decision,
@@ -932,6 +933,8 @@ class ChatApp(App[None]):
         self.theme = theme
         # Grant tokens (see drove.tool_policy) allowed for this session only.
         self._session_allowed_tools: set[str] = set()
+        self._conversation_rules: frozenset[Grant] | None = None
+        self._allow_all = False
         self._cwd = Path.cwd().resolve()  # reads inside it need no approval
         self._remote_endpoint = not is_local_endpoint(self._base_url)
         self._call_grant: Grant | None = None  # the scope approved for the next tool run
@@ -1067,6 +1070,7 @@ class ChatApp(App[None]):
 
     _COMMANDS = {
         "/help": "Show commands and keyboard shortcuts",
+        "/permissions": "Manage tool rules and Allow all for this conversation",
         "/info": "Show connection, context, and last-reply details",
         "/tips": "/tips [off] — restart guidance or hide all tips",
         "/sessions": "Browse and resume saved sessions",
@@ -1107,7 +1111,24 @@ class ChatApp(App[None]):
             )
             return
 
-        if cmd == "/info":
+        if cmd == "/permissions":
+            if self.is_generating or self._queue:
+                await self._show_note(
+                    "Stop the reply and clear pending prompts before editing permissions."
+                )
+                return
+            policy = self._policy_context()
+            self.push_screen(
+                PermissionsModal(
+                    policy.grants,
+                    self._allow_all,
+                    self._cwd,
+                    self._remote_endpoint,
+                    self._configured_grants(),
+                ),
+                self._apply_permissions,
+            )
+        elif cmd == "/info":
             self.action_show_details()
         elif cmd == "/tips":
             self._completed_hints = set(self._HINTS) if arg == "off" else set()
@@ -1132,7 +1153,7 @@ class ChatApp(App[None]):
             self._session = new_session(self._model, self._system_prompt, endpoint=self._endpoint)
             self._history = list(self._session.messages)
             self._clear_queue()
-            self._session_allowed_tools.clear()
+            self._reset_permissions()
             self._last_speed = self._last_ttft = None
             self._last_usage = {}
             self._update_status()
@@ -1224,7 +1245,7 @@ class ChatApp(App[None]):
             )
             self._system_prompt = system_prompt
             self._history = list(self._session.messages)
-            self._session_allowed_tools.clear()
+            self._reset_permissions()
             self._last_speed = self._last_ttft = None
             self._last_usage = {}
             await self.query_one("#messages").remove_children()
@@ -1258,8 +1279,7 @@ class ChatApp(App[None]):
                 return
         self._session = session
         self._system_prompt = session.system_prompt
-        self._session_allowed_tools.clear()
-        self._call_grant = None
+        self._reset_permissions()
         self._history = cap_tool_messages(session.messages)
         self._last_speed = self._last_ttft = None
         self._last_usage = {}
@@ -1600,7 +1620,10 @@ class ChatApp(App[None]):
         origins, internal_origins = fetch_origins(policy, grant)
         context = ToolContext(
             cwd=self._cwd,
-            read_roots=read_roots(name, policy, grant),
+            read_roots=None if policy.allow_all else read_roots(name, policy, grant),
+            write_roots=(Path(grant.directory),)
+            if name == "write_file" and grant is not None and grant.directory is not None
+            else None,
             approved_origins=origins,
             internal_origins=internal_origins,
             approve_origin=self._origin_approver(turn),
@@ -1622,15 +1645,34 @@ class ChatApp(App[None]):
         finally:
             turn.tool_task = None
 
-    def _policy_context(self) -> PolicyContext:
-        tokens = set(self._session_allowed_tools)
+    def _configured_grants(self) -> frozenset[Grant]:
         try:
-            from drove.config import load_config
+            return parse_grants(load_config(self._config_path).allowed_tools)
+        except OSError, ValueError:
+            return frozenset()
 
-            tokens.update(load_config(self._config_path).allowed_tools)
-        except Exception:
-            pass
-        return PolicyContext(self._cwd, self._remote_endpoint, parse_grants(tokens))
+    def _reset_permissions(self) -> None:
+        self._session_allowed_tools.clear()
+        self._conversation_rules = None
+        self._allow_all = False
+        self._call_grant = None
+
+    def _apply_permissions(self, result: tuple[frozenset[Grant], bool] | None) -> None:
+        if result is not None:
+            self._conversation_rules, self._allow_all = result
+            self._update_status()
+
+    def _policy_context(self) -> PolicyContext:
+        grants = self._conversation_rules
+        if grants is None:
+            grants = self._configured_grants() | parse_grants(self._session_allowed_tools)
+        return PolicyContext(
+            self._cwd,
+            self._remote_endpoint,
+            grants,
+            self._allow_all,
+            self._conversation_rules is not None,
+        )
 
     async def _tool_allowed(self, name: str, arguments: str) -> bool:
         decision = decide(name, arguments, self._policy_context())
@@ -1653,6 +1695,8 @@ class ChatApp(App[None]):
             return False
         if grant is not None and choice in _SCOPED_CHOICES:
             self._session_allowed_tools.add(grant.token())
+            if self._conversation_rules is not None:
+                self._conversation_rules = self._conversation_rules | {grant}
             if choice == "allow-always" and self._config_path is not None:
                 try:
                     from drove.config import add_allowed_tool
@@ -1693,7 +1737,13 @@ class ChatApp(App[None]):
         if turn.stop_requested:
             return False
         arguments = json.dumps({"origin": origin})
-        allowed = await self._confirm("fetch_url", arguments, origin_decision(origin, internal))
+        policy = self._policy_context()
+        allowed = policy.allow_all or any(
+            g.tool == "fetch_url" and g.origin == origin and (not internal or g.internal)
+            for g in policy.grants
+        )
+        if not allowed:
+            allowed = await self._confirm("fetch_url", arguments, origin_decision(origin, internal))
         return allowed and not turn.stop_requested
 
     async def _send_message(self, turn: ChatTurn) -> None:
@@ -2010,7 +2060,7 @@ class ChatApp(App[None]):
         elif self._queue_paused and self._queue:
             activity = "Queue paused"
         self.query_one("#activity-label", Label).update(activity)
-        parts = []
+        parts = ["Allow all tools · this conversation"] if self._allow_all else []
         if self._queue:
             paused = " (paused)" if self._queue_paused else ""
             parts.append(f"{len(self._queue)} queued{paused}")

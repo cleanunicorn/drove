@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.16.0 (2026-11-06)
+
 ### Added
 
 - Added session and saved shell command approvals scoped to an exact command and
@@ -59,7 +61,6 @@
   hand-started `drove serve` instances before starting the systemd service.
 - `uv.lock` records the current drove version again, so `uv run` no longer
   dirties the working tree.
-
 
 ## v0.15.1 (2026-11-03)
 

@@ -47,6 +47,8 @@
 
 ### Fixed
 
+- Fixed an intermittent chat permissions editor test failure on slow machines, which had
+  blocked a release.
 - Fixed an intermittent test failure when a timed-out shell command's process
   exited during test cleanup, which had blocked a release.
 - Allowed applying chat permission changes after inspecting an unchanged rule,

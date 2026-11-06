@@ -1,11 +1,12 @@
 """Conversation permissions: policy, editor transactions, wiring and lifecycle."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from textual.widgets import Input, Label, OptionList, Select, Switch
+from textual.widgets import Button, Input, Label, OptionList, Select, Switch
 
 from drove import tools
 from drove.permissions import PermissionsModal, make_rule
@@ -128,37 +129,61 @@ async def test_command_discovery_dispatch_help_cancel(tmp_path, monkeypatch):
         send.assert_not_called()
 
 
+async def settle(pilot, condition) -> None:
+    """Wait until *condition* holds; a pause alone can return before bubbled messages arrive."""
+    async with asyncio.timeout(5):
+        while not condition():
+            await pilot.pause(0.01)
+
+
+async def click(pilot, selector: str) -> None:
+    """Click a button once it accepts clicks; it ignores them while its press effect shows."""
+    button = pilot.app.screen.query_one(selector, Button)
+    await settle(pilot, lambda: not button.has_class("-active"))
+    await pilot.click(selector)
+
+
 async def test_modal_rule_crud_and_apply(tmp_path):
     app = app_for(tmp_path)
     async with app.run_test(size=(100, 50)) as pilot:
         await app._dispatch_command("/permissions")
-        await pilot.pause()
+        await settle(
+            pilot,
+            lambda: (
+                isinstance(app.screen, PermissionsModal)
+                and bool(app.screen.query("#permission-scope"))
+            ),
+        )
         modal = app.screen
         assert isinstance(modal, PermissionsModal)
+        scope = modal.query_one("#permission-scope", Input)
+        rules = modal.query_one("#permission-rules", OptionList)
         modal.query_one("#permission-tool", Select).value = "shell_execute"
-        modal.query_one("#permission-scope", Input).value = "git status"
-        await pilot.click("#permission-save")
-        assert len(modal.rules) == 1
+        scope.value = "git status"
+        await click(pilot, "#permission-save")
+        await settle(pilot, lambda: len(modal.rules) == 1)
         assert app._conversation_rules is None
-        modal.query_one("#permission-rules", OptionList).highlighted = 0
-        modal.query_one("#permission-rules", OptionList).focus()
+        rules.highlighted = 0
+        rules.focus()
         await pilot.press("enter")
-        await pilot.pause()
-        modal.query_one("#permission-scope", Input).value = "git diff"
-        await pilot.click("#permission-save")
-        assert len(modal.rules) == 1 and modal.rules[0].command == "git diff"
-        modal.query_one("#permission-rules", OptionList).highlighted = 0
-        modal.query_one("#permission-rules", OptionList).focus()
+        await settle(pilot, lambda: scope.value == "git status")
+        scope.value = "git diff"
+        await click(pilot, "#permission-save")
+        await settle(pilot, lambda: modal.rules[0].command == "git diff")
+        assert len(modal.rules) == 1
+        rules.highlighted = 0
+        rules.focus()
         await pilot.press("enter")
-        await pilot.click("#permission-remove")
-        assert not modal.rules
+        await settle(pilot, lambda: scope.value == "git diff")
+        await click(pilot, "#permission-remove")
+        await settle(pilot, lambda: not modal.rules)
         modal.query_one("#permission-tool", Select).value = "write_file"
-        modal.query_one("#permission-scope", Input).value = str(tmp_path)
-        await pilot.click("#permission-save")
+        scope.value = str(tmp_path)
+        await click(pilot, "#permission-save")
+        await settle(pilot, lambda: len(modal.rules) == 1)
         modal.query_one("#permission-allow-all", Switch).value = True
-        await pilot.click("#permissions-apply")
-        await pilot.pause()
-        assert app._allow_all
+        await click(pilot, "#permissions-apply")
+        await settle(pilot, lambda: app._allow_all)
         assert len(app._policy_context().grants) == 1
         assert "Allow all" in str(app.query_one("#status-label", Label).render())
         assert app.query_one("#status-bar").has_class("visible")

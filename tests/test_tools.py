@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -249,7 +250,15 @@ def _alive(pid: int) -> bool:
         except ProcessLookupError:
             return False
         return True
-    return state != "Z"
+    return state not in ("Z", "X", "x")  # zombie or dead: exited, only awaiting the reaper
+
+
+def _kill_if_alive(pid: int | None) -> None:
+    """Best-effort cleanup that tolerates the process exiting between the check and the kill."""
+    if pid is None or not _alive(pid):
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
 
 
 def _wait_gone(pid: int, seconds: float = 5) -> bool:
@@ -273,8 +282,7 @@ def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
         assert result == "Error: command timed out after 1 seconds"
         assert _wait_gone(pid)
     finally:
-        if pid is not None and _alive(pid):
-            os.kill(pid, signal.SIGKILL)
+        _kill_if_alive(pid)
 
 
 def test_descendants_left_behind_by_a_finished_command_are_killed(tmp_path: Path) -> None:
@@ -287,8 +295,7 @@ def test_descendants_left_behind_by_a_finished_command_are_killed(tmp_path: Path
         assert result.endswith("Return code: 0")
         assert _wait_gone(pid)
     finally:
-        if pid is not None and _alive(pid):
-            os.kill(pid, signal.SIGKILL)
+        _kill_if_alive(pid)
 
 
 def test_background_tasks_time_out_with_their_group(no_background_tasks) -> None:

@@ -47,6 +47,8 @@
 
 ### Fixed
 
+- Fixed an intermittent test failure when a timed-out shell command's process
+  exited during test cleanup, which had blocked a release.
 - Allowed applying chat permission changes after inspecting an unchanged rule,
   without requiring an extra save.
 - Preserved reviewed changelog bullets in release notes and refreshed the lockfile

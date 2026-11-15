@@ -204,10 +204,9 @@ conversation. `/new`, `/clear`, switching model, or loading a saved conversation
 clears them. They are never saved to config or conversation files. Saved config
 rules appear as **saved defaults**; removing or changing one in this editor overrides
 it for this conversation only, and a new conversation restores the saved default.
-Later **Allow for session** or **Allow always** directory/origin approvals join the
-active rules; **Allow always** also updates the saved config as before. The editor
-does not add new persistent shell/write token formats (see #158 for that separate
-proposal).
+Later **Allow for session** or **Allow always** approvals (directory, origin or exact
+shell command) join the active rules; **Allow always** also updates the saved config.
+Write rules exist only in the editor; `write_file` approvals are never saved.
 
 What asks for approval by default (before editor overrides or Allow all):
 

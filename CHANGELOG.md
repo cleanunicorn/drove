@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Corrected the chat permissions guide, which still described saved shell command
+  approvals as a future proposal.
+
 ## v0.16.0 (2026-11-06)
 
 ### Added

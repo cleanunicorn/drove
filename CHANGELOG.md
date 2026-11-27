@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.16.1 (2026-11-27)
+
 ### Changed
 
 - Corrected the chat permissions guide, which still described saved shell command

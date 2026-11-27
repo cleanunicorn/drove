@@ -230,6 +230,7 @@ async def test_escape_autocomplete_and_session_picker(tmp_path, monkeypatch):
         ("escape", "deny-once"),
         ("s", "allow-session"),
         ("a", "allow-always"),
+        ("exclamation_mark", "allow-all"),
     ],
 )
 async def test_modal_keyboard_choices(tmp_path, key, choice):
@@ -240,7 +241,7 @@ async def test_modal_keyboard_choices(tmp_path, key, choice):
             ToolConfirmationModal("shell_execute", "plain arguments"), callback=choices.append
         )
         await pilot.pause()
-        assert len(app.screen.query(Button)) == 4
+        assert len(app.screen.query(Button)) == 5
         await pilot.press(key)
         assert choices == [choice]
         assert app.is_running

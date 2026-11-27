@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an Allow All Tools This Conversation choice (key `!`) to every chat tool
+  approval dialog, so one answer stops all further prompts until the conversation
+  ends, without opening `/permissions`.
+
 ## v0.16.1 (2026-11-27)
 
 ### Changed

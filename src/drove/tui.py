@@ -664,7 +664,9 @@ class CodePicker(ModalScreen[str | None]):
 
 # Tool dialog choices that grant beyond one call, and every choice that allows it.
 _SCOPED_CHOICES = frozenset({"allow-session", "allow-always"})
-_ALLOW_CHOICES = _SCOPED_CHOICES | {"allow-once"}
+# Turns on Allow all for the conversation, as /permissions does; offered on every dialog.
+ALLOW_ALL_CHOICE = "allow-all"
+_ALLOW_CHOICES = _SCOPED_CHOICES | {"allow-once", ALLOW_ALL_CHOICE}
 
 
 class ToolConfirmationModal(ModalScreen[str]):
@@ -676,6 +678,7 @@ class ToolConfirmationModal(ModalScreen[str]):
         Binding("escape", "choose('deny-once')", "Deny once", show=False),
         Binding("s", "choose('allow-session')", "Allow for session"),
         Binding("a", "choose('allow-always')", "Allow always"),
+        Binding("exclamation_mark", "choose('allow-all')", "Allow all tools"),
     ]
 
     def action_choose(self, choice: str) -> None:
@@ -727,6 +730,10 @@ class ToolConfirmationModal(ModalScreen[str]):
                 with Horizontal(classes="buttons"):
                     yield Button("Allow for Session (s)", variant="default", id="allow-session")
                     yield Button("Allow Always (a)", variant="default", id="allow-always")
+            with Horizontal(classes="buttons"):
+                yield Button(
+                    "Allow All Tools This Conversation (!)", variant="warning", id=ALLOW_ALL_CHOICE
+                )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id)
@@ -1846,6 +1853,9 @@ class ChatApp(App[None]):
     async def _confirm(self, name: str, arguments: str, decision: Decision) -> bool:
         """Ask about one call; a session/always choice records only the decision's scope.
 
+        Allow all turns on the conversation's Allow all (see /permissions) and records no
+        grant: it ends with /new, a model switch or loading a session, and is never saved.
+
         With --dangerously-skip-permissions every call is approved here, without a dialog
         and without recording any grant, so it also covers prompts met mid-fetch.
         """
@@ -1862,6 +1872,10 @@ class ChatApp(App[None]):
         choice = await self.push_screen_wait(modal)
         if choice not in _ALLOW_CHOICES:
             return False
+        if choice == ALLOW_ALL_CHOICE:
+            self._allow_all = True
+            self._update_status()
+            return True
         if grant is not None and choice in _SCOPED_CHOICES:
             self._session_allowed_tools.add(grant.token())
             if self._conversation_rules is not None:

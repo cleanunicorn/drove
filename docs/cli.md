@@ -205,6 +205,11 @@ rules in the editor. Argument validation, output caps, timeouts, DNS pinning and
 validation still apply. Changes affect subsequent tool calls; the editor cannot
 change an already running call.
 
+You can also turn Allow all on from any approval dialog: **Allow All Tools This
+Conversation** (key **!**) approves the call it was shown for and every later one,
+just like switching it on in `/permissions`. It records no grant, is never saved, and
+ends with the conversation; turn it off again in `/permissions`.
+
 Editor changes, including Allow all and shell/write rules, last only for the current
 conversation. `/new`, `/clear`, switching model, or loading a saved conversation
 clears them. They are never saved to config or conversation files. Saved config
@@ -228,7 +233,8 @@ What asks for approval by default (before editor overrides or Allow all):
   and execution; all remaining characters must match, including shell operators.
   Background calls follow the same rule; timeout and background settings do not
   change the command scope. A grant never covers another directory or a subdirectory.
-- `write_file` asks on every call; the dialog offers only allow once or deny.
+- `write_file` asks on every call; the dialog offers allow once, deny, or Allow all
+  for the conversation, never a session or saved write grant.
 - `fetch_url` asks once per origin: scheme, host and port, so `https://example.com`
   does not cover `http://example.com` or `https://example.com:8443`. It fetches only
   `http`/`https` URLs, follows up to five redirects (a redirect to another origin asks

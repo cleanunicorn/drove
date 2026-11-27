@@ -131,7 +131,8 @@ The **Info** button (or `/info`) opens model, endpoint, session, timing and cont
 details on demand. Token counts appear only when the endpoint reports usage; unknown
 counts are labeled **Not reported**. Reply speed is received chunks/s, not tokens/s.
 The activity row appears only while replying, running a tool, stopping, or managing
-queued messages; while a tool runs it names the tool and its elapsed seconds.
+queued messages; while the model writes a tool call it names that tool, and while a
+tool runs it names the tool and its elapsed seconds.
 
 After each reply, a thin bar at the top right of the header shows how full the
 model's context is. Hover it for `used / total` tokens; Info shows the same with a
@@ -162,11 +163,12 @@ replies send the queue in order. Stopping a reply or encountering an error pause
 queued messages; **Resume queued** sends them in order. New input joins a paused
 queue without restarting it. Pending messages are not saved until sent.
 
-Each tool call appears in the reply as soon as the model requests it, with its
-name and shortened arguments, marked **pending** until it is approved and
-**running** with elapsed seconds while it executes. `shell_execute` streams the last
-few lines of its output into the entry as it runs; the model receives the full
-output up to the tool output limit below. When the tool ends, the same entry shows its result and outcome:
+Each tool call appears in the reply as soon as the model names it, with its name
+and shortened arguments, marked **preparing** with a character count while the model
+is still writing its arguments, **pending** until it is approved, and **running**
+with elapsed seconds while it executes. `shell_execute` streams the last few lines of
+its output into the entry as it runs (Python commands run unbuffered so their output
+streams too); the model receives the full output up to the tool output limit below. When the tool ends, the same entry shows its result and outcome:
 **✓** done, **✗ failed** (an error, timeout, or nonzero exit code), **⊘ denied**,
 or **⊘ not run** after a stop. Resumed sessions show earlier calls without an
 outcome mark, except denials.

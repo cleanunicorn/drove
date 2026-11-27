@@ -1043,3 +1043,101 @@ async def test_skip_permissions_reads_outside_cwd_and_over_remote_endpoints(
 
     assert shown == []
     assert "secret" in requests[1][-1]["content"]
+
+
+def call_written_in_parts(requests: list, more: asyncio.Event, calls=(("c1", "read_file"),)):
+    """Name each call first, then send its arguments only after *more* is set."""
+
+    async def stream(messages):
+        requests.append([dict(m) for m in messages])
+        if len(requests) > 1:
+            yield {"kind": "content", "chunk": "Done"}
+            return
+        for index, (call_id, name) in enumerate(calls):
+            yield {"kind": "tool_call", "index": index, "id": call_id, "name": name}
+            yield {"kind": "tool_call", "index": index, "arguments": '{"path": '}
+        await more.wait()
+        for index, _ in enumerate(calls):
+            yield {"kind": "tool_call", "index": index, "arguments": '"notes.txt"}'}
+
+    return stream
+
+
+async def test_call_shows_while_the_model_writes_it_then_runs_in_place(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    more = asyncio.Event()
+    requests: list = []
+    ran: list[str] = []
+
+    def execute(name, arguments, on_output=None, **kwargs):
+        ran.append(arguments)
+        return "the result"
+
+    monkeypatch.setattr(app, "_stream_chat", call_written_in_parts(requests, more))
+    monkeypatch.setattr(app, "_tool_allowed", lambda *args: asyncio.sleep(0, True))
+    monkeypatch.setattr("drove.tui.execute_tool", execute)
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: bool(app.query(ToolCallEntry)))
+        [entry] = app.query(ToolCallEntry)
+        await until(pilot, lambda: title(entry).endswith("· preparing 9 chars"))
+        assert entry.state == "preparing"
+        assert entry.has_class("-preparing")
+        assert title(entry) == '⚙ read_file  {"path": · preparing 9 chars'
+        assert activity(app) == "Preparing read_file…"
+        assert ran == []
+
+        more.set()
+        await until(pilot, lambda: not app.is_generating)
+        assert app.query(ToolCallEntry).nodes == [entry]
+        assert entry.state == "done"
+        assert title(entry) == "✓ read_file → the result"
+        assert ran == ['{"path": "notes.txt"}']
+        assert activity(app) == ""
+
+
+async def test_stop_while_the_model_writes_a_call_marks_it_not_run(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    more = asyncio.Event()
+    requests: list = []
+    ran: list[str] = []
+    monkeypatch.setattr(app, "_stream_chat", call_written_in_parts(requests, more))
+    monkeypatch.setattr(app, "_tool_allowed", lambda *args: asyncio.sleep(0, True))
+    monkeypatch.setattr("drove.tui.execute_tool", lambda name, arguments, **kw: ran.append(name))
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: bool(app.query(ToolCallEntry)))
+        [entry] = app.query(ToolCallEntry)
+        await pilot.press("escape")
+        await until(pilot, lambda: not app.is_generating)
+        assert entry.state == "stopped"
+        assert title(entry) == '⊘ read_file not run  {"path":'
+        assert ran == []
+        assert len(requests) == 1
+        assert activity(app) == ""
+
+
+async def test_calls_written_together_are_shown_in_the_order_they_run(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    more = asyncio.Event()
+    requests: list = []
+    ran: list[str] = []
+
+    def execute(name, arguments, on_output=None, **kwargs):
+        ran.append(name)
+        return name
+
+    calls = (("b", "read_file"), ("a", "list_files"))
+    monkeypatch.setattr(app, "_stream_chat", call_written_in_parts(requests, more, calls))
+    monkeypatch.setattr(app, "_tool_allowed", lambda *args: asyncio.sleep(0, True))
+    monkeypatch.setattr("drove.tui.execute_tool", execute)
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: len(app.query(ToolCallEntry)) == 2)
+        assert [e.tool_name for e in app.query(ToolCallEntry)] == ["read_file", "list_files"]
+        more.set()
+        await until(pilot, lambda: not app.is_generating)
+        entries = app.query(ToolCallEntry).nodes
+        assert ran == ["list_files", "read_file"]
+        assert [e.tool_name for e in entries] == ran
+        assert [e.state for e in entries] == ["done", "done"]

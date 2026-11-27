@@ -76,6 +76,27 @@ def test_output_streams_before_the_command_exits(tmp_path: Path) -> None:
     assert "".join(chunks).count("first") == 1
 
 
+def test_python_output_streams_without_explicit_flushes(tmp_path: Path, monkeypatch) -> None:
+    # A piped Python child block-buffers print() unless told otherwise.
+    monkeypatch.delenv("PYTHONUNBUFFERED", raising=False)
+    release = tmp_path / "release"
+    code = (
+        "import os, time\n"
+        "print('first')\n"
+        f"while not os.path.exists({str(release)!r}): time.sleep(0.01)\n"
+        "print('done')\n"
+    )
+
+    def on_output(text: str) -> None:
+        if "first" in text:
+            release.touch()
+
+    # Buffered output would never release the child, so it would time out.
+    result = _shell(_python(code), timeout=5, on_output=on_output)
+
+    assert result == "STDOUT:\nfirst\ndone\n\nReturn code: 0"
+
+
 def test_multibyte_characters_split_across_reads_decode(tmp_path: Path) -> None:
     # 4095 ASCII bytes push the two-byte "é" across the 4096-byte read boundary.
     code = "import sys; sys.stdout.buffer.write(b'a' * 4095 + 'é\\r\\nz'.encode())"

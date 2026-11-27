@@ -7,6 +7,14 @@
 - Corrected the chat permissions guide, which still described saved shell command
   approvals as a future proposal.
 
+### Fixed
+
+- The chat shows a tool call as soon as the model starts writing it, with a growing
+  character count, instead of only after the whole call arrives; a stop while it is
+  being written marks it not run.
+- Output from Python commands run with `shell_execute` streams into the chat as it is
+  printed instead of appearing only when the command exits.
+
 ## v0.16.0 (2026-11-06)
 
 ### Added

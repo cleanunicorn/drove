@@ -558,6 +558,8 @@ def _run_streaming(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
+        # Python block-buffers a pipe, which would hold back all output until it exits.
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
     )
     assert proc.stdout is not None and proc.stderr is not None
     streams: dict[IO[bytes], list[str]] = {proc.stdout: [], proc.stderr: []}

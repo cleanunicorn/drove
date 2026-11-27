@@ -1699,7 +1699,8 @@ class ChatApp(App[None]):
     ) -> None:
         """Show a call as soon as the model names it, and follow its arguments as they arrive."""
         if (entry := entries.get(index)) is not None:
-            entry.arguments = call["arguments"]  # the 10 Hz timer redraws the title
+            # The 10 Hz timer redraws the title.
+            entry.tool_name, entry.arguments = call["name"], call["arguments"]
             return
         if not call["name"]:
             return
@@ -1964,7 +1965,8 @@ class ChatApp(App[None]):
                     successful = True
                     break
                 try:
-                    calls = sorted(tool_calls.values(), key=lambda tc: tc["id"])
+                    order = sorted(tool_calls, key=lambda index: tool_calls[index]["id"])
+                    calls = [tool_calls[index] for index in order]
                     turn.record["tool_calls"] = [
                         {
                             "id": tc["id"],
@@ -1974,17 +1976,16 @@ class ChatApp(App[None]):
                         for tc in calls
                     ]
                     self._commit_draft(turn)
-                    shown = {id(tool_calls[i]): entry for i, entry in entries.items()}
-                    for tc in calls:
+                    for index in order:
                         # Show the calls in the order they run.
-                        if (entry := shown.get(id(tc))) is not None:
+                        if (entry := entries.get(index)) is not None:
                             turn.bubble.move_child(entry, after=turn.bubble.children[-1])
                             entry.ready()
                     self._update_status()
-                    for tc in calls:
+                    for index, tc in zip(order, calls, strict=True):
                         if turn.stop_requested:
                             break
-                        result = await self._run_tool_call(turn, tc, shown.get(id(tc)))
+                        result = await self._run_tool_call(turn, tc, entries.get(index))
                         if result is None:
                             break
                         turn.history.append(

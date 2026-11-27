@@ -1141,3 +1141,25 @@ async def test_calls_written_together_are_shown_in_the_order_they_run(tmp_path, 
         assert ran == ["list_files", "read_file"]
         assert [e.tool_name for e in entries] == ran
         assert [e.state for e in entries] == ["done", "done"]
+
+
+async def test_stream_failure_while_the_model_writes_a_call_marks_it_not_run(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    ran: list[str] = []
+
+    async def stream(messages):
+        yield {"kind": "tool_call", "index": 0, "id": "c1", "name": "read_file"}
+        yield {"kind": "tool_call", "index": 0, "arguments": '{"path": '}
+        raise httpx.ReadError("connection lost")
+
+    monkeypatch.setattr(app, "_stream_chat", stream)
+    monkeypatch.setattr("drove.tui.execute_tool", lambda name, arguments, **kw: ran.append(name))
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: not app.is_generating)
+        [entry] = app.query(ToolCallEntry)
+        assert entry.state == "stopped"
+        assert title(entry) == '⊘ read_file not run  {"path":'
+        assert ran == []
+        assert activity(app) == ""
+        assert app.query(".message.error")

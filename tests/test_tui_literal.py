@@ -79,7 +79,9 @@ async def test_tool_result_and_preview_title_remain_literal(text: str) -> None:
         assert not collapsible._title.label.spans
 
 
-@pytest.mark.parametrize("button", ["allow-once", "deny-once", "allow-session", "allow-always"])
+@pytest.mark.parametrize(
+    "button", ["allow-once", "deny-once", "allow-session", "allow-always", "allow-all"]
+)
 async def test_confirmation_preserves_text_and_button_choices(button: str) -> None:
     name = "shell_[bold]execute[/bold]"
     arguments = '  {"command": "[on black][black]rm -rf ~[/]", "escape": "\\n"}\n[/x]  '

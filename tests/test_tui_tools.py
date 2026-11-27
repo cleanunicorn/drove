@@ -545,20 +545,69 @@ async def test_fetch_grants_are_per_origin_and_wider_grants_are_ignored(tmp_path
     }
 
 
-async def test_per_call_dialog_offers_only_allow_once_or_deny(tmp_path):
+async def test_per_call_dialog_offers_no_scoped_choices(tmp_path):
+    """Per-call dialogs hide session/always; Allow all for the conversation stays offered."""
     app = chat_app(tmp_path)
     choices: list[str] = []
     async with app.run_test() as pilot:
         modal = ToolConfirmationModal("shell_execute", "{}", per_call=True)
         app.push_screen(modal, callback=choices.append)
         await pilot.pause()
-        assert {button.id for button in app.screen.query(Button)} == {"allow-once", "deny-once"}
+        assert {button.id for button in app.screen.query(Button)} == {
+            "allow-once",
+            "deny-once",
+            "allow-all",
+        }
         await pilot.press("a", "s")
         await pilot.pause()
         assert choices == []
         await pilot.press("y")
         await pilot.pause()
         assert choices == ["allow-once"]
+
+
+async def test_per_call_dialog_allow_all_key(tmp_path):
+    app = chat_app(tmp_path)
+    choices: list[str] = []
+    async with app.run_test() as pilot:
+        modal = ToolConfirmationModal("write_file", "{}", per_call=True)
+        app.push_screen(modal, callback=choices.append)
+        await pilot.pause()
+        await pilot.press("exclamation_mark")
+        await pilot.pause()
+        assert choices == ["allow-all"]
+
+
+async def test_dialog_allow_all_stops_every_later_prompt_for_the_conversation(
+    tmp_path, monkeypatch
+):
+    app, work, config = policy_app(tmp_path, monkeypatch)
+    outside = outside_dir(tmp_path)
+    shown = answering(app, monkeypatch, "allow-all", "deny-once")
+    calls = [
+        ("write_file", json.dumps({"path": "x.txt", "content": ""})),
+        ("write_file", json.dumps({"path": str(outside / "y.txt"), "content": ""})),
+        ("shell_execute", json.dumps({"command": "rm -rf build"})),
+        ("shell_execute", json.dumps({"command": "make test"})),
+        ("read_file", json.dumps({"path": str(outside / "secret.txt")})),
+        ("fetch_url", json.dumps({"url": "https://example.com/"})),
+    ]
+    async with app.run_test() as pilot:
+        for name, arguments in calls:
+            assert await app._tool_allowed(name, arguments)
+        assert len(shown) == 1  # only the first call asked
+        assert app._allow_all
+        await pilot.pause()
+        assert "Allow all" in str(app.query_one("#status-label", Label).render())
+        # Nothing is recorded as a grant or saved to config.
+        assert app._session_allowed_tools == set()
+        assert config.read_text() == "listen_port = 7000\n"
+
+        # A new conversation asks again.
+        await app._load_session(new_session("test-model", endpoint=app._endpoint))
+        assert not app._allow_all
+        assert not await app._tool_allowed(*calls[0])
+        assert len(shown) == 2
 
 
 async def test_scoped_dialog_lines_share_the_message_layout(tmp_path):

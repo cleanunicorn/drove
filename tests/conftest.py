@@ -14,12 +14,9 @@ def _offline_context_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _chat_config_in_tmp(
-    request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path_factory: pytest.TempPathFactory,
+def _config_in_tmp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    """Chat tests never read the real config file, which tool approvals consult."""
-    if request.module.__name__.rpartition(".")[2].startswith("test_tui"):
-        config = tmp_path_factory.mktemp("config") / "config.toml"
-        monkeypatch.setenv("DROVE_CONFIG", str(config))
+    """No test reads the real config file: its saved tool approvals would leak into chat tests."""
+    config = tmp_path_factory.mktemp("config") / "config.toml"
+    monkeypatch.setenv("DROVE_CONFIG", str(config))

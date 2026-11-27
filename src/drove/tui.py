@@ -399,6 +399,7 @@ class ToolCallEntry(Vertical):
         self.result = result
         self.started: float | None = None
         self._shown_title: str | None = None
+        self._shown_body: str | None = None
         if preparing:
             self.state = "preparing"
         elif result is None:
@@ -460,8 +461,23 @@ class ToolCallEntry(Vertical):
         self.query_one(Collapsible).title = Content(text)  # type: ignore[assignment]
 
     def _refresh_body(self) -> None:
-        if self.is_mounted:
-            self.query_one(".tool-call-section Label", Label).update(self._body_text())
+        if not self.is_mounted:
+            return
+        text = self._body_text()
+        if text == self._shown_body:
+            return
+        self._shown_body = text
+        self.query_one(".tool-call-section Label", Label).update(text)
+
+    def follow_arguments(self) -> None:
+        """Redraw the title, and the arguments when expanded, as the model writes them."""
+        self.refresh_title()
+        if self.is_mounted and not self.query_one(Collapsible).collapsed:
+            self._refresh_body()
+
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        # Arguments that arrived while collapsed were not drawn.
+        self._refresh_body()
 
     def ready(self) -> None:
         """The model finished writing the call: it now waits for approval and its turn."""
@@ -1677,7 +1693,7 @@ class ChatApp(App[None]):
             return
         for preparing in turn.preparing:
             if preparing.state == "preparing":
-                preparing.refresh_title()
+                preparing.follow_arguments()
         entry = turn.tool_entry
         if entry is None or entry.state != "running":
             return
@@ -1699,7 +1715,7 @@ class ChatApp(App[None]):
     ) -> None:
         """Show a call as soon as the model names it, and follow its arguments as they arrive."""
         if (entry := entries.get(index)) is not None:
-            # The 10 Hz timer redraws the title.
+            # The 10 Hz timer redraws it.
             entry.tool_name, entry.arguments = call["name"], call["arguments"]
             return
         if not call["name"]:
@@ -1965,7 +1981,8 @@ class ChatApp(App[None]):
                     successful = True
                     break
                 try:
-                    order = sorted(tool_calls, key=lambda index: tool_calls[index]["id"])
+                    # Run calls in the order the model wrote them; their IDs are arbitrary.
+                    order = sorted(tool_calls)
                     calls = [tool_calls[index] for index in order]
                     turn.record["tool_calls"] = [
                         {
@@ -1977,7 +1994,7 @@ class ChatApp(App[None]):
                     ]
                     self._commit_draft(turn)
                     for index in order:
-                        # Show the calls in the order they run.
+                        # Show the calls in the order they run, even if named out of order.
                         if (entry := entries.get(index)) is not None:
                             turn.bubble.move_child(entry, after=turn.bubble.children[-1])
                             entry.ready()

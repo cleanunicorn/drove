@@ -167,8 +167,12 @@ Each tool call appears in the reply as soon as the model names it, with its name
 and shortened arguments, marked **preparing** with a character count while the model
 is still writing its arguments, **pending** until it is approved, and **running**
 with elapsed seconds while it executes. `shell_execute` streams the last few lines of
-its output into the entry as it runs (Python commands run unbuffered so their output
-streams too); the model receives the full output up to the tool output limit below. When the tool ends, the same entry shows its result and outcome:
+its output into the entry as it runs; the model receives the full output up to the
+tool output limit below. Commands run line-buffered (Python through
+`PYTHONUNBUFFERED`, C programs through coreutils `stdbuf` where it is installed, so
+not on macOS), which streams most output without a terminal; programs with their own
+buffering may still print only when they exit. Several calls in one reply run in the
+order the model wrote them. When the tool ends, the same entry shows its result and outcome:
 **✓** done, **✗ failed** (an error, timeout, or nonzero exit code), **⊘ denied**,
 or **⊘ not run** after a stop. Resumed sessions show earlier calls without an
 outcome mark, except denials.

@@ -9,6 +9,7 @@ import json
 import math
 import os
 import selectors
+import shutil
 import signal
 import socket
 import subprocess
@@ -549,16 +550,21 @@ def _run_streaming(
     Reads raw chunks rather than lines, so output without a newline still streams. The
     command runs in its own process group, which is killed when it ends or times out, so
     no descendant outlives it. Only the first part of each stream is kept.
+
+    Programs block-buffer output to a pipe, which would hold it back until they exit, so
+    the command runs line-buffered: Python through PYTHONUNBUFFERED, and C stdio programs
+    through coreutils stdbuf where it exists. Unlike a terminal, this keeps colour codes,
+    pagers and progress redraws out of the result.
     """
     deadline = time.monotonic() + timeout
+    stdbuf = shutil.which("stdbuf")
     proc = subprocess.Popen(
-        command,
-        shell=True,
+        [stdbuf, "-oL", "-eL", "/bin/sh", "-c", command] if stdbuf else command,
+        shell=stdbuf is None,
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
-        # Python block-buffers a pipe, which would hold back all output until it exits.
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
     )
     assert proc.stdout is not None and proc.stderr is not None

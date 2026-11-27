@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import shlex
+import shutil
 import signal
 import sys
 import time
@@ -95,6 +96,33 @@ def test_python_output_streams_without_explicit_flushes(tmp_path: Path, monkeypa
     result = _shell(_python(code), timeout=5, on_output=on_output)
 
     assert result == "STDOUT:\nfirst\ndone\n\nReturn code: 0"
+
+
+@pytest.mark.skipif(shutil.which("stdbuf") is None, reason="needs coreutils stdbuf")
+def test_c_stdio_output_streams_through_a_pipeline(tmp_path: Path) -> None:
+    # sed block-buffers its output to a pipe unless run line-buffered.
+    release = tmp_path / "release"
+    command = (
+        f"{{ echo first; while [ ! -e {shlex.quote(str(release))} ]; do sleep 0.01; done;"
+        " echo done; } | sed 's/^/> /'"
+    )
+
+    def on_output(text: str) -> None:
+        if "> first" in text:
+            release.touch()
+
+    # Buffered output would never release the command, so it would time out.
+    result = _shell(command, timeout=5, on_output=on_output)
+
+    assert result == "STDOUT:\n> first\n> done\n\nReturn code: 0"
+
+
+def test_commands_run_without_stdbuf_too(monkeypatch) -> None:
+    monkeypatch.setattr(tools.shutil, "which", lambda name: None)
+
+    result = _shell("echo out; echo err >&2; exit 3")
+
+    assert result == "STDOUT:\nout\n\nSTDERR:\nerr\n\nReturn code: 3"
 
 
 def test_multibyte_characters_split_across_reads_decode(tmp_path: Path) -> None:

@@ -1043,3 +1043,139 @@ async def test_skip_permissions_reads_outside_cwd_and_over_remote_endpoints(
 
     assert shown == []
     assert "secret" in requests[1][-1]["content"]
+
+
+def call_written_in_parts(requests: list, more: asyncio.Event):
+    """Name a read_file call first, then send its arguments only after *more* is set."""
+
+    async def stream(messages):
+        requests.append([dict(m) for m in messages])
+        if len(requests) > 1:
+            yield {"kind": "content", "chunk": "Done"}
+            return
+        yield {"kind": "tool_call", "index": 0, "id": "c1", "name": "read_file"}
+        yield {"kind": "tool_call", "index": 0, "arguments": '{"path": '}
+        await more.wait()
+        yield {"kind": "tool_call", "index": 0, "arguments": '"notes.txt"}'}
+
+    return stream
+
+
+async def test_call_shows_while_the_model_writes_it_then_runs_in_place(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    more = asyncio.Event()
+    requests: list = []
+    ran: list[str] = []
+
+    def execute(name, arguments, on_output=None, **kwargs):
+        ran.append(arguments)
+        return "the result"
+
+    monkeypatch.setattr(app, "_stream_chat", call_written_in_parts(requests, more))
+    monkeypatch.setattr(app, "_tool_allowed", lambda *args: asyncio.sleep(0, True))
+    monkeypatch.setattr("drove.tui.execute_tool", execute)
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: bool(app.query(ToolCallEntry)))
+        [entry] = app.query(ToolCallEntry)
+        await until(pilot, lambda: title(entry).endswith("· preparing 9 chars"))
+        assert entry.state == "preparing"
+        assert entry.has_class("-preparing")
+        assert title(entry) == '⚙ read_file  {"path": · preparing 9 chars'
+        assert activity(app) == "Preparing read_file…"
+        assert ran == []
+
+        # Expanded, the arguments follow what the model has written so far.
+        body = entry.query_one(Collapsible).query_one(Label)
+        entry.query_one(Collapsible).collapsed = False
+        await until(pilot, lambda: body.render().plain == 'Arguments: {"path": ')
+
+        more.set()
+        await until(pilot, lambda: not app.is_generating)
+        assert app.query(ToolCallEntry).nodes == [entry]
+        assert entry.state == "done"
+        assert title(entry) == "✓ read_file → the result"
+        assert body.render().plain == 'Arguments: {"path": "notes.txt"}\n\nResult:\nthe result'
+        assert ran == ['{"path": "notes.txt"}']
+        assert activity(app) == ""
+
+
+async def test_stop_while_the_model_writes_a_call_marks_it_not_run(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    more = asyncio.Event()
+    requests: list = []
+    ran: list[str] = []
+    monkeypatch.setattr(app, "_stream_chat", call_written_in_parts(requests, more))
+    monkeypatch.setattr(app, "_tool_allowed", lambda *args: asyncio.sleep(0, True))
+    monkeypatch.setattr("drove.tui.execute_tool", lambda name, arguments, **kw: ran.append(name))
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: bool(app.query(ToolCallEntry)))
+        [entry] = app.query(ToolCallEntry)
+        await pilot.press("escape")
+        await until(pilot, lambda: not app.is_generating)
+        assert entry.state == "stopped"
+        assert title(entry) == '⊘ read_file not run  {"path":'
+        assert ran == []
+        assert len(requests) == 1
+        assert activity(app) == ""
+
+
+async def test_calls_run_and_show_in_the_order_the_model_wrote_them(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    more = asyncio.Event()
+    requests: list = []
+    ran: list[str] = []
+
+    async def stream(messages):
+        requests.append(messages)
+        if len(requests) > 1:
+            yield {"kind": "content", "chunk": "Done"}
+            return
+        # IDs sort the other way, and the second call is named first.
+        yield {"kind": "tool_call", "index": 1, "id": "a", "name": "list_files"}
+        yield {"kind": "tool_call", "index": 0, "id": "b", "name": "read_file"}
+        await more.wait()
+        for index in (0, 1):
+            yield {"kind": "tool_call", "index": index, "arguments": "{}"}
+
+    def execute(name, arguments, on_output=None, **kwargs):
+        ran.append(name)
+        return name
+
+    monkeypatch.setattr(app, "_stream_chat", stream)
+    monkeypatch.setattr(app, "_tool_allowed", lambda *args: asyncio.sleep(0, True))
+    monkeypatch.setattr("drove.tui.execute_tool", execute)
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: len(app.query(ToolCallEntry)) == 2)
+        assert [e.tool_name for e in app.query(ToolCallEntry)] == ["list_files", "read_file"]
+        more.set()
+        await until(pilot, lambda: not app.is_generating)
+        entries = app.query(ToolCallEntry).nodes
+        assert ran == ["read_file", "list_files"]
+        assert [e.tool_name for e in entries] == ran
+        assert [e.state for e in entries] == ["done", "done"]
+        assert [m["tool_call_id"] for m in app._history if m["role"] == "tool"] == ["b", "a"]
+
+
+async def test_stream_failure_while_the_model_writes_a_call_marks_it_not_run(tmp_path, monkeypatch):
+    app = chat_app(tmp_path)
+    ran: list[str] = []
+
+    async def stream(messages):
+        yield {"kind": "tool_call", "index": 0, "id": "c1", "name": "read_file"}
+        yield {"kind": "tool_call", "index": 0, "arguments": '{"path": '}
+        raise httpx.ReadError("connection lost")
+
+    monkeypatch.setattr(app, "_stream_chat", stream)
+    monkeypatch.setattr("drove.tui.execute_tool", lambda name, arguments, **kw: ran.append(name))
+    async with app.run_test() as pilot:
+        app._start_turn("go")
+        await until(pilot, lambda: not app.is_generating)
+        [entry] = app.query(ToolCallEntry)
+        assert entry.state == "stopped"
+        assert title(entry) == '⊘ read_file not run  {"path":'
+        assert ran == []
+        assert activity(app) == ""
+        assert app.query(".message.error")

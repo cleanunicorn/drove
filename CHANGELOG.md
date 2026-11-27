@@ -7,6 +7,21 @@
 - Corrected the chat permissions guide, which still described saved shell command
   approvals as a future proposal.
 
+### Fixed
+
+- The chat shows a tool call as soon as the model starts writing it, with a growing
+  character count, instead of only after the whole call arrives; a stop while it is
+  being written marks it not run.
+- Output from Python commands, and on Linux from C programs such as `sed` and `grep`
+  in a pipeline, run with `shell_execute` streams into the chat as it is printed instead
+  of appearing only when the command exits.
+- Expanding a tool call while the model is still writing it shows the arguments
+  received so far.
+- Several tool calls in one reply run in the order the model wrote them instead of an
+  arbitrary order.
+- The permissions tests no longer read the real config file, so saved tool approvals
+  no longer make them fail.
+
 ## v0.16.0 (2026-11-06)
 
 ### Added

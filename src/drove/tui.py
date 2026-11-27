@@ -118,7 +118,7 @@ ChatApp { background: $background; }
 .thinking-section Label { color: $text-muted; text-style: italic; width: 1fr; }
 .tool-call-section Label { color: $text-muted; width: 1fr; }
 .tool-call { height: auto; }
-.tool-call.-running CollapsibleTitle { color: $accent; }
+.tool-call.-preparing CollapsibleTitle, .tool-call.-running CollapsibleTitle { color: $accent; }
 .tool-call.-done CollapsibleTitle { color: $success; }
 .tool-call.-failed CollapsibleTitle { color: $error; }
 .tool-call.-denied CollapsibleTitle, .tool-call.-stopped CollapsibleTitle { color: $warning; }
@@ -385,15 +385,24 @@ class ToolOutputTail:
 
 
 class ToolCallEntry(Vertical):
-    """One tool call, shown from the moment it starts and updated in place when it ends."""
+    """One tool call, shown while the model writes it and updated in place until it ends.
 
-    def __init__(self, name: str, arguments: str, result: str | None = None) -> None:
+    *preparing* entries are still receiving their arguments from the model.
+    """
+
+    def __init__(
+        self, name: str, arguments: str, result: str | None = None, *, preparing: bool = False
+    ) -> None:
         super().__init__(classes="tool-call")
         self.tool_name = name
         self.arguments = arguments
         self.result = result
         self.started: float | None = None
-        if result is None:
+        self._shown_title: str | None = None
+        self._shown_body: str | None = None
+        if preparing:
+            self.state = "preparing"
+        elif result is None:
             self.state = "pending"
         else:
             # Saved sessions do not record the outcome, so only a denial is known.
@@ -415,6 +424,8 @@ class ToolCallEntry(Vertical):
 
     def _title_text(self) -> str:
         name, args = self.tool_name, _preview_arguments(self.arguments)
+        if self.state == "preparing":
+            return f"⚙ {name}  {args} · preparing {len(self.arguments):,} chars"
         if self.state == "pending":
             return f"⚙ {name}  {args} · pending"
         if self.state == "running":
@@ -443,7 +454,35 @@ class ToolCallEntry(Vertical):
     def refresh_title(self) -> None:
         if not self.is_mounted:
             return
-        self.query_one(Collapsible).title = Content(self._title_text())  # type: ignore[assignment]
+        text = self._title_text()
+        if text == self._shown_title:
+            return
+        self._shown_title = text
+        self.query_one(Collapsible).title = Content(text)  # type: ignore[assignment]
+
+    def _refresh_body(self) -> None:
+        if not self.is_mounted:
+            return
+        text = self._body_text()
+        if text == self._shown_body:
+            return
+        self._shown_body = text
+        self.query_one(".tool-call-section Label", Label).update(text)
+
+    def follow_arguments(self) -> None:
+        """Redraw the title, and the arguments when expanded, as the model writes them."""
+        self.refresh_title()
+        if self.is_mounted and not self.query_one(Collapsible).collapsed:
+            self._refresh_body()
+
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        # Arguments that arrived while collapsed were not drawn.
+        self._refresh_body()
+
+    def ready(self) -> None:
+        """The model finished writing the call: it now waits for approval and its turn."""
+        self._refresh_body()
+        self._set_state("pending")
 
     def start(self) -> None:
         self.started = time.monotonic()
@@ -458,8 +497,7 @@ class ToolCallEntry(Vertical):
     def finish(self, result: str | None, state: str) -> None:
         self.result = result
         self.remove_class("-streaming")
-        if self.is_mounted:
-            self.query_one(".tool-call-section Label", Label).update(self._body_text())
+        self._refresh_body()
         self._set_state(state)
 
 
@@ -581,10 +619,13 @@ class Message(Static, can_focus=True):
                 pass
 
     async def append_tool_call(
-        self, name: str, arguments: str, result: str | None = None
+        self, name: str, arguments: str, result: str | None = None, *, preparing: bool = False
     ) -> ToolCallEntry:
-        """Add a tool call section after the body: pending without a result, else finished."""
-        entry = ToolCallEntry(name, arguments, result)
+        """Add a tool call section after the body: pending without a result, else finished.
+
+        *preparing* adds it while the model is still writing its arguments.
+        """
+        entry = ToolCallEntry(name, arguments, result, preparing=preparing)
         await self.mount(entry)
         return entry
 
@@ -809,6 +850,8 @@ class ChatTurn:
     tool_task: asyncio.Task[str] | None = None
     tool_entry: ToolCallEntry | None = None
     tool_output: ToolOutputTail | None = None
+    # Entries shown while the model writes their calls, until they run or are dropped
+    preparing: list[ToolCallEntry] = field(default_factory=list)
 
 
 def _http_error(status: int, body: bytes) -> str:
@@ -1646,8 +1689,13 @@ class ChatApp(App[None]):
     def _tick_tool(self) -> None:
         """Refresh the running tool's preview and elapsed time (at most 10 times a second)."""
         turn = self._turn
-        entry = turn.tool_entry if turn is not None else None
-        if turn is None or entry is None or entry.state != "running":
+        if turn is None:
+            return
+        for preparing in turn.preparing:
+            if preparing.state == "preparing":
+                preparing.follow_arguments()
+        entry = turn.tool_entry
+        if entry is None or entry.state != "running":
             return
         if turn.tool_output is not None and (text := turn.tool_output.take()) is not None:
             entry.show_output(text)
@@ -1658,10 +1706,45 @@ class ChatApp(App[None]):
             entry.refresh_title()
             self._update_status()
 
-    async def _run_tool_call(self, turn: ChatTurn, call: dict[str, str]) -> str | None:
-        """Show, approve and run one call; return its result, or None when stopped first."""
+    async def _show_preparing(
+        self,
+        turn: ChatTurn,
+        entries: dict[int, ToolCallEntry],
+        index: int,
+        call: dict[str, str],
+    ) -> None:
+        """Show a call as soon as the model names it, and follow its arguments as they arrive."""
+        if (entry := entries.get(index)) is not None:
+            # The 10 Hz timer redraws it.
+            entry.tool_name, entry.arguments = call["name"], call["arguments"]
+            return
+        if not call["name"]:
+            return
         assert turn.bubble is not None
-        entry = await turn.bubble.append_tool_call(call["name"], call["arguments"])
+        entry = await turn.bubble.append_tool_call(call["name"], call["arguments"], preparing=True)
+        entries[index] = entry
+        turn.preparing.append(entry)
+        self._tool_timer.resume()
+        self._update_status()
+
+    def _drop_preparing(self, turn: ChatTurn) -> None:
+        """Mark shown calls that will never run as not run."""
+        for entry in turn.preparing:
+            if entry.state in {"preparing", "pending"}:
+                entry.finish(None, "stopped")
+        turn.preparing.clear()
+        self._update_status()
+
+    async def _run_tool_call(
+        self, turn: ChatTurn, call: dict[str, str], entry: ToolCallEntry | None = None
+    ) -> str | None:
+        """Show, approve and run one call; return its result, or None when stopped first.
+
+        *entry* is the call's section if it was already shown while the model wrote it.
+        """
+        assert turn.bubble is not None
+        if entry is None:
+            entry = await turn.bubble.append_tool_call(call["name"], call["arguments"])
         turn.tool_entry = entry
         self._scroll_to_bottom()
         try:
@@ -1847,6 +1930,7 @@ class ChatApp(App[None]):
                 if turn.stop_requested:
                     raise asyncio.CancelledError
                 tool_calls: dict[int, dict[str, str]] = {}
+                entries: dict[int, ToolCallEntry] = {}
                 usage: dict[str, int] = {}
                 try:
                     async with aclosing(self._stream_chat(turn.history)) as stream:
@@ -1879,9 +1963,15 @@ class ChatApp(App[None]):
                                     if event.get(key):
                                         tc[key] = event[key]
                                 tc["arguments"] += event.get("arguments", "")
+                                await self._show_preparing(turn, entries, event["index"], tc)
                             self._scroll_to_bottom()
+                except BaseException:
+                    self._drop_preparing(turn)
+                    raise
                 finally:
                     await turn.bubble.finish_text()
+                    if turn.tool_entry is None:
+                        self._tool_timer.pause()
                 # Each response reports the whole context; keep only the latest one.
                 self._last_usage = usage
                 self._update_status()
@@ -1890,30 +1980,41 @@ class ChatApp(App[None]):
                     self._commit_draft(turn)
                     successful = True
                     break
-                calls = sorted(tool_calls.values(), key=lambda tc: tc["id"])
-                turn.record["tool_calls"] = [
-                    {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                    }
-                    for tc in calls
-                ]
-                self._commit_draft(turn)
-                for tc in calls:
-                    if turn.stop_requested:
-                        break
-                    result = await self._run_tool_call(turn, tc)
-                    if result is None:
-                        break
-                    turn.history.append(
+                try:
+                    # Run calls in the order the model wrote them; their IDs are arbitrary.
+                    order = sorted(tool_calls)
+                    calls = [tool_calls[index] for index in order]
+                    turn.record["tool_calls"] = [
                         {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": cap_output(result),
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": tc["arguments"]},
                         }
-                    )
-                    self._scroll_to_bottom()
+                        for tc in calls
+                    ]
+                    self._commit_draft(turn)
+                    for index in order:
+                        # Show the calls in the order they run, even if named out of order.
+                        if (entry := entries.get(index)) is not None:
+                            turn.bubble.move_child(entry, after=turn.bubble.children[-1])
+                            entry.ready()
+                    self._update_status()
+                    for index, tc in zip(order, calls, strict=True):
+                        if turn.stop_requested:
+                            break
+                        result = await self._run_tool_call(turn, tc, entries.get(index))
+                        if result is None:
+                            break
+                        turn.history.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "content": cap_output(result),
+                            }
+                        )
+                        self._scroll_to_bottom()
+                finally:
+                    self._drop_preparing(turn)
                 if turn.stop_requested:
                     break
                 turn.record = {"role": "assistant", "content": ""}
@@ -2138,6 +2239,10 @@ class ChatApp(App[None]):
             "empty",
         )
         activity = "Replying…" if self.is_generating else ""
+        preparing = self._turn.preparing if self._turn is not None else []
+        writing = next((e for e in reversed(preparing) if e.state == "preparing"), None)
+        if writing is not None:
+            activity = f"Preparing {writing.tool_name}…"
         entry = self._turn.tool_entry if self._turn is not None else None
         if entry is not None and entry.state == "running":
             activity = f"Running {entry.tool_name}… {entry.elapsed()}s"
